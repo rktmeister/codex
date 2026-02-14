@@ -22,6 +22,7 @@ const METHOD_ZSH_EXEC_STDIN: &str = "zsh/execStdin";
 const METHOD_ZSH_EXEC_RESIZE: &str = "zsh/execResize";
 const METHOD_ZSH_EXEC_INTERRUPT: &str = "zsh/execInterrupt";
 const METHOD_ZSH_SHUTDOWN: &str = "zsh/shutdown";
+const METHOD_ZSH_REQUEST_APPROVAL: &str = "zsh/requestApproval";
 const METHOD_ZSH_EVENT_EXEC_STARTED: &str = "zsh/event/execStarted";
 const METHOD_ZSH_EVENT_EXEC_STDOUT: &str = "zsh/event/execStdout";
 const METHOD_ZSH_EVENT_EXEC_STDERR: &str = "zsh/event/execStderr";
@@ -38,6 +39,14 @@ struct Args {
 enum JsonRpcId {
     Number(i64),
     String(String),
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct JsonRpcRequest<T> {
+    jsonrpc: &'static str,
+    id: JsonRpcId,
+    method: &'static str,
+    params: T,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -81,6 +90,40 @@ struct ExecStartParams {
 #[serde(rename_all = "camelCase")]
 struct ExecInterruptParams {
     exec_id: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ApprovalDecision {
+    Approved,
+    ApprovedForSession,
+    ApprovedExecpolicyAmendment,
+    Denied,
+    Abort,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RequestApprovalParams {
+    approval_id: String,
+    exec_id: String,
+    command: Vec<String>,
+    cwd: String,
+    reason: String,
+    proposed_execpolicy_amendment: Option<ExecPolicyAmendmentProposal>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RequestApprovalResult {
+    decision: ApprovalDecision,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ExecPolicyAmendmentProposal {
+    command_prefix: Vec<String>,
+    rationale: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -220,6 +263,61 @@ async fn main() -> Result<()> {
                     )
                     .await?;
                     continue;
+                }
+
+                let approval_callback_id =
+                    JsonRpcId::String(format!("approval-{}", params.exec_id));
+                let approval_request = JsonRpcRequest {
+                    jsonrpc: JSONRPC_VERSION,
+                    id: approval_callback_id.clone(),
+                    method: METHOD_ZSH_REQUEST_APPROVAL,
+                    params: RequestApprovalParams {
+                        approval_id: format!("approval-{}", params.exec_id),
+                        exec_id: params.exec_id.clone(),
+                        command: params.command.clone(),
+                        cwd: params.cwd.clone(),
+                        reason: "zsh sidecar execStart command approval".to_string(),
+                        proposed_execpolicy_amendment: None,
+                    },
+                };
+                write_json_line(&stdout, &approval_request).await?;
+
+                let approval_decision =
+                    wait_for_approval_result(&mut lines, approval_callback_id).await?;
+                match approval_decision {
+                    ApprovalDecision::Approved
+                    | ApprovalDecision::ApprovedForSession
+                    | ApprovalDecision::ApprovedExecpolicyAmendment => {}
+                    ApprovalDecision::Denied => {
+                        write_json_line(
+                            &stdout,
+                            &JsonRpcErrorResponse {
+                                jsonrpc: JSONRPC_VERSION,
+                                id,
+                                error: JsonRpcError {
+                                    code: -32003,
+                                    message: "command denied by host approval policy".to_string(),
+                                },
+                            },
+                        )
+                        .await?;
+                        continue;
+                    }
+                    ApprovalDecision::Abort => {
+                        write_json_line(
+                            &stdout,
+                            &JsonRpcErrorResponse {
+                                jsonrpc: JSONRPC_VERSION,
+                                id,
+                                error: JsonRpcError {
+                                    code: -32003,
+                                    message: "command aborted by host approval policy".to_string(),
+                                },
+                            },
+                        )
+                        .await?;
+                        continue;
+                    }
                 }
 
                 let mut cmd = tokio::process::Command::new(&params.command[0]);
@@ -464,6 +562,49 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+async fn wait_for_approval_result(
+    lines: &mut tokio::io::Lines<BufReader<tokio::io::Stdin>>,
+    expected_id: JsonRpcId,
+) -> Result<ApprovalDecision> {
+    loop {
+        let Some(line) = lines.next_line().await.context("read stdin")? else {
+            anyhow::bail!("stdin closed while waiting for approval response");
+        };
+        if line.trim().is_empty() {
+            continue;
+        }
+
+        let value: JsonValue =
+            serde_json::from_str(&line).context("parse approval response JSON-RPC message")?;
+        let Some(id_value) = value.get("id") else {
+            continue;
+        };
+        let id: JsonRpcId = serde_json::from_value(id_value.clone())
+            .context("parse approval response JSON-RPC id")?;
+        if id != expected_id {
+            tracing::warn!("ignoring unexpected JSON-RPC message while waiting for approval");
+            continue;
+        }
+
+        if let Some(error) = value.get("error") {
+            let message = error
+                .get("message")
+                .and_then(JsonValue::as_str)
+                .unwrap_or("unknown host approval callback error");
+            anyhow::bail!("host rejected approval callback: {message}");
+        }
+
+        let result: RequestApprovalResult = serde_json::from_value(
+            value
+                .get("result")
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("missing approval callback result"))?,
+        )
+        .context("parse approval callback result")?;
+        return Ok(result.decision);
+    }
 }
 
 async fn stream_reader<R>(

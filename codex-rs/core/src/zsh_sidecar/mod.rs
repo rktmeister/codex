@@ -14,6 +14,7 @@ use crate::zsh_sidecar::protocol::EmptyResult;
 use crate::zsh_sidecar::protocol::ExecExitedEvent;
 use crate::zsh_sidecar::protocol::ExecPolicyAmendmentProposal;
 use crate::zsh_sidecar::protocol::ExecStartParams;
+use crate::zsh_sidecar::protocol::ExecStartedEvent;
 use crate::zsh_sidecar::protocol::ExecStderrEvent;
 use crate::zsh_sidecar::protocol::ExecStdoutEvent;
 use crate::zsh_sidecar::protocol::InitializeParams;
@@ -24,6 +25,7 @@ use crate::zsh_sidecar::protocol::JsonRpcNotification;
 use crate::zsh_sidecar::protocol::JsonRpcRequest;
 use crate::zsh_sidecar::protocol::JsonRpcSuccess;
 use crate::zsh_sidecar::protocol::METHOD_ZSH_EVENT_EXEC_EXITED;
+use crate::zsh_sidecar::protocol::METHOD_ZSH_EVENT_EXEC_STARTED;
 use crate::zsh_sidecar::protocol::METHOD_ZSH_EVENT_EXEC_STDERR;
 use crate::zsh_sidecar::protocol::METHOD_ZSH_EVENT_EXEC_STDOUT;
 use crate::zsh_sidecar::protocol::METHOD_ZSH_EVENT_TERMINAL_INTERACTION;
@@ -426,6 +428,15 @@ impl ZshSidecarManager {
         }
 
         match method {
+            METHOD_ZSH_EVENT_EXEC_STARTED => {
+                let note: JsonRpcNotification<ExecStartedEvent> = serde_json::from_value(value)
+                    .map_err(|err| {
+                        ToolError::Rejected(format!("invalid zsh execStarted event: {err}"))
+                    })?;
+                if !exec_id.is_empty() && note.params.exec_id != exec_id {
+                    return Ok(());
+                }
+            }
             METHOD_ZSH_EVENT_EXEC_STDOUT => {
                 let note: JsonRpcNotification<ExecStdoutEvent> = serde_json::from_value(value)
                     .map_err(|err| {
