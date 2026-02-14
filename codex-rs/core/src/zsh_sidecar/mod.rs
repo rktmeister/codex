@@ -30,13 +30,15 @@ use crate::zsh_sidecar::protocol::METHOD_ZSH_EVENT_TERMINAL_INTERACTION;
 use crate::zsh_sidecar::protocol::METHOD_ZSH_EXEC_START;
 use crate::zsh_sidecar::protocol::METHOD_ZSH_INITIALIZE;
 use crate::zsh_sidecar::protocol::METHOD_ZSH_REQUEST_APPROVAL;
+use crate::zsh_sidecar::protocol::METHOD_ZSH_SHUTDOWN;
 use crate::zsh_sidecar::protocol::RequestApprovalParams;
 use crate::zsh_sidecar::protocol::RequestApprovalResult;
+use crate::zsh_sidecar::protocol::ShutdownParams;
 use base64::Engine as _;
 use codex_protocol::approvals::ExecPolicyAmendment;
 use serde_json::Value as JsonValue;
-use std::env;
 use std::path::PathBuf;
+use std::time::Duration;
 use std::time::Instant;
 use tokio::io::AsyncBufReadExt;
 use tokio::io::AsyncWriteExt;
@@ -93,7 +95,6 @@ impl ZshSidecarManager {
         turn: &crate::codex::TurnContext,
         call_id: &str,
     ) -> Result<ExecToolCallOutput, ToolError> {
-        let sidecar_path = self.resolve_sidecar_path()?;
         let zsh_path = self.zsh_path.clone().ok_or_else(|| {
             ToolError::Rejected(
                 "shell_zsh_fork enabled, but zsh_path is not configured".to_string(),
@@ -112,7 +113,7 @@ impl ZshSidecarManager {
             return Err(ToolError::Rejected("command args are empty".to_string()));
         }
 
-        let mut child = tokio::process::Command::new(&sidecar_path)
+        let mut child = tokio::process::Command::new("codex-zsh-sidecar")
             .arg("--zsh-path")
             .arg(&zsh_path)
             .stdin(std::process::Stdio::piped())
@@ -122,8 +123,7 @@ impl ZshSidecarManager {
             .spawn()
             .map_err(|err| {
                 ToolError::Rejected(format!(
-                    "failed to start zsh sidecar `{}`: {err}",
-                    sidecar_path.display()
+                    "failed to start zsh sidecar `codex-zsh-sidecar`: {err}"
                 ))
             })?;
 
@@ -185,6 +185,7 @@ impl ZshSidecarManager {
                 rows: None,
             },
         };
+        next_id += 1;
 
         Self::write_json_line(&mut stdin, &exec_start_req).await?;
         let _exec_start_result: EmptyResult = self
@@ -227,7 +228,38 @@ impl ZshSidecarManager {
             .await?;
         }
 
-        let _ = child.wait().await;
+        let shutdown_req = JsonRpcRequest {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id: JsonRpcId::Number(next_id),
+            method: METHOD_ZSH_SHUTDOWN.to_string(),
+            params: ShutdownParams { grace_ms: None },
+        };
+        if Self::write_json_line(&mut stdin, &shutdown_req)
+            .await
+            .is_ok()
+        {
+            let _shutdown: Result<EmptyResult, ToolError> = self
+                .wait_for_response(
+                    &mut lines,
+                    &mut stdin,
+                    shutdown_req.id.clone(),
+                    session,
+                    turn,
+                    call_id,
+                )
+                .await;
+        }
+        match tokio::time::timeout(Duration::from_secs(1), child.wait()).await {
+            Ok(Ok(_)) => {}
+            Ok(Err(err)) => {
+                tracing::warn!("zsh sidecar wait after shutdown failed: {err}");
+            }
+            Err(_) => {
+                tracing::warn!("zsh sidecar did not exit after shutdown; killing process");
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+            }
+        }
         let exited = exit_event.ok_or_else(|| {
             ToolError::Rejected("zsh sidecar did not emit execExited event".to_string())
         })?;
@@ -525,20 +557,6 @@ impl ZshSidecarManager {
             ReviewDecision::Denied => ApprovalDecision::Denied,
             ReviewDecision::Abort => ApprovalDecision::Abort,
         }
-    }
-
-    fn resolve_sidecar_path(&self) -> Result<PathBuf, ToolError> {
-        if let Ok(path) = env::var("CODEX_ZSH_SIDECAR_PATH")
-            && !path.trim().is_empty()
-        {
-            return Ok(PathBuf::from(path));
-        }
-
-        which::which("codex-zsh-sidecar").map_err(|err| {
-            ToolError::Rejected(format!(
-                "unable to locate `codex-zsh-sidecar` in PATH; set CODEX_ZSH_SIDECAR_PATH. resolution error: {err}"
-            ))
-        })
     }
 }
 

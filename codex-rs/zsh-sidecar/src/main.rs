@@ -353,7 +353,7 @@ async fn main() -> Result<()> {
                             jsonrpc: JSONRPC_VERSION,
                             method: METHOD_ZSH_EVENT_EXEC_EXITED,
                             params: ExecExitedEvent {
-                                exec_id,
+                                exec_id: exec_id.clone(),
                                 exit_code,
                                 signal,
                                 timed_out: Some(false),
