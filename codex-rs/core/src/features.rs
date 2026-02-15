@@ -86,6 +86,8 @@ pub enum Feature {
     UnifiedExec,
     /// Include the freeform apply_patch tool.
     ApplyPatchFreeform,
+    /// Allow requesting additional filesystem permissions while staying sandboxed.
+    RequestPermission,
     /// Allow the model to request web searches that fetch live content.
     WebSearchRequest,
     /// Allow the model to request web searches that fetch cached content.
@@ -490,6 +492,12 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::ApplyPatchFreeform,
         key: "apply_patch_freeform",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
+    },
+    FeatureSpec {
+        id: Feature::RequestPermission,
+        key: "request_permission",
         stage: Stage::UnderDevelopment,
         default_enabled: false,
     },
