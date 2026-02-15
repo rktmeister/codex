@@ -939,9 +939,6 @@ async fn remote_manual_compact_failure_emits_task_error_event() -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-// TODO(ccunningham): Re-enable after the follow-up compaction behavior PR lands.
-// Current main behavior for rollout replacement-history persistence is known-incorrect.
-#[ignore = "behavior change covered in follow-up compaction PR"]
 async fn remote_compact_persists_replacement_history_in_rollout() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
@@ -1432,8 +1429,6 @@ async fn snapshot_request_shape_remote_pre_turn_compaction_including_incoming_us
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-// TODO(ccunningham): Update once remote pre-turn compaction context-overflow handling includes
-// incoming user input and emits richer oversized-input messaging.
 async fn snapshot_request_shape_remote_pre_turn_compaction_context_window_exceeded() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
