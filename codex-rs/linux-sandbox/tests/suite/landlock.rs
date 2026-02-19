@@ -34,6 +34,7 @@ const NETWORK_TIMEOUT_MS: u64 = 2_000;
 const NETWORK_TIMEOUT_MS: u64 = 10_000;
 
 const BWRAP_UNAVAILABLE_ERR: &str = "build-time bubblewrap is not available in this build.";
+const BWRAP_UID_MAP_PERMISSION_DENIED_ERR: &str = "bwrap: setting up uid map: Permission denied";
 
 fn create_env_from_core_vars() -> HashMap<String, String> {
     let policy = ShellEnvironmentPolicy::default();
@@ -112,6 +113,10 @@ async fn run_cmd_result_with_writable_roots(
 
 fn is_bwrap_unavailable_output(output: &codex_core::exec::ExecToolCallOutput) -> bool {
     output.stderr.text.contains(BWRAP_UNAVAILABLE_ERR)
+        || output
+            .stderr
+            .text
+            .contains(BWRAP_UID_MAP_PERMISSION_DENIED_ERR)
 }
 
 async fn should_skip_bwrap_tests() -> bool {
@@ -304,7 +309,7 @@ async fn sandbox_blocks_nc() {
 }
 
 #[tokio::test]
-async fn sandbox_blocks_git_and_codex_writes_inside_writable_root() {
+async fn sandbox_allows_git_index_but_blocks_high_risk_git_and_codex_writes() {
     if should_skip_bwrap_tests().await {
         eprintln!("skipping bwrap test: vendored bwrap was not built in this environment");
         return;
@@ -313,18 +318,37 @@ async fn sandbox_blocks_git_and_codex_writes_inside_writable_root() {
     let tmpdir = tempfile::tempdir().expect("tempdir");
     let dot_git = tmpdir.path().join(".git");
     let dot_codex = tmpdir.path().join(".codex");
-    std::fs::create_dir_all(&dot_git).expect("create .git");
+    std::fs::create_dir_all(dot_git.join("hooks")).expect("create .git/hooks");
     std::fs::create_dir_all(&dot_codex).expect("create .codex");
 
-    let git_target = dot_git.join("config");
+    let git_index_target = dot_git.join("index");
+    let git_config_target = dot_git.join("config");
+    let git_hooks_target = dot_git.join("hooks").join("pre-commit");
     let codex_target = dot_codex.join("config.toml");
 
-    let git_output = expect_denied(
+    let git_index_output = run_cmd_result_with_writable_roots(
+        &[
+            "bash",
+            "-lc",
+            &format!("echo allowed > {}", git_index_target.to_string_lossy()),
+        ],
+        &[tmpdir.path().to_path_buf()],
+        LONG_TIMEOUT_MS,
+        true,
+    )
+    .await
+    .expect("writing .git/index should execute under bubblewrap");
+    assert_eq!(
+        git_index_output.exit_code, 0,
+        ".git/index write should be allowed under bubblewrap"
+    );
+
+    let git_config_output = expect_denied(
         run_cmd_result_with_writable_roots(
             &[
                 "bash",
                 "-lc",
-                &format!("echo denied > {}", git_target.to_string_lossy()),
+                &format!("echo denied > {}", git_config_target.to_string_lossy()),
             ],
             &[tmpdir.path().to_path_buf()],
             LONG_TIMEOUT_MS,
@@ -332,6 +356,21 @@ async fn sandbox_blocks_git_and_codex_writes_inside_writable_root() {
         )
         .await,
         ".git write should be denied under bubblewrap",
+    );
+
+    let git_hooks_output = expect_denied(
+        run_cmd_result_with_writable_roots(
+            &[
+                "bash",
+                "-lc",
+                &format!("echo denied > {}", git_hooks_target.to_string_lossy()),
+            ],
+            &[tmpdir.path().to_path_buf()],
+            LONG_TIMEOUT_MS,
+            true,
+        )
+        .await,
+        ".git/hooks write should be denied under bubblewrap",
     );
 
     let codex_output = expect_denied(
@@ -348,7 +387,9 @@ async fn sandbox_blocks_git_and_codex_writes_inside_writable_root() {
         .await,
         ".codex write should be denied under bubblewrap",
     );
-    assert_ne!(git_output.exit_code, 0);
+
+    assert_ne!(git_config_output.exit_code, 0);
+    assert_ne!(git_hooks_output.exit_code, 0);
     assert_ne!(codex_output.exit_code, 0);
 }
 
