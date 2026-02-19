@@ -35,6 +35,7 @@ const NETWORK_TIMEOUT_MS: u64 = 10_000;
 
 const BWRAP_UNAVAILABLE_ERR: &str = "build-time bubblewrap is not available in this build.";
 const BWRAP_UID_MAP_PERMISSION_DENIED_ERR: &str = "bwrap: setting up uid map: Permission denied";
+const BWRAP_FALLBACK_TO_LEGACY_ERR: &str = "falling back to legacy Linux sandbox backend";
 
 fn create_env_from_core_vars() -> HashMap<String, String> {
     let policy = ShellEnvironmentPolicy::default();
@@ -118,6 +119,7 @@ fn is_bwrap_unavailable_output(output: &codex_core::exec::ExecToolCallOutput) ->
             .stderr
             .text
             .contains(BWRAP_UID_MAP_PERMISSION_DENIED_ERR)
+        || output.stderr.text.contains(BWRAP_FALLBACK_TO_LEGACY_ERR)
         || (output
             .stderr
             .text

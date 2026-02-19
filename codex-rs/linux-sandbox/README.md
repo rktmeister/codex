@@ -32,6 +32,9 @@ into this binary.
   isolates the network namespace via `--unshare-net`.
 - When enabled, it mounts a fresh `/proc` via `--proc /proc` by default, but
   you can skip this in restrictive container environments with `--no-proc`.
+- When enabled, known unsupported bubblewrap setup failures (for example,
+  blocked user namespace uid/gid map setup) automatically fall back to the
+  legacy Landlock pipeline.
 
 **Notes**
 - The CLI surface still uses legacy names like `codex debug landlock`.

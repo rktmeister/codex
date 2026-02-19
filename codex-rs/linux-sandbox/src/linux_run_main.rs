@@ -110,22 +110,27 @@ pub fn run_main() -> ! {
 
     if use_bwrap_sandbox {
         // Outer stage: bubblewrap first, then re-enter this binary in the
-        // sandboxed environment to apply seccomp. This path never falls back
-        // to legacy Landlock on failure.
+        // sandboxed environment to apply seccomp. If preflight detects known
+        // unsupported bwrap setup in this environment, fall back to legacy
+        // Landlock instead of hard-failing.
         let inner = build_inner_seccomp_command(
             &sandbox_policy_cwd,
             &sandbox_policy,
             use_bwrap_sandbox,
             allow_network_for_proxy,
-            command,
+            command.clone(),
         );
-        run_bwrap_with_proc_fallback(
+        if let Some(reason) = run_bwrap_with_proc_fallback(
             &sandbox_policy_cwd,
             &sandbox_policy,
             inner,
             !no_proc,
             allow_network_for_proxy,
-        );
+        ) {
+            eprintln!(
+                "codex-linux-sandbox: bwrap setup failed ({reason}); falling back to legacy Linux sandbox backend"
+            );
+        }
     }
 
     // Legacy path: Landlock enforcement only, when bwrap sandboxing is not enabled.
@@ -146,21 +151,39 @@ fn run_bwrap_with_proc_fallback(
     inner: Vec<String>,
     mount_proc: bool,
     allow_network_for_proxy: bool,
-) -> ! {
+) -> Option<String> {
+    let network_mode = bwrap_network_mode(sandbox_policy, allow_network_for_proxy);
     let mut mount_proc = mount_proc;
 
-    if mount_proc && !preflight_proc_mount_support(sandbox_policy_cwd, sandbox_policy) {
-        eprintln!("codex-linux-sandbox: bwrap could not mount /proc; retrying with --no-proc");
-        mount_proc = false;
+    loop {
+        match preflight_bwrap_support(sandbox_policy_cwd, sandbox_policy, mount_proc, network_mode)
+        {
+            BwrapPreflightSupport::Ready => break,
+            BwrapPreflightSupport::RetryWithoutProc => {
+                eprintln!(
+                    "codex-linux-sandbox: bwrap could not mount /proc; retrying with --no-proc"
+                );
+                mount_proc = false;
+            }
+            BwrapPreflightSupport::FallbackToLegacy => {
+                return Some("user namespace setup is unavailable".to_string());
+            }
+        }
     }
 
-    let network_mode = bwrap_network_mode(sandbox_policy, allow_network_for_proxy);
     let options = BwrapOptions {
         mount_proc,
         network_mode,
     };
     let argv = build_bwrap_argv(inner, sandbox_policy, sandbox_policy_cwd, options);
     exec_vendored_bwrap(argv);
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BwrapPreflightSupport {
+    Ready,
+    RetryWithoutProc,
+    FallbackToLegacy,
 }
 
 fn bwrap_network_mode(
@@ -199,22 +222,24 @@ fn build_bwrap_argv(
     argv
 }
 
-fn preflight_proc_mount_support(
+fn preflight_bwrap_support(
     sandbox_policy_cwd: &Path,
     sandbox_policy: &codex_core::protocol::SandboxPolicy,
-) -> bool {
+    mount_proc: bool,
+    network_mode: BwrapNetworkMode,
+) -> BwrapPreflightSupport {
     let preflight_command = vec![resolve_true_command()];
     let preflight_argv = build_bwrap_argv(
         preflight_command,
         sandbox_policy,
         sandbox_policy_cwd,
         BwrapOptions {
-            mount_proc: true,
-            network_mode: BwrapNetworkMode::FullAccess,
+            mount_proc,
+            network_mode,
         },
     );
     let stderr = run_bwrap_in_child_capture_stderr(preflight_argv);
-    !is_proc_mount_failure(stderr.as_str())
+    classify_bwrap_preflight_failure(stderr.as_str(), mount_proc)
 }
 
 fn resolve_true_command() -> String {
@@ -229,7 +254,7 @@ fn resolve_true_command() -> String {
 /// Run a short-lived bubblewrap preflight in a child process and capture stderr.
 ///
 /// Strategy:
-/// - This is used only by `preflight_proc_mount_support`, which runs `/bin/true`
+/// - This is used only by `preflight_bwrap_support`, which runs `/bin/true`
 ///   under bubblewrap with `--proc /proc`.
 /// - The goal is to detect environments where mounting `/proc` fails (for
 ///   example, restricted containers), so we can retry the real run with
@@ -310,6 +335,24 @@ fn is_proc_mount_failure(stderr: &str) -> bool {
         && (stderr.contains("Invalid argument")
             || stderr.contains("Operation not permitted")
             || stderr.contains("Permission denied"))
+}
+
+fn is_user_namespace_setup_failure(stderr: &str) -> bool {
+    (stderr.contains("setting up uid map")
+        && (stderr.contains("Operation not permitted") || stderr.contains("Permission denied")))
+        || stderr.contains("setting up gid map")
+        || stderr.contains("No permissions to create a new namespace")
+        || stderr.contains("Creating new namespace failed")
+}
+
+fn classify_bwrap_preflight_failure(stderr: &str, mount_proc: bool) -> BwrapPreflightSupport {
+    if is_user_namespace_setup_failure(stderr) {
+        BwrapPreflightSupport::FallbackToLegacy
+    } else if mount_proc && is_proc_mount_failure(stderr) {
+        BwrapPreflightSupport::RetryWithoutProc
+    } else {
+        BwrapPreflightSupport::Ready
+    }
 }
 
 /// Build the inner command that applies seccomp after bubblewrap.
@@ -396,9 +439,39 @@ mod tests {
     }
 
     #[test]
+    fn detects_uid_map_permission_denied_failure() {
+        let stderr = "bwrap: setting up uid map: Permission denied";
+        assert_eq!(is_user_namespace_setup_failure(stderr), true);
+    }
+
+    #[test]
+    fn detects_namespace_permission_failure() {
+        let stderr = "bwrap: No permissions to create a new namespace, likely because the kernel does not allow non-privileged user namespaces.";
+        assert_eq!(is_user_namespace_setup_failure(stderr), true);
+    }
+
+    #[test]
     fn ignores_non_proc_mount_errors() {
         let stderr = "bwrap: Can't bind mount /dev/null: Operation not permitted";
         assert_eq!(is_proc_mount_failure(stderr), false);
+    }
+
+    #[test]
+    fn classify_proc_mount_failure_as_retry_without_proc() {
+        let stderr = "bwrap: Can't mount proc on /newroot/proc: Invalid argument";
+        assert_eq!(
+            classify_bwrap_preflight_failure(stderr, true),
+            BwrapPreflightSupport::RetryWithoutProc
+        );
+    }
+
+    #[test]
+    fn classify_uid_map_failure_as_fallback_to_legacy() {
+        let stderr = "bwrap: setting up uid map: Permission denied";
+        assert_eq!(
+            classify_bwrap_preflight_failure(stderr, true),
+            BwrapPreflightSupport::FallbackToLegacy
+        );
     }
 
     #[test]
