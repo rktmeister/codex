@@ -36,14 +36,14 @@ is falling back to the vendored helper.
   sandbox-equivalent to the legacy model after `cwd` resolution.
 - Split-only filesystem policies that do not round-trip through the legacy
   `SandboxPolicy` model stay on bubblewrap so nested read-only or denied
-  carveouts are preserved.
+  carveouts are preserved instead of silently widening access.
 - When the default bubblewrap pipeline is active, the helper applies `PR_SET_NO_NEW_PRIVS` and a
   seccomp network filter in-process.
 - When the default bubblewrap pipeline is active, the filesystem is read-only by default via `--ro-bind / /`.
 - When the default bubblewrap pipeline is active, writable roots are layered with `--bind <root> <root>`.
 - When the default bubblewrap pipeline is active, protected subpaths under writable roots (for
-  example `.git`,
-  resolved `gitdir:`, and `.codex`) are re-applied as read-only via `--ro-bind`.
+  example `.git/config`, `.git/hooks`, `.git` pointer files, resolved `gitdir:`
+  config/hooks paths, and `.codex`) are re-applied as read-only via `--ro-bind`.
 - When the default bubblewrap pipeline is active, overlapping split-policy
   entries are applied in path-specificity order so narrower writable children
   can reopen broader read-only or denied parents while narrower denied subpaths
@@ -64,6 +64,10 @@ is falling back to the vendored helper.
   AF_UNIX/socketpair creation for the user command.
 - When the default bubblewrap pipeline is active, it mounts a fresh `/proc` via `--proc /proc` by default, but
   you can skip this in restrictive container environments with `--no-proc`.
+- When the default bubblewrap pipeline is active, known unsupported bubblewrap
+  setup failures (for example blocked user namespace uid/gid map setup)
+  automatically fall back to the legacy Landlock pipeline when the active split
+  policy is sandbox-equivalent to the legacy model.
 
 **Notes**
 - The CLI surface still uses legacy names like `codex debug landlock`.
