@@ -3,8 +3,9 @@
 //! This module mirrors the semantics used by the macOS Seatbelt sandbox:
 //! - the filesystem is read-only by default,
 //! - explicit writable roots are layered on top, and
-//! - sensitive subpaths such as `.git` and `.codex` remain read-only even when
-//!   their parent root is writable.
+//! - sensitive subpaths such as `.git/config`, `.git/hooks`, `.git` pointer
+//!   files, and `.codex` remain read-only even when their parent root is
+//!   writable.
 //!
 //! The overall Linux sandbox is composed of:
 //! - seccomp + `PR_SET_NO_NEW_PRIVS` applied in-process, and
