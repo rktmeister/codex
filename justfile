@@ -68,6 +68,11 @@ bazel-remote-test:
 build-for-release:
     bazel build //codex-rs/cli:release_binaries --config=remote
 
+# Build local release Codex CLI binary using Cargo (no Bazel required).
+build-local-release:
+    CARGO_TARGET_DIR=target-cli cargo build -p codex-cli --release
+    @echo "Built ./target-cli/release/codex"
+
 # Run the MCP server
 mcp-server-run *args:
     cargo run -p codex-mcp-server -- "$@"

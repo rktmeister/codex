@@ -762,6 +762,37 @@ impl SandboxPolicy {
                     }
                 }
 
+                // For linked worktrees (`.git` pointer file), include both the
+                // worktree gitdir and shared commondir as writable roots so
+                // Git can update refs/lockfiles while we still protect
+                // high-risk subpaths (`config`, `hooks`) read-only.
+                let mut git_admin_roots: Vec<AbsolutePathBuf> = Vec::new();
+                for writable_root in &roots {
+                    #[allow(clippy::expect_used)]
+                    let top_level_git = writable_root
+                        .join(".git")
+                        .expect(".git is a valid relative path");
+                    if is_git_pointer_file(&top_level_git)
+                        && let Some(gitdir) = resolve_gitdir_from_file(&top_level_git)
+                        && gitdir.as_path().is_dir()
+                    {
+                        git_admin_roots.push(gitdir.clone());
+                        if let Some(commondir) = resolve_commondir_from_gitdir(&gitdir)
+                            && commondir.as_path().is_dir()
+                        {
+                            git_admin_roots.push(commondir);
+                        }
+                    }
+                }
+                roots.extend(git_admin_roots.iter().cloned());
+                let git_admin_root_set: HashSet<PathBuf> = git_admin_roots
+                    .iter()
+                    .map(|path| path.as_path().to_path_buf())
+                    .collect();
+
+                let mut seen_roots = HashSet::new();
+                roots.retain(|root| seen_roots.insert(root.as_path().to_path_buf()));
+
                 // For each root, compute subpaths that should remain read-only.
                 roots
                     .into_iter()
@@ -785,6 +816,9 @@ impl SandboxPolicy {
                             {
                                 protect_high_risk_git_subpaths(&mut subpaths, &gitdir);
                             }
+                        }
+                        if git_admin_root_set.contains(writable_root.as_path()) {
+                            protect_high_risk_git_subpaths(&mut subpaths, &writable_root);
                         }
 
                         // Make .agents/skills and .codex/config.toml and
@@ -889,6 +923,62 @@ fn resolve_gitdir_from_file(dot_git: &AbsolutePathBuf) -> Option<AbsolutePathBuf
         return None;
     }
     Some(gitdir_path)
+}
+
+fn resolve_commondir_from_gitdir(gitdir: &AbsolutePathBuf) -> Option<AbsolutePathBuf> {
+    let commondir_file = match gitdir.join("commondir") {
+        Ok(path) => path,
+        Err(err) => {
+            error!(
+                "Failed to construct commondir path under {path}: {err}",
+                path = gitdir.as_path().display()
+            );
+            return None;
+        }
+    };
+    if !commondir_file.as_path().is_file() {
+        return None;
+    }
+
+    let contents = match std::fs::read_to_string(commondir_file.as_path()) {
+        Ok(contents) => contents,
+        Err(err) => {
+            error!(
+                "Failed to read {path} for commondir pointer: {err}",
+                path = commondir_file.as_path().display()
+            );
+            return None;
+        }
+    };
+
+    let commondir_raw = contents.trim();
+    if commondir_raw.is_empty() {
+        error!(
+            "Expected {path} to contain a commondir pointer, but it was empty.",
+            path = commondir_file.as_path().display()
+        );
+        return None;
+    }
+
+    let commondir_path =
+        match AbsolutePathBuf::resolve_path_against_base(commondir_raw, gitdir.as_path()) {
+            Ok(path) => path,
+            Err(err) => {
+                error!(
+                    "Failed to resolve commondir path {commondir_raw} from {path}: {err}",
+                    path = commondir_file.as_path().display()
+                );
+                return None;
+            }
+        };
+    if !commondir_path.as_path().exists() {
+        error!(
+            "Resolved commondir path {path} does not exist.",
+            path = commondir_path.as_path().display()
+        );
+        return None;
+    }
+    Some(commondir_path)
 }
 
 /// Event Queue Entry - events from agent
@@ -2955,8 +3045,15 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let worktree_root = tmp.path().join("worktree");
         let gitdir = tmp.path().join("gitdir");
+        let commondir = tmp.path().join("main-git");
         std::fs::create_dir_all(&worktree_root).expect("create worktree root");
         std::fs::create_dir_all(&gitdir).expect("create gitdir");
+        std::fs::create_dir_all(&commondir).expect("create commondir");
+        std::fs::write(
+            gitdir.join("commondir"),
+            format!("{}\n", commondir.display()),
+        )
+        .expect("write commondir pointer");
         std::fs::write(
             worktree_root.join(".git"),
             format!("gitdir: {}\n", gitdir.display()),
@@ -2972,28 +3069,61 @@ mod tests {
         };
 
         let writable_roots = policy.get_writable_roots_with_cwd(&worktree_root);
-        assert_eq!(writable_roots.len(), 1);
-        let read_only_subpaths = &writable_roots[0].read_only_subpaths;
+        assert!(
+            writable_roots
+                .iter()
+                .any(|root| root.root.as_path() == worktree_root)
+        );
+        assert!(
+            writable_roots
+                .iter()
+                .any(|root| root.root.as_path() == gitdir)
+        );
+        assert!(
+            writable_roots
+                .iter()
+                .any(|root| root.root.as_path() == commondir)
+        );
+
+        let read_only_subpaths: Vec<&Path> = writable_roots
+            .iter()
+            .flat_map(|root| {
+                root.read_only_subpaths
+                    .iter()
+                    .map(|subpath| subpath.as_path())
+            })
+            .collect();
 
         assert!(
             read_only_subpaths
                 .iter()
-                .any(|subpath| subpath.as_path() == worktree_root.join(".git"))
+                .any(|subpath| *subpath == worktree_root.join(".git"))
         );
         assert!(
             read_only_subpaths
                 .iter()
-                .any(|subpath| subpath.as_path() == gitdir.join("config"))
+                .any(|subpath| *subpath == gitdir.join("config"))
         );
         assert!(
             read_only_subpaths
                 .iter()
-                .any(|subpath| subpath.as_path() == gitdir.join("hooks"))
+                .any(|subpath| *subpath == gitdir.join("hooks"))
+        );
+        assert!(!read_only_subpaths.iter().any(|subpath| *subpath == gitdir));
+        assert!(
+            read_only_subpaths
+                .iter()
+                .any(|subpath| *subpath == commondir.join("config"))
+        );
+        assert!(
+            read_only_subpaths
+                .iter()
+                .any(|subpath| *subpath == commondir.join("hooks"))
         );
         assert!(
             !read_only_subpaths
                 .iter()
-                .any(|subpath| subpath.as_path() == gitdir)
+                .any(|subpath| *subpath == commondir)
         );
     }
 
