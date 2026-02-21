@@ -25,7 +25,7 @@ pub struct LandlockCommand {
     pub sandbox_policy_cwd: PathBuf,
 
     #[arg(long = "sandbox-policy")]
-    pub sandbox_policy: codex_core::protocol::SandboxPolicy,
+    pub sandbox_policy: codex_protocol::protocol::SandboxPolicy,
 
     /// Opt-in: use the bubblewrap-based Linux sandbox pipeline.
     ///
@@ -147,7 +147,7 @@ pub fn run_main() -> ! {
 
 fn run_bwrap_with_proc_fallback(
     sandbox_policy_cwd: &Path,
-    sandbox_policy: &codex_core::protocol::SandboxPolicy,
+    sandbox_policy: &codex_protocol::protocol::SandboxPolicy,
     inner: Vec<String>,
     mount_proc: bool,
     allow_network_for_proxy: bool,
@@ -187,7 +187,7 @@ enum BwrapPreflightSupport {
 }
 
 fn bwrap_network_mode(
-    sandbox_policy: &codex_core::protocol::SandboxPolicy,
+    sandbox_policy: &codex_protocol::protocol::SandboxPolicy,
     allow_network_for_proxy: bool,
 ) -> BwrapNetworkMode {
     if allow_network_for_proxy {
@@ -201,7 +201,7 @@ fn bwrap_network_mode(
 
 fn build_bwrap_argv(
     inner: Vec<String>,
-    sandbox_policy: &codex_core::protocol::SandboxPolicy,
+    sandbox_policy: &codex_protocol::protocol::SandboxPolicy,
     sandbox_policy_cwd: &Path,
     options: BwrapOptions,
 ) -> Vec<String> {
@@ -224,7 +224,7 @@ fn build_bwrap_argv(
 
 fn preflight_bwrap_support(
     sandbox_policy_cwd: &Path,
-    sandbox_policy: &codex_core::protocol::SandboxPolicy,
+    sandbox_policy: &codex_protocol::protocol::SandboxPolicy,
     mount_proc: bool,
     network_mode: BwrapNetworkMode,
 ) -> BwrapPreflightSupport {
@@ -358,7 +358,7 @@ fn classify_bwrap_preflight_failure(stderr: &str, mount_proc: bool) -> BwrapPref
 /// Build the inner command that applies seccomp after bubblewrap.
 fn build_inner_seccomp_command(
     sandbox_policy_cwd: &Path,
-    sandbox_policy: &codex_core::protocol::SandboxPolicy,
+    sandbox_policy: &codex_protocol::protocol::SandboxPolicy,
     use_bwrap_sandbox: bool,
     allow_network_for_proxy: bool,
     command: Vec<String>,
@@ -417,7 +417,7 @@ fn exec_or_panic(command: Vec<String>) -> ! {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use codex_core::protocol::SandboxPolicy;
+    use codex_protocol::protocol::SandboxPolicy;
     use pretty_assertions::assert_eq;
 
     #[test]
