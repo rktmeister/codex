@@ -10,6 +10,8 @@ use crate::bwrap::BwrapNetworkMode;
 use crate::bwrap::BwrapOptions;
 use crate::bwrap::create_bwrap_command_args;
 use crate::landlock::apply_sandbox_policy_to_current_thread;
+use crate::proxy_routing::activate_proxy_routes_in_netns;
+use crate::proxy_routing::prepare_host_proxy_route_spec;
 use crate::vendored_bwrap::exec_vendored_bwrap;
 use crate::vendored_bwrap::run_vendored_bwrap_main;
 
@@ -44,10 +46,14 @@ pub struct LandlockCommand {
     /// Internal compatibility flag.
     ///
     /// By default, restricted-network sandboxing uses isolated networking.
-    /// If set, sandbox setup switches to proxy-only network mode
-    /// (currently enforced the same as isolated networking).
+    /// If set, sandbox setup switches to proxy-only network mode with
+    /// managed routing bridges.
     #[arg(long = "allow-network-for-proxy", hide = true, default_value_t = false)]
     pub allow_network_for_proxy: bool,
+
+    /// Internal route spec used for managed proxy routing in bwrap mode.
+    #[arg(long = "proxy-route-spec", hide = true)]
+    pub proxy_route_spec: Option<String>,
 
     /// When set, skip mounting a fresh `/proc` even though PID isolation is
     /// still enabled. This is primarily intended for restrictive container
@@ -74,6 +80,7 @@ pub fn run_main() -> ! {
         use_bwrap_sandbox,
         apply_seccomp_then_exec,
         allow_network_for_proxy,
+        proxy_route_spec,
         no_proc,
         command,
     } = LandlockCommand::parse();
@@ -81,15 +88,26 @@ pub fn run_main() -> ! {
     if command.is_empty() {
         panic!("No command specified to execute.");
     }
+    ensure_inner_stage_mode_is_valid(apply_seccomp_then_exec, use_bwrap_sandbox);
 
     // Inner stage: apply seccomp/no_new_privs after bubblewrap has already
     // established the filesystem view.
     if apply_seccomp_then_exec {
+        if allow_network_for_proxy {
+            let spec = proxy_route_spec
+                .as_deref()
+                .unwrap_or_else(|| panic!("managed proxy mode requires --proxy-route-spec"));
+            if let Err(err) = activate_proxy_routes_in_netns(spec) {
+                panic!("error activating Linux proxy routing bridge: {err}");
+            }
+        }
+        let proxy_routing_active = allow_network_for_proxy;
         if let Err(e) = apply_sandbox_policy_to_current_thread(
             &sandbox_policy,
             &sandbox_policy_cwd,
             false,
             allow_network_for_proxy,
+            proxy_routing_active,
         ) {
             panic!("error applying Linux sandbox restrictions: {e:?}");
         }
@@ -102,6 +120,7 @@ pub fn run_main() -> ! {
             &sandbox_policy_cwd,
             false,
             allow_network_for_proxy,
+            false,
         ) {
             panic!("error applying Linux sandbox restrictions: {e:?}");
         }
@@ -113,11 +132,20 @@ pub fn run_main() -> ! {
         // sandboxed environment to apply seccomp. If preflight detects known
         // unsupported bwrap setup in this environment, fall back to legacy
         // Landlock instead of hard-failing.
+        let proxy_route_spec =
+            if allow_network_for_proxy {
+                Some(prepare_host_proxy_route_spec().unwrap_or_else(|err| {
+                    panic!("failed to prepare host proxy routing bridge: {err}")
+                }))
+            } else {
+                None
+            };
         let inner = build_inner_seccomp_command(
             &sandbox_policy_cwd,
             &sandbox_policy,
             use_bwrap_sandbox,
             allow_network_for_proxy,
+            proxy_route_spec,
             command.clone(),
         );
         if let Some(reason) = run_bwrap_with_proc_fallback(
@@ -139,10 +167,17 @@ pub fn run_main() -> ! {
         &sandbox_policy_cwd,
         true,
         allow_network_for_proxy,
+        false,
     ) {
         panic!("error applying legacy Linux sandbox restrictions: {e:?}");
     }
     exec_or_panic(command);
+}
+
+fn ensure_inner_stage_mode_is_valid(apply_seccomp_then_exec: bool, use_bwrap_sandbox: bool) {
+    if apply_seccomp_then_exec && !use_bwrap_sandbox {
+        panic!("--apply-seccomp-then-exec requires --use-bwrap-sandbox");
+    }
 }
 
 fn run_bwrap_with_proc_fallback(
@@ -228,18 +263,39 @@ fn preflight_bwrap_support(
     mount_proc: bool,
     network_mode: BwrapNetworkMode,
 ) -> BwrapPreflightSupport {
+    let preflight_argv = if mount_proc {
+        build_preflight_bwrap_argv(sandbox_policy_cwd, sandbox_policy, network_mode)
+    } else {
+        let preflight_command = vec![resolve_true_command()];
+        build_bwrap_argv(
+            preflight_command,
+            sandbox_policy,
+            sandbox_policy_cwd,
+            BwrapOptions {
+                mount_proc,
+                network_mode,
+            },
+        )
+    };
+    let stderr = run_bwrap_in_child_capture_stderr(preflight_argv);
+    classify_bwrap_preflight_failure(stderr.as_str(), mount_proc)
+}
+
+fn build_preflight_bwrap_argv(
+    sandbox_policy_cwd: &Path,
+    sandbox_policy: &codex_protocol::protocol::SandboxPolicy,
+    network_mode: BwrapNetworkMode,
+) -> Vec<String> {
     let preflight_command = vec![resolve_true_command()];
-    let preflight_argv = build_bwrap_argv(
+    build_bwrap_argv(
         preflight_command,
         sandbox_policy,
         sandbox_policy_cwd,
         BwrapOptions {
-            mount_proc,
+            mount_proc: true,
             network_mode,
         },
-    );
-    let stderr = run_bwrap_in_child_capture_stderr(preflight_argv);
-    classify_bwrap_preflight_failure(stderr.as_str(), mount_proc)
+    )
 }
 
 fn resolve_true_command() -> String {
@@ -254,7 +310,7 @@ fn resolve_true_command() -> String {
 /// Run a short-lived bubblewrap preflight in a child process and capture stderr.
 ///
 /// Strategy:
-/// - This is used only by `preflight_bwrap_support`, which runs `/bin/true`
+/// - This is used only by `preflight_proc_mount_support`, which runs `/bin/true`
 ///   under bubblewrap with `--proc /proc`.
 /// - The goal is to detect environments where mounting `/proc` fails (for
 ///   example, restricted containers), so we can retry the real run with
@@ -361,6 +417,7 @@ fn build_inner_seccomp_command(
     sandbox_policy: &codex_protocol::protocol::SandboxPolicy,
     use_bwrap_sandbox: bool,
     allow_network_for_proxy: bool,
+    proxy_route_spec: Option<String>,
     command: Vec<String>,
 ) -> Vec<String> {
     let current_exe = match std::env::current_exe() {
@@ -385,6 +442,10 @@ fn build_inner_seccomp_command(
     }
     if allow_network_for_proxy {
         inner.push("--allow-network-for-proxy".to_string());
+        let proxy_route_spec = proxy_route_spec
+            .unwrap_or_else(|| panic!("managed proxy mode requires a proxy route spec"));
+        inner.push("--proxy-route-spec".to_string());
+        inner.push(proxy_route_spec);
     }
     inner.push("--".to_string());
     inner.extend(command);
@@ -414,130 +475,5 @@ fn exec_or_panic(command: Vec<String>) -> ! {
     panic!("Failed to execvp {}: {err}", command[0].as_str());
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use codex_protocol::protocol::SandboxPolicy;
-    use pretty_assertions::assert_eq;
-
-    #[test]
-    fn detects_proc_mount_invalid_argument_failure() {
-        let stderr = "bwrap: Can't mount proc on /newroot/proc: Invalid argument";
-        assert_eq!(is_proc_mount_failure(stderr), true);
-    }
-
-    #[test]
-    fn detects_proc_mount_operation_not_permitted_failure() {
-        let stderr = "bwrap: Can't mount proc on /newroot/proc: Operation not permitted";
-        assert_eq!(is_proc_mount_failure(stderr), true);
-    }
-
-    #[test]
-    fn detects_proc_mount_permission_denied_failure() {
-        let stderr = "bwrap: Can't mount proc on /newroot/proc: Permission denied";
-        assert_eq!(is_proc_mount_failure(stderr), true);
-    }
-
-    #[test]
-    fn detects_uid_map_permission_denied_failure() {
-        let stderr = "bwrap: setting up uid map: Permission denied";
-        assert_eq!(is_user_namespace_setup_failure(stderr), true);
-    }
-
-    #[test]
-    fn detects_namespace_permission_failure() {
-        let stderr = "bwrap: No permissions to create a new namespace, likely because the kernel does not allow non-privileged user namespaces.";
-        assert_eq!(is_user_namespace_setup_failure(stderr), true);
-    }
-
-    #[test]
-    fn ignores_non_proc_mount_errors() {
-        let stderr = "bwrap: Can't bind mount /dev/null: Operation not permitted";
-        assert_eq!(is_proc_mount_failure(stderr), false);
-    }
-
-    #[test]
-    fn classify_proc_mount_failure_as_retry_without_proc() {
-        let stderr = "bwrap: Can't mount proc on /newroot/proc: Invalid argument";
-        assert_eq!(
-            classify_bwrap_preflight_failure(stderr, true),
-            BwrapPreflightSupport::RetryWithoutProc
-        );
-    }
-
-    #[test]
-    fn classify_uid_map_failure_as_fallback_to_legacy() {
-        let stderr = "bwrap: setting up uid map: Permission denied";
-        assert_eq!(
-            classify_bwrap_preflight_failure(stderr, true),
-            BwrapPreflightSupport::FallbackToLegacy
-        );
-    }
-
-    #[test]
-    fn inserts_bwrap_argv0_before_command_separator() {
-        let argv = build_bwrap_argv(
-            vec!["/bin/true".to_string()],
-            &SandboxPolicy::new_read_only_policy(),
-            Path::new("/"),
-            BwrapOptions {
-                mount_proc: true,
-                network_mode: BwrapNetworkMode::FullAccess,
-            },
-        );
-        assert_eq!(
-            argv,
-            vec![
-                "bwrap".to_string(),
-                "--new-session".to_string(),
-                "--die-with-parent".to_string(),
-                "--ro-bind".to_string(),
-                "/".to_string(),
-                "/".to_string(),
-                "--dev".to_string(),
-                "/dev".to_string(),
-                "--unshare-pid".to_string(),
-                "--proc".to_string(),
-                "/proc".to_string(),
-                "--argv0".to_string(),
-                "codex-linux-sandbox".to_string(),
-                "--".to_string(),
-                "/bin/true".to_string(),
-            ]
-        );
-    }
-
-    #[test]
-    fn inserts_unshare_net_when_network_isolation_requested() {
-        let argv = build_bwrap_argv(
-            vec!["/bin/true".to_string()],
-            &SandboxPolicy::new_read_only_policy(),
-            Path::new("/"),
-            BwrapOptions {
-                mount_proc: true,
-                network_mode: BwrapNetworkMode::Isolated,
-            },
-        );
-        assert_eq!(argv.contains(&"--unshare-net".to_string()), true);
-    }
-
-    #[test]
-    fn inserts_unshare_net_when_proxy_only_network_mode_requested() {
-        let argv = build_bwrap_argv(
-            vec!["/bin/true".to_string()],
-            &SandboxPolicy::new_read_only_policy(),
-            Path::new("/"),
-            BwrapOptions {
-                mount_proc: true,
-                network_mode: BwrapNetworkMode::ProxyOnly,
-            },
-        );
-        assert_eq!(argv.contains(&"--unshare-net".to_string()), true);
-    }
-
-    #[test]
-    fn proxy_only_mode_takes_precedence_over_full_network_policy() {
-        let mode = bwrap_network_mode(&SandboxPolicy::DangerFullAccess, true);
-        assert_eq!(mode, BwrapNetworkMode::ProxyOnly);
-    }
-}
+#[path = "linux_run_main_tests.rs"]
+mod tests;

@@ -832,6 +832,12 @@ fn remap_placeholders_for_message(message: UserMessage, next_label: &mut usize) 
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ReplayKind {
+    ResumeInitialMessages,
+    ThreadSnapshot,
+}
+
 impl ChatWidget {
     /// Synchronize the bottom-pane "task running" indicator with the current lifecycles.
     ///
@@ -3303,6 +3309,9 @@ impl ChatWidget {
             SlashCommand::New => {
                 self.app_event_tx.send(AppEvent::NewSession);
             }
+            SlashCommand::Clear => {
+                self.app_event_tx.send(AppEvent::ClearUi);
+            }
             SlashCommand::Resume => {
                 self.app_event_tx.send(AppEvent::OpenResumePicker);
             }
@@ -3475,6 +3484,9 @@ impl ChatWidget {
             }
             SlashCommand::Statusline => {
                 self.open_status_line_setup();
+            }
+            SlashCommand::Theme => {
+                self.open_theme_picker();
             }
             SlashCommand::Ps => {
                 self.add_ps_output();
@@ -4002,13 +4014,13 @@ impl ChatWidget {
                 continue;
             }
             // `id: None` indicates a synthetic/fake id coming from replay.
-            self.dispatch_event_msg(None, msg, true);
+            self.dispatch_event_msg(None, msg, Some(ReplayKind::ResumeInitialMessages));
         }
     }
 
     pub(crate) fn handle_codex_event(&mut self, event: Event) {
         let Event { id, msg } = event;
-        self.dispatch_event_msg(Some(id), msg, false);
+        self.dispatch_event_msg(Some(id), msg, None);
     }
 
     pub(crate) fn handle_codex_event_replay(&mut self, event: Event) {
@@ -4016,7 +4028,7 @@ impl ChatWidget {
         if matches!(msg, EventMsg::ShutdownComplete) {
             return;
         }
-        self.dispatch_event_msg(None, msg, true);
+        self.dispatch_event_msg(None, msg, Some(ReplayKind::ThreadSnapshot));
     }
 
     /// Dispatch a protocol `EventMsg` to the appropriate handler.
@@ -4024,9 +4036,17 @@ impl ChatWidget {
     /// `id` is `Some` for live events and `None` for replayed events from
     /// `replay_initial_messages()`. Callers should treat `None` as a "fake" id
     /// that must not be used to correlate follow-up actions.
-    fn dispatch_event_msg(&mut self, id: Option<String>, msg: EventMsg, from_replay: bool) {
+    fn dispatch_event_msg(
+        &mut self,
+        id: Option<String>,
+        msg: EventMsg,
+        replay_kind: Option<ReplayKind>,
+    ) {
+        let from_replay = replay_kind.is_some();
+        let is_resume_initial_replay =
+            matches!(replay_kind, Some(ReplayKind::ResumeInitialMessages));
         let is_stream_error = matches!(&msg, EventMsg::StreamError(_));
-        if !is_stream_error {
+        if !is_resume_initial_replay && !is_stream_error {
             self.restore_retry_status_header_if_present();
         }
 
@@ -4061,7 +4081,11 @@ impl ChatWidget {
                 self.on_agent_reasoning_final();
             }
             EventMsg::AgentReasoningSectionBreak(_) => self.on_reasoning_section_break(),
-            EventMsg::TurnStarted(_) => self.on_task_started(),
+            EventMsg::TurnStarted(_) => {
+                if !is_resume_initial_replay {
+                    self.on_task_started();
+                }
+            }
             EventMsg::TurnComplete(TurnCompleteEvent {
                 last_agent_message, ..
             }) => self.on_task_complete(last_agent_message, from_replay),
@@ -4151,7 +4175,11 @@ impl ChatWidget {
                 message,
                 additional_details,
                 ..
-            }) => self.on_stream_error(message, additional_details),
+            }) => {
+                if !is_resume_initial_replay {
+                    self.on_stream_error(message, additional_details);
+                }
+            }
             EventMsg::UserMessage(ev) => {
                 if from_replay {
                     self.on_user_message_event(ev);
@@ -4407,6 +4435,20 @@ impl ChatWidget {
             self.app_event_tx.clone(),
         );
         self.bottom_pane.show_view(Box::new(view));
+    }
+
+    fn open_theme_picker(&mut self) {
+        let codex_home = codex_core::config::find_codex_home().ok();
+        let terminal_width = self
+            .last_rendered_width
+            .get()
+            .and_then(|width| u16::try_from(width).ok());
+        let params = crate::theme_picker::build_theme_picker_params(
+            self.config.tui_theme.as_deref(),
+            codex_home.as_deref(),
+            terminal_width,
+        );
+        self.bottom_pane.show_selection_view(params);
     }
 
     /// Parses configured status-line ids into known items and collects unknown ids.
@@ -6316,6 +6358,11 @@ impl ChatWidget {
         self.config.personality = Some(personality);
     }
 
+    /// Set the syntax theme override in the widget's config copy.
+    pub(crate) fn set_tui_theme(&mut self, theme: Option<String>) {
+        self.config.tui_theme = theme;
+    }
+
     /// Set the model in the widget's config copy and stored collaboration mode.
     pub(crate) fn set_model(&mut self, model: &str) {
         self.current_collaboration_mode =
@@ -6393,7 +6440,6 @@ impl ChatWidget {
         &self.current_collaboration_mode
     }
 
-    #[cfg(test)]
     pub(crate) fn current_reasoning_effort(&self) -> Option<ReasoningEffortConfig> {
         self.effective_reasoning_effort()
     }
