@@ -4,6 +4,7 @@ use codex_core::config::types::Personality;
 use codex_core::features::Feature;
 use codex_core::models_manager::manager::RefreshStrategy;
 use codex_protocol::config_types::ReasoningSummary;
+use codex_protocol::config_types::ServiceTier;
 use codex_protocol::openai_models::ConfigShellToolType;
 use codex_protocol::openai_models::InputModality;
 use codex_protocol::openai_models::ModelInfo;
@@ -21,6 +22,7 @@ use codex_protocol::user_input::UserInput;
 use core_test_support::responses::ev_completed_with_tokens;
 use core_test_support::responses::ev_response_created;
 use core_test_support::responses::mount_models_once;
+use core_test_support::responses::mount_sse_once;
 use core_test_support::responses::mount_sse_sequence;
 use core_test_support::responses::sse;
 use core_test_support::responses::sse_completed;
@@ -59,6 +61,7 @@ async fn model_change_appends_model_instructions_developer_message() -> Result<(
             model: test.session_configured.model.clone(),
             effort: test.config.model_reasoning_effort,
             summary: None,
+            service_tier: None,
             collaboration_mode: None,
             personality: None,
         })
@@ -74,6 +77,7 @@ async fn model_change_appends_model_instructions_developer_message() -> Result<(
             model: Some(next_model.to_string()),
             effort: None,
             summary: None,
+            service_tier: None,
             collaboration_mode: None,
             personality: None,
         })
@@ -92,6 +96,7 @@ async fn model_change_appends_model_instructions_developer_message() -> Result<(
             model: next_model.to_string(),
             effort: test.config.model_reasoning_effort,
             summary: None,
+            service_tier: None,
             collaboration_mode: None,
             personality: None,
         })
@@ -129,7 +134,10 @@ async fn model_and_personality_change_only_appends_model_instructions() -> Resul
     let mut builder = test_codex()
         .with_model("gpt-5.2-codex")
         .with_config(|config| {
-            config.features.enable(Feature::Personality);
+            config
+                .features
+                .enable(Feature::Personality)
+                .expect("test config should allow feature update");
         });
     let test = builder.build(&server).await?;
     let next_model = "exp-codex-personality";
@@ -147,6 +155,7 @@ async fn model_and_personality_change_only_appends_model_instructions() -> Resul
             model: test.session_configured.model.clone(),
             effort: test.config.model_reasoning_effort,
             summary: None,
+            service_tier: None,
             collaboration_mode: None,
             personality: None,
         })
@@ -162,6 +171,7 @@ async fn model_and_personality_change_only_appends_model_instructions() -> Resul
             model: Some(next_model.to_string()),
             effort: None,
             summary: None,
+            service_tier: None,
             collaboration_mode: None,
             personality: Some(Personality::Pragmatic),
         })
@@ -180,6 +190,7 @@ async fn model_and_personality_change_only_appends_model_instructions() -> Resul
             model: next_model.to_string(),
             effort: test.config.model_reasoning_effort,
             summary: None,
+            service_tier: None,
             collaboration_mode: None,
             personality: None,
         })
@@ -203,6 +214,55 @@ async fn model_and_personality_change_only_appends_model_instructions() -> Resul
             .any(|text| text.contains("<personality_spec>")),
         "did not expect personality update message when model changed in same turn"
     );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn service_tier_change_is_applied_on_next_http_turn() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let resp_mock = mount_sse_sequence(
+        &server,
+        vec![sse_completed("resp-1"), sse_completed("resp-2")],
+    )
+    .await;
+
+    let test = test_codex().build(&server).await?;
+
+    test.submit_turn_with_service_tier("fast turn", Some(ServiceTier::Fast))
+        .await?;
+    test.submit_turn_with_service_tier("standard turn", None)
+        .await?;
+
+    let requests = resp_mock.requests();
+    assert_eq!(requests.len(), 2, "expected two model requests");
+
+    let first_body = requests[0].body_json();
+    let second_body = requests[1].body_json();
+
+    assert_eq!(first_body["service_tier"].as_str(), Some("priority"));
+    assert_eq!(second_body.get("service_tier"), None);
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn flex_service_tier_is_applied_to_http_turn() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let resp_mock = mount_sse_once(&server, sse_completed("resp-1")).await;
+
+    let test = test_codex().build(&server).await?;
+
+    test.submit_turn_with_service_tier("flex turn", Some(ServiceTier::Flex))
+        .await?;
+
+    let request = resp_mock.single_request();
+    let body = request.body_json();
+    assert_eq!(body["service_tier"].as_str(), Some("flex"));
 
     Ok(())
 }
@@ -241,6 +301,7 @@ async fn model_change_from_image_to_text_strips_prior_image_content() -> Result<
         apply_patch_tool_type: None,
         truncation_policy: TruncationPolicyConfig::bytes(10_000),
         supports_parallel_tool_calls: false,
+        supports_image_detail_original: false,
         context_window: Some(272_000),
         auto_compact_token_limit: None,
         effective_context_window_percent: 95,
@@ -296,6 +357,7 @@ async fn model_change_from_image_to_text_strips_prior_image_content() -> Result<
             model: image_model_slug.to_string(),
             effort: test.config.model_reasoning_effort,
             summary: None,
+            service_tier: None,
             collaboration_mode: None,
             personality: None,
         })
@@ -315,6 +377,7 @@ async fn model_change_from_image_to_text_strips_prior_image_content() -> Result<
             model: text_model_slug.to_string(),
             effort: test.config.model_reasoning_effort,
             summary: None,
+            service_tier: None,
             collaboration_mode: None,
             personality: None,
         })
@@ -400,6 +463,7 @@ async fn model_switch_to_smaller_model_updates_token_context_window() -> Result<
         apply_patch_tool_type: None,
         truncation_policy: TruncationPolicyConfig::bytes(10_000),
         supports_parallel_tool_calls: false,
+        supports_image_detail_original: false,
         context_window: Some(large_context_window),
         auto_compact_token_limit: None,
         effective_context_window_percent,
@@ -474,6 +538,7 @@ async fn model_switch_to_smaller_model_updates_token_context_window() -> Result<
             model: large_model_slug.to_string(),
             effort: test.config.model_reasoning_effort,
             summary: None,
+            service_tier: None,
             collaboration_mode: None,
             personality: None,
         })
@@ -511,6 +576,7 @@ async fn model_switch_to_smaller_model_updates_token_context_window() -> Result<
             model: Some(smaller_model_slug.to_string()),
             effort: None,
             summary: None,
+            service_tier: None,
             collaboration_mode: None,
             personality: None,
         })
@@ -529,6 +595,7 @@ async fn model_switch_to_smaller_model_updates_token_context_window() -> Result<
             model: smaller_model_slug.to_string(),
             effort: test.config.model_reasoning_effort,
             summary: None,
+            service_tier: None,
             collaboration_mode: None,
             personality: None,
         })
