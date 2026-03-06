@@ -22,6 +22,7 @@ use codex_core::config::Config;
 use codex_core::config::ConfigBuilder;
 use codex_core::config::Constrained;
 use codex_core::config::ConstraintError;
+use codex_core::config::types::Notifications;
 #[cfg(target_os = "windows")]
 use codex_core::config::types::WindowsSandboxModeToml;
 use codex_core::config_loader::RequirementSource;
@@ -71,6 +72,7 @@ use codex_protocol::protocol::ExecCommandStatus as CoreExecCommandStatus;
 use codex_protocol::protocol::ExecPolicyAmendment;
 use codex_protocol::protocol::ExitedReviewModeEvent;
 use codex_protocol::protocol::FileChange;
+use codex_protocol::protocol::ImageGenerationEndEvent;
 use codex_protocol::protocol::ItemCompletedEvent;
 use codex_protocol::protocol::McpStartupCompleteEvent;
 use codex_protocol::protocol::McpStartupStatus;
@@ -96,6 +98,9 @@ use codex_protocol::protocol::UndoCompletedEvent;
 use codex_protocol::protocol::UndoStartedEvent;
 use codex_protocol::protocol::ViewImageToolCallEvent;
 use codex_protocol::protocol::WarningEvent;
+use codex_protocol::request_user_input::RequestUserInputEvent;
+use codex_protocol::request_user_input::RequestUserInputQuestion;
+use codex_protocol::request_user_input::RequestUserInputQuestionOption;
 use codex_protocol::user_input::TextElement;
 use codex_protocol::user_input::UserInput;
 use codex_utils_absolute_path::AbsolutePathBuf;
@@ -1805,6 +1810,7 @@ async fn make_chatwidget_manual(
         current_status_header: String::from("Working"),
         retry_status_header: None,
         pending_status_indicator_restore: false,
+        suppress_queue_autosend: false,
         thread_id: None,
         thread_name: None,
         forked_from: None,
@@ -2531,6 +2537,149 @@ async fn plan_reasoning_scope_popup_all_modes_persists_global_and_plan_override(
                 if model == "gpt-5.1-codex-max"
         )),
         "expected global model reasoning selection persistence; events: {events:?}"
+    );
+}
+
+#[test]
+fn plan_mode_prompt_notification_uses_dedicated_type_name() {
+    let notification = Notification::PlanModePrompt {
+        title: PLAN_IMPLEMENTATION_TITLE.to_string(),
+    };
+
+    assert!(notification.allowed_for(&Notifications::Custom(
+        vec!["plan-mode-prompt".to_string(),]
+    )));
+    assert!(!notification.allowed_for(&Notifications::Custom(vec![
+        "approval-requested".to_string(),
+    ])));
+    assert_eq!(
+        notification.display(),
+        format!("Plan mode prompt: {PLAN_IMPLEMENTATION_TITLE}")
+    );
+}
+
+#[test]
+fn user_input_requested_notification_uses_dedicated_type_name() {
+    let notification = Notification::UserInputRequested {
+        question_count: 1,
+        summary: Some("Reasoning scope".to_string()),
+    };
+
+    assert!(notification.allowed_for(&Notifications::Custom(vec![
+        "user-input-requested".to_string(),
+    ])));
+    assert!(!notification.allowed_for(&Notifications::Custom(vec![
+        "approval-requested".to_string(),
+    ])));
+    assert_eq!(
+        notification.display(),
+        "Question requested: Reasoning scope"
+    );
+}
+
+#[tokio::test]
+async fn open_plan_implementation_prompt_sets_pending_notification() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.1-codex-max")).await;
+    chat.config.tui_notifications = Notifications::Custom(vec!["plan-mode-prompt".to_string()]);
+
+    chat.open_plan_implementation_prompt();
+
+    assert_matches!(
+        chat.pending_notification,
+        Some(Notification::PlanModePrompt { ref title }) if title == PLAN_IMPLEMENTATION_TITLE
+    );
+}
+
+#[tokio::test]
+async fn open_plan_reasoning_scope_prompt_sets_pending_notification() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.1-codex-max")).await;
+    chat.config.tui_notifications = Notifications::Custom(vec!["plan-mode-prompt".to_string()]);
+
+    chat.open_plan_reasoning_scope_prompt(
+        "gpt-5.1-codex-max".to_string(),
+        Some(ReasoningEffortConfig::High),
+    );
+
+    assert_matches!(
+        chat.pending_notification,
+        Some(Notification::PlanModePrompt { ref title }) if title == PLAN_MODE_REASONING_SCOPE_TITLE
+    );
+}
+
+#[tokio::test]
+async fn agent_turn_complete_does_not_override_pending_plan_mode_prompt_notification() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.1-codex-max")).await;
+
+    chat.open_plan_implementation_prompt();
+    chat.notify(Notification::AgentTurnComplete {
+        response: "done".to_string(),
+    });
+
+    assert_matches!(
+        chat.pending_notification,
+        Some(Notification::PlanModePrompt { ref title }) if title == PLAN_IMPLEMENTATION_TITLE
+    );
+}
+
+#[tokio::test]
+async fn user_input_notification_overrides_pending_agent_turn_complete_notification() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.1-codex-max")).await;
+
+    chat.notify(Notification::AgentTurnComplete {
+        response: "done".to_string(),
+    });
+    chat.handle_request_user_input_now(RequestUserInputEvent {
+        call_id: "call-1".to_string(),
+        turn_id: "turn-1".to_string(),
+        questions: vec![RequestUserInputQuestion {
+            id: "reasoning_scope".to_string(),
+            header: "Reasoning scope".to_string(),
+            question: "Which reasoning scope should I use?".to_string(),
+            is_other: false,
+            is_secret: false,
+            options: Some(vec![RequestUserInputQuestionOption {
+                label: "Plan only".to_string(),
+                description: "Update only Plan mode.".to_string(),
+            }]),
+        }],
+    });
+
+    assert_matches!(
+        chat.pending_notification,
+        Some(Notification::UserInputRequested {
+            question_count: 1,
+            summary: Some(ref summary),
+        }) if summary == "Reasoning scope"
+    );
+}
+
+#[tokio::test]
+async fn handle_request_user_input_sets_pending_notification() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.1-codex-max")).await;
+    chat.config.tui_notifications = Notifications::Custom(vec!["user-input-requested".to_string()]);
+
+    chat.handle_request_user_input_now(RequestUserInputEvent {
+        call_id: "call-1".to_string(),
+        turn_id: "turn-1".to_string(),
+        questions: vec![RequestUserInputQuestion {
+            id: "reasoning_scope".to_string(),
+            header: "Reasoning scope".to_string(),
+            question: "Which reasoning scope should I use?".to_string(),
+            is_other: false,
+            is_secret: false,
+            options: Some(vec![RequestUserInputQuestionOption {
+                label: "Plan only".to_string(),
+                description: "Update only Plan mode.".to_string(),
+            }]),
+        }],
+    });
+
+    assert_matches!(
+        chat.pending_notification,
+        Some(Notification::UserInputRequested {
+            question_count: 1,
+            summary: Some(ref summary),
+        }) if summary == "Reasoning scope"
     );
 }
 
@@ -3365,6 +3514,31 @@ async fn empty_enter_during_task_does_not_queue() {
 
     // Ensure nothing was queued.
     assert!(chat.queued_user_messages.is_empty());
+}
+
+#[tokio::test]
+async fn restore_thread_input_state_syncs_sleep_inhibitor_state() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+    chat.set_feature_enabled(Feature::PreventIdleSleep, true);
+
+    chat.restore_thread_input_state(Some(ThreadInputState {
+        composer: None,
+        pending_steers: VecDeque::new(),
+        queued_user_messages: VecDeque::new(),
+        current_collaboration_mode: chat.current_collaboration_mode.clone(),
+        active_collaboration_mask: chat.active_collaboration_mask.clone(),
+        agent_turn_running: true,
+    }));
+
+    assert!(chat.agent_turn_running);
+    assert!(chat.turn_sleep_inhibitor.is_turn_running());
+    assert!(chat.bottom_pane.is_task_running());
+
+    chat.restore_thread_input_state(None);
+
+    assert!(!chat.agent_turn_running);
+    assert!(!chat.turn_sleep_inhibitor.is_turn_running());
+    assert!(!chat.bottom_pane.is_task_running());
 }
 
 #[tokio::test]
@@ -5868,6 +6042,26 @@ async fn view_image_tool_call_adds_history_cell() {
     assert_snapshot!("local_image_attachment_history_snapshot", combined);
 }
 
+#[tokio::test]
+async fn image_generation_call_adds_history_cell() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
+
+    chat.handle_codex_event(Event {
+        id: "sub-image-generation".into(),
+        msg: EventMsg::ImageGenerationEnd(ImageGenerationEndEvent {
+            call_id: "call-image-generation".into(),
+            status: "completed".into(),
+            revised_prompt: Some("A tiny blue square".into()),
+            result: "Zm9v".into(),
+        }),
+    });
+
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(cells.len(), 1, "expected a single history cell");
+    let combined = lines_to_single_string(&cells[0]);
+    assert_snapshot!("image_generation_call_history_snapshot", combined);
+}
+
 // Snapshot test: interrupting a running exec finalizes the active cell with a red ✗
 // marker (replacing the spinner) and flushes it into history.
 #[tokio::test]
@@ -6082,6 +6276,7 @@ async fn apps_popup_refreshes_when_connectors_snapshot_updates() {
                 install_url: Some("https://example.test/notion".to_string()),
                 is_accessible: true,
                 is_enabled: true,
+                plugin_display_names: Vec::new(),
             }],
         }),
         false,
@@ -6118,6 +6313,7 @@ async fn apps_popup_refreshes_when_connectors_snapshot_updates() {
                     install_url: Some("https://example.test/notion".to_string()),
                     is_accessible: true,
                     is_enabled: true,
+                    plugin_display_names: Vec::new(),
                 },
                 codex_chatgpt::connectors::AppInfo {
                     id: linear_id.to_string(),
@@ -6132,6 +6328,7 @@ async fn apps_popup_refreshes_when_connectors_snapshot_updates() {
                     install_url: Some("https://example.test/linear".to_string()),
                     is_accessible: true,
                     is_enabled: true,
+                    plugin_display_names: Vec::new(),
                 },
             ],
         }),
@@ -6174,6 +6371,7 @@ async fn apps_refresh_failure_keeps_existing_full_snapshot() {
             install_url: Some("https://example.test/notion".to_string()),
             is_accessible: true,
             is_enabled: true,
+            plugin_display_names: Vec::new(),
         },
         codex_chatgpt::connectors::AppInfo {
             id: linear_id.to_string(),
@@ -6188,6 +6386,7 @@ async fn apps_refresh_failure_keeps_existing_full_snapshot() {
             install_url: Some("https://example.test/linear".to_string()),
             is_accessible: false,
             is_enabled: true,
+            plugin_display_names: Vec::new(),
         },
     ];
     chat.on_connectors_loaded(
@@ -6212,6 +6411,7 @@ async fn apps_refresh_failure_keeps_existing_full_snapshot() {
                 install_url: Some("https://example.test/notion".to_string()),
                 is_accessible: true,
                 is_enabled: true,
+                plugin_display_names: Vec::new(),
             }],
         }),
         false,
@@ -6255,6 +6455,7 @@ async fn apps_refresh_failure_with_cached_snapshot_triggers_pending_force_refetc
         install_url: Some("https://example.test/notion".to_string()),
         is_accessible: true,
         is_enabled: true,
+        plugin_display_names: Vec::new(),
     }];
     chat.connectors_cache = ConnectorsCacheState::Ready(ConnectorsSnapshot {
         connectors: full_connectors.clone(),
@@ -6293,6 +6494,7 @@ async fn apps_partial_refresh_uses_same_filtering_as_full_refresh() {
             install_url: Some("https://example.test/notion".to_string()),
             is_accessible: true,
             is_enabled: true,
+            plugin_display_names: Vec::new(),
         },
         codex_chatgpt::connectors::AppInfo {
             id: "unit_test_connector_2".to_string(),
@@ -6307,6 +6509,7 @@ async fn apps_partial_refresh_uses_same_filtering_as_full_refresh() {
             install_url: Some("https://example.test/linear".to_string()),
             is_accessible: false,
             is_enabled: true,
+            plugin_display_names: Vec::new(),
         },
     ];
     chat.on_connectors_loaded(
@@ -6333,6 +6536,7 @@ async fn apps_partial_refresh_uses_same_filtering_as_full_refresh() {
                     install_url: Some("https://example.test/notion".to_string()),
                     is_accessible: true,
                     is_enabled: true,
+                    plugin_display_names: Vec::new(),
                 },
                 codex_chatgpt::connectors::AppInfo {
                     id: "connector_openai_hidden".to_string(),
@@ -6347,6 +6551,7 @@ async fn apps_partial_refresh_uses_same_filtering_as_full_refresh() {
                     install_url: Some("https://example.test/hidden-openai".to_string()),
                     is_accessible: true,
                     is_enabled: true,
+                    plugin_display_names: Vec::new(),
                 },
             ],
         }),
@@ -6393,6 +6598,7 @@ async fn apps_popup_shows_disabled_status_for_installed_but_disabled_apps() {
                 install_url: Some("https://example.test/notion".to_string()),
                 is_accessible: true,
                 is_enabled: false,
+                plugin_display_names: Vec::new(),
             }],
         }),
         true,
@@ -6446,6 +6652,7 @@ async fn apps_initial_load_applies_enabled_state_from_config() {
                 install_url: Some("https://example.test/notion".to_string()),
                 is_accessible: true,
                 is_enabled: true,
+                plugin_display_names: Vec::new(),
             }],
         }),
         true,
@@ -6486,6 +6693,7 @@ async fn apps_refresh_preserves_toggled_enabled_state() {
                 install_url: Some("https://example.test/notion".to_string()),
                 is_accessible: true,
                 is_enabled: true,
+                plugin_display_names: Vec::new(),
             }],
         }),
         true,
@@ -6507,6 +6715,7 @@ async fn apps_refresh_preserves_toggled_enabled_state() {
                 install_url: Some("https://example.test/notion".to_string()),
                 is_accessible: true,
                 is_enabled: true,
+                plugin_display_names: Vec::new(),
             }],
         }),
         true,
@@ -6554,6 +6763,7 @@ async fn apps_popup_for_not_installed_app_uses_install_only_selected_description
                 install_url: Some("https://example.test/linear".to_string()),
                 is_accessible: false,
                 is_enabled: true,
+                plugin_display_names: Vec::new(),
             }],
         }),
         true,
@@ -7096,7 +7306,12 @@ async fn feedback_upload_consent_popup_snapshot() {
         chat.app_event_tx.clone(),
         crate::app_event::FeedbackCategory::Bug,
         chat.current_rollout_path.clone(),
-        true,
+        &codex_feedback::feedback_diagnostics::FeedbackDiagnostics::new(vec![
+            codex_feedback::feedback_diagnostics::FeedbackDiagnostic {
+                headline: "OPENAI_BASE_URL is set and may affect connectivity.".to_string(),
+                details: vec!["OPENAI_BASE_URL = hello".to_string()],
+            },
+        ]),
     ));
 
     let popup = render_bottom_popup(&chat, 80);
@@ -7111,7 +7326,12 @@ async fn feedback_good_result_consent_popup_includes_connectivity_diagnostics_fi
         chat.app_event_tx.clone(),
         crate::app_event::FeedbackCategory::GoodResult,
         chat.current_rollout_path.clone(),
-        true,
+        &codex_feedback::feedback_diagnostics::FeedbackDiagnostics::new(vec![
+            codex_feedback::feedback_diagnostics::FeedbackDiagnostic {
+                headline: "OPENAI_BASE_URL is set and may affect connectivity.".to_string(),
+                details: vec!["OPENAI_BASE_URL = hello".to_string()],
+            },
+        ]),
     ));
 
     let popup = render_bottom_popup(&chat, 80);
@@ -7262,6 +7482,26 @@ async fn user_turn_carries_service_tier_after_fast_toggle() {
         } => {}
         other => panic!("expected Op::UserTurn with fast service tier, got {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn fast_status_indicator_requires_chatgpt_auth() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.3-codex")).await;
+    chat.set_service_tier(Some(ServiceTier::Fast));
+
+    assert!(!chat.should_show_fast_status(chat.current_service_tier()));
+
+    set_chatgpt_auth(&mut chat);
+
+    assert!(chat.should_show_fast_status(chat.current_service_tier()));
+}
+
+#[tokio::test]
+async fn fast_status_indicator_is_hidden_when_fast_mode_is_off() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.3-codex")).await;
+    set_chatgpt_auth(&mut chat);
+
+    assert!(!chat.should_show_fast_status(chat.current_service_tier()));
 }
 
 #[tokio::test]

@@ -5,6 +5,7 @@ use crate::codex::Session;
 use crate::default_client::default_headers;
 use crate::error::CodexErr;
 use crate::error::Result as CodexResult;
+use crate::realtime_context::build_realtime_startup_context;
 use async_channel::Receiver;
 use async_channel::Sender;
 use async_channel::TrySendError;
@@ -43,6 +44,7 @@ const AUDIO_IN_QUEUE_CAPACITY: usize = 256;
 const USER_TEXT_IN_QUEUE_CAPACITY: usize = 64;
 const HANDOFF_OUT_QUEUE_CAPACITY: usize = 64;
 const OUTPUT_EVENTS_QUEUE_CAPACITY: usize = 256;
+const REALTIME_STARTUP_CONTEXT_TOKEN_BUDGET: usize = 5_000;
 
 pub(crate) struct RealtimeConversationManager {
     state: Mutex<Option<ConversationState>>,
@@ -282,6 +284,13 @@ pub(crate) async fn handle_start(
         .experimental_realtime_ws_backend_prompt
         .clone()
         .unwrap_or(params.prompt);
+    let prompt =
+        match build_realtime_startup_context(sess.as_ref(), REALTIME_STARTUP_CONTEXT_TOKEN_BUDGET)
+            .await
+        {
+            Some(context) => format!("{prompt}\n\n{context}"),
+            None => prompt,
+        };
     let model = config.experimental_realtime_ws_model.clone();
 
     let requested_session_id = params
@@ -326,7 +335,13 @@ pub(crate) async fn handle_start(
             msg,
         };
         while let Ok(event) = events_rx.recv().await {
-            debug!(conversation_id = %sess_clone.conversation_id, "received realtime conversation event");
+            // if not audio out, log the event
+            if !matches!(event, RealtimeEvent::AudioOut(_)) {
+                info!(
+                    event = ?event,
+                    "received realtime conversation event"
+                );
+            }
             let maybe_routed_text = match &event {
                 RealtimeEvent::HandoffRequested(handoff) => {
                     realtime_text_from_handoff_request(handoff)
@@ -376,7 +391,7 @@ fn realtime_text_from_handoff_request(handoff: &RealtimeHandoffRequested) -> Opt
     let messages = handoff
         .messages
         .iter()
-        .map(|message| message.text.as_str())
+        .map(|message| format!("{}: {}", message.role, message.text))
         .collect::<Vec<_>>()
         .join("\n");
     (!messages.is_empty()).then_some(messages).or_else(|| {
@@ -605,7 +620,7 @@ mod tests {
         };
         assert_eq!(
             realtime_text_from_handoff_request(&handoff),
-            Some("hello\nhi there".to_string())
+            Some("user: hello\nassistant: hi there".to_string())
         );
     }
 
