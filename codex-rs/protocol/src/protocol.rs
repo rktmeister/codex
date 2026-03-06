@@ -334,6 +334,9 @@ pub enum Op {
         /// Structured user input supplied for accepted elicitations.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         content: Option<Value>,
+        /// Optional client metadata associated with the elicitation response.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        meta: Option<Value>,
     },
 
     /// Resolve a request_user_input tool call.
@@ -2006,6 +2009,9 @@ pub struct ImageGenerationEndEvent {
     #[ts(optional)]
     pub revised_prompt: Option<String>,
     pub result: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub saved_path: Option<String>,
 }
 
 // Conversation kept for backward compatibility.
@@ -2907,7 +2913,6 @@ pub struct SkillsListEntry {
 pub struct SessionNetworkProxyRuntime {
     pub http_addr: String,
     pub socks_addr: String,
-    pub admin_addr: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
@@ -3502,6 +3507,7 @@ mod tests {
                 status: "in_progress".into(),
                 revised_prompt: None,
                 result: String::new(),
+                saved_path: None,
             }),
         };
 
@@ -3523,6 +3529,7 @@ mod tests {
                 status: "completed".into(),
                 revised_prompt: Some("A tiny blue square".into()),
                 result: "Zm9v".into(),
+                saved_path: Some("/tmp/ig-1.png".into()),
             }),
         };
 
@@ -3534,6 +3541,7 @@ mod tests {
                 assert_eq!(event.status, "completed");
                 assert_eq!(event.revised_prompt.as_deref(), Some("A tiny blue square"));
                 assert_eq!(event.result, "Zm9v");
+                assert_eq!(event.saved_path.as_deref(), Some("/tmp/ig-1.png"));
             }
             _ => panic!("expected ImageGenerationEnd event"),
         }

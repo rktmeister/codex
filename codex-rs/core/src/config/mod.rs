@@ -47,6 +47,7 @@ use crate::model_provider_info::ModelProviderInfo;
 use crate::model_provider_info::OLLAMA_CHAT_PROVIDER_REMOVED_ERROR;
 use crate::model_provider_info::OLLAMA_OSS_PROVIDER_ID;
 use crate::model_provider_info::built_in_model_providers;
+use crate::path_utils::normalize_for_native_workdir;
 use crate::project_doc::DEFAULT_PROJECT_DOC_FILENAME;
 use crate::project_doc::LOCAL_PROJECT_DOC_FILENAME;
 use crate::protocol::AskForApproval;
@@ -218,10 +219,6 @@ pub struct Config {
     /// particular geography. HTTP clients should direct their requests
     /// using backend-specific headers or URLs to enforce this.
     pub enforce_residency: Constrained<Option<ResidencyRequirement>>,
-
-    /// True if the user passed in an override or set a value in config.toml
-    /// for either of approval_policy or sandbox_mode.
-    pub did_user_set_custom_approval_policy_or_sandbox_mode: bool,
 
     /// When `true`, `AgentReasoning` events emitted by the backend will be
     /// suppressed from the frontend output. This can reduce visual noise when
@@ -1764,7 +1761,7 @@ impl Config {
         let configured_features = Features::from_config(&cfg, &config_profile, feature_overrides);
         let features = ManagedFeatures::from_configured(configured_features, feature_requirements)?;
         let windows_sandbox_mode = resolve_windows_sandbox_mode(&cfg, &config_profile);
-        let resolved_cwd = {
+        let resolved_cwd = normalize_for_native_workdir({
             use std::env;
 
             match cwd {
@@ -1781,7 +1778,7 @@ impl Config {
                     current
                 }
             }
-        };
+        });
         let additional_writable_roots: Vec<AbsolutePathBuf> = additional_writable_roots
             .into_iter()
             .map(|path| AbsolutePathBuf::resolve_path_against_base(path, &resolved_cwd))
@@ -1789,9 +1786,6 @@ impl Config {
         let active_project = cfg
             .get_active_project(&resolved_cwd)
             .unwrap_or(ProjectConfig { trust_level: None });
-        let sandbox_mode_was_explicit = sandbox_mode.is_some()
-            || config_profile.sandbox_mode.is_some()
-            || cfg.sandbox_mode.is_some();
 
         let windows_sandbox_level = match windows_sandbox_mode {
             Some(WindowsSandboxModeToml::Elevated) => WindowsSandboxLevel::Elevated,
@@ -1821,9 +1815,6 @@ impl Config {
                 }
             }
         }
-        let approval_policy_was_explicit = approval_policy_override.is_some()
-            || config_profile.approval_policy.is_some()
-            || cfg.approval_policy.is_some();
         let mut approval_policy = approval_policy_override
             .or(config_profile.approval_policy)
             .or(cfg.approval_policy)
@@ -1836,9 +1827,7 @@ impl Config {
                     AskForApproval::default()
                 }
             });
-        if !approval_policy_was_explicit
-            && let Err(err) = constrained_approval_policy.can_set(&approval_policy)
-        {
+        if let Err(err) = constrained_approval_policy.can_set(&approval_policy) {
             tracing::warn!(
                 error = %err,
                 "default approval policy is disallowed by requirements; falling back to required default"
@@ -1847,10 +1836,6 @@ impl Config {
         }
         let web_search_mode = resolve_web_search_mode(&cfg, &config_profile, &features)
             .unwrap_or(WebSearchMode::Cached);
-        // TODO(dylan): We should be able to leverage ConfigLayerStack so that
-        // we can reliably check this at every config level.
-        let did_user_set_custom_approval_policy_or_sandbox_mode =
-            approval_policy_was_explicit || sandbox_mode_was_explicit;
 
         let mut model_providers = built_in_model_providers();
         // Merge user-defined providers into the built-in list.
@@ -2155,7 +2140,6 @@ impl Config {
                 macos_seatbelt_profile_extensions: None,
             },
             enforce_residency: enforce_residency.value,
-            did_user_set_custom_approval_policy_or_sandbox_mode,
             notify: cfg.notify,
             user_instructions,
             base_instructions,
@@ -2727,13 +2711,11 @@ allowed_domains = ["openai.com"]
             NetworkToml {
                 enabled: Some(true),
                 proxy_url: Some("http://127.0.0.1:43128".to_string()),
-                admin_url: None,
                 enable_socks5: Some(false),
                 socks_url: None,
                 enable_socks5_udp: None,
                 allow_upstream_proxy: Some(false),
                 dangerously_allow_non_loopback_proxy: None,
-                dangerously_allow_non_loopback_admin: None,
                 dangerously_allow_all_unix_sockets: None,
                 mode: None,
                 allowed_domains: Some(vec!["openai.com".to_string()]),
@@ -3489,7 +3471,6 @@ profile = "project"
             config.permissions.sandbox_policy.get(),
             &SandboxPolicy::DangerFullAccess
         ));
-        assert!(config.did_user_set_custom_approval_policy_or_sandbox_mode);
 
         Ok(())
     }
@@ -5195,7 +5176,6 @@ model_verbosity = "high"
                     macos_seatbelt_profile_extensions: None,
                 },
                 enforce_residency: Constrained::allow_any(None),
-                did_user_set_custom_approval_policy_or_sandbox_mode: true,
                 user_instructions: None,
                 notify: None,
                 cwd: fixture.cwd(),
@@ -5325,7 +5305,6 @@ model_verbosity = "high"
                 macos_seatbelt_profile_extensions: None,
             },
             enforce_residency: Constrained::allow_any(None),
-            did_user_set_custom_approval_policy_or_sandbox_mode: true,
             user_instructions: None,
             notify: None,
             cwd: fixture.cwd(),
@@ -5453,7 +5432,6 @@ model_verbosity = "high"
                 macos_seatbelt_profile_extensions: None,
             },
             enforce_residency: Constrained::allow_any(None),
-            did_user_set_custom_approval_policy_or_sandbox_mode: true,
             user_instructions: None,
             notify: None,
             cwd: fixture.cwd(),
@@ -5567,7 +5545,6 @@ model_verbosity = "high"
                 macos_seatbelt_profile_extensions: None,
             },
             enforce_residency: Constrained::allow_any(None),
-            did_user_set_custom_approval_policy_or_sandbox_mode: true,
             user_instructions: None,
             notify: None,
             cwd: fixture.cwd(),
@@ -5645,24 +5622,6 @@ model_verbosity = "high"
         };
 
         assert_eq!(expected_gpt5_profile_config, gpt5_profile_config);
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_did_user_set_custom_approval_policy_or_sandbox_mode_defaults_no() -> anyhow::Result<()>
-    {
-        let fixture = create_test_fixture()?;
-
-        let config = Config::load_from_base_config_with_overrides(
-            fixture.cfg.clone(),
-            ConfigOverrides {
-                ..Default::default()
-            },
-            fixture.codex_home(),
-        )?;
-
-        assert!(config.did_user_set_custom_approval_policy_or_sandbox_mode);
 
         Ok(())
     }
