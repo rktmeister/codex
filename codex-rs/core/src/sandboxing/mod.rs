@@ -14,7 +14,7 @@ use crate::exec::SandboxType;
 use crate::exec::StdoutStream;
 use crate::exec::execute_exec_request;
 use crate::landlock::allow_network_for_proxy;
-use crate::landlock::create_linux_sandbox_command_args;
+use crate::landlock::create_linux_sandbox_command_args_for_policies;
 use crate::protocol::SandboxPolicy;
 #[cfg(target_os = "macos")]
 use crate::seatbelt::MACOS_PATH_TO_SEATBELT_EXECUTABLE;
@@ -35,7 +35,6 @@ use codex_protocol::permissions::FileSystemPath;
 use codex_protocol::permissions::FileSystemSandboxEntry;
 use codex_protocol::permissions::FileSystemSandboxKind;
 use codex_protocol::permissions::FileSystemSandboxPolicy;
-use codex_protocol::permissions::FileSystemSpecialPath;
 use codex_protocol::permissions::NetworkSandboxPolicy;
 use codex_protocol::protocol::NetworkAccess;
 use codex_protocol::protocol::ReadOnlyAccess;
@@ -215,7 +214,6 @@ fn additional_permission_roots(
     )
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 fn merge_file_system_policy_with_additional_permissions(
     file_system_policy: &FileSystemSandboxPolicy,
     extra_reads: Vec<AbsolutePathBuf>,
@@ -369,14 +367,7 @@ pub(crate) fn should_require_platform_sandbox(
     }
 
     match file_system_policy.kind {
-        FileSystemSandboxKind::Restricted => !file_system_policy.entries.iter().any(|entry| {
-            entry.access == FileSystemAccessMode::Write
-                && matches!(
-                    &entry.path,
-                    FileSystemPath::Special { value }
-                        if matches!(value, FileSystemSpecialPath::Root)
-                )
-        }),
+        FileSystemSandboxKind::Restricted => !file_system_policy.has_full_disk_write_access(),
         FileSystemSandboxKind::Unrestricted | FileSystemSandboxKind::ExternalSandbox => false,
     }
 }
@@ -516,9 +507,11 @@ impl SandboxManager {
                 let exe = codex_linux_sandbox_exe
                     .ok_or(SandboxTransformError::MissingLinuxSandboxExecutable)?;
                 let allow_proxy_network = allow_network_for_proxy(enforce_managed_network);
-                let mut args = create_linux_sandbox_command_args(
+                let mut args = create_linux_sandbox_command_args_for_policies(
                     command.clone(),
                     &effective_policy,
+                    &effective_file_system_policy,
+                    effective_network_policy,
                     sandbox_policy_cwd,
                     use_linux_sandbox_bwrap,
                     allow_proxy_network,
@@ -677,6 +670,32 @@ mod tests {
         assert_eq!(
             should_require_platform_sandbox(&policy, NetworkSandboxPolicy::Enabled, false),
             false
+        );
+    }
+
+    #[test]
+    fn root_write_policy_with_carveouts_still_uses_platform_sandbox() {
+        let blocked = AbsolutePathBuf::resolve_path_against_base(
+            "blocked",
+            std::env::current_dir().expect("current dir"),
+        )
+        .expect("blocked path");
+        let policy = FileSystemSandboxPolicy::restricted(vec![
+            FileSystemSandboxEntry {
+                path: FileSystemPath::Special {
+                    value: FileSystemSpecialPath::Root,
+                },
+                access: FileSystemAccessMode::Write,
+            },
+            FileSystemSandboxEntry {
+                path: FileSystemPath::Path { path: blocked },
+                access: FileSystemAccessMode::None,
+            },
+        ]);
+
+        assert_eq!(
+            should_require_platform_sandbox(&policy, NetworkSandboxPolicy::Enabled, false),
+            true
         );
     }
 
