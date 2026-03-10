@@ -1675,7 +1675,7 @@ async fn turn_started_uses_runtime_context_window_before_first_token_count() {
     });
 
     assert_eq!(
-        chat.status_line_value_for_item(&crate::bottom_pane::StatusLineItem::ContextWindowSize),
+        chat.status_line_value_for_item(crate::bottom_pane::StatusLineItem::ContextWindowSize),
         Some("950K window".to_string())
     );
     assert_eq!(chat.bottom_pane.context_window_percent(), Some(100));
@@ -1893,6 +1893,9 @@ async fn make_chatwidget_manual(
         status_line_branch_cwd: None,
         status_line_branch_pending: false,
         status_line_branch_lookup_complete: false,
+        status_line_branch_diff: None,
+        status_line_branch_diff_pending: false,
+        status_line_branch_diff_lookup_complete: false,
         external_editor_state: ExternalEditorState::Closed,
         realtime_conversation: RealtimeConversationUiState::default(),
         last_rendered_user_message_event: None,
@@ -9520,16 +9523,54 @@ async fn status_line_branch_refreshes_after_interrupt() {
 }
 
 #[tokio::test]
+async fn status_line_branch_diff_refreshes_after_turn_complete() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+    chat.config.tui_status_line = Some(vec![
+        "branch-lines-added".to_string(),
+        "branch-lines-removed".to_string(),
+    ]);
+    chat.status_line_branch_diff_lookup_complete = true;
+    chat.status_line_branch_diff_pending = false;
+
+    chat.handle_codex_event(Event {
+        id: "turn-1".into(),
+        msg: EventMsg::TurnComplete(TurnCompleteEvent {
+            turn_id: "turn-1".to_string(),
+            last_agent_message: None,
+        }),
+    });
+
+    assert!(chat.status_line_branch_diff_pending);
+}
+
+#[tokio::test]
+async fn default_status_line_items_follow_reference_order() {
+    let (chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+
+    assert_eq!(
+        chat.configured_status_line_items(),
+        vec![
+            "model-with-reasoning".to_string(),
+            "context-remaining".to_string(),
+            "project-root".to_string(),
+            "git-branch".to_string(),
+            "branch-lines-added".to_string(),
+            "branch-lines-removed".to_string(),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn status_line_fast_mode_renders_on_and_off() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
     chat.config.tui_status_line = Some(vec!["fast-mode".to_string()]);
 
     chat.refresh_status_line();
-    assert_eq!(status_line_text(&chat), Some("Fast off".to_string()));
+    assert_eq!(status_line_text(&chat), Some("fast off".to_string()));
 
     chat.set_service_tier(Some(ServiceTier::Fast));
     chat.refresh_status_line();
-    assert_eq!(status_line_text(&chat), Some("Fast on".to_string()));
+    assert_eq!(status_line_text(&chat), Some("fast on".to_string()));
 }
 
 #[tokio::test]

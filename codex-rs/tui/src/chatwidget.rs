@@ -44,6 +44,7 @@ use crate::audio_device::list_realtime_audio_device_names;
 use crate::bottom_pane::StatusLineItem;
 use crate::bottom_pane::StatusLinePreviewData;
 use crate::bottom_pane::StatusLineSetupView;
+use crate::bottom_pane::format_status_line;
 use crate::status::RateLimitWindowDisplay;
 use crate::status::format_directory_display;
 use crate::status::format_tokens_compact;
@@ -62,6 +63,8 @@ use codex_core::config_loader::ConfigLayerStackOrdering;
 use codex_core::features::FEATURES;
 use codex_core::features::Feature;
 use codex_core::find_thread_name_by_id;
+use codex_core::git_info::GitLineStats;
+use codex_core::git_info::branch_diff_line_counts;
 use codex_core::git_info::current_branch_name;
 use codex_core::git_info::get_git_repo_root;
 use codex_core::git_info::local_git_branches;
@@ -306,8 +309,14 @@ use strum::IntoEnumIterator;
 const USER_SHELL_COMMAND_HELP_TITLE: &str = "Prefix a command with ! to run it locally";
 const USER_SHELL_COMMAND_HELP_HINT: &str = "Example: !ls";
 const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
-const DEFAULT_STATUS_LINE_ITEMS: [&str; 3] =
-    ["model-with-reasoning", "context-remaining", "current-dir"];
+const DEFAULT_STATUS_LINE_ITEMS: [&str; 6] = [
+    "model-with-reasoning",
+    "context-remaining",
+    "project-root",
+    "git-branch",
+    "branch-lines-added",
+    "branch-lines-removed",
+];
 // Track information about an in-flight exec command.
 struct RunningCommand {
     command: Vec<String>,
@@ -701,6 +710,12 @@ pub(crate) struct ChatWidget {
     status_line_branch_pending: bool,
     // True once we've attempted a branch lookup for the current CWD.
     status_line_branch_lookup_complete: bool,
+    // Cached branch diff counts for the status line (None if unknown).
+    status_line_branch_diff: Option<GitLineStats>,
+    // True while an async branch-diff lookup is in flight.
+    status_line_branch_diff_pending: bool,
+    // True once we've attempted a branch-diff lookup for the current CWD.
+    status_line_branch_diff_lookup_complete: bool,
     external_editor_state: ExternalEditorState,
     realtime_conversation: RealtimeConversationUiState,
     last_rendered_user_message_event: Option<RenderedUserMessageEvent>,
@@ -1110,10 +1125,23 @@ impl ChatWidget {
             );
             self.on_warning(message);
         }
-        if !items.contains(&StatusLineItem::GitBranch) {
+        let needs_git_branch = items.contains(&StatusLineItem::GitBranch);
+        let needs_branch_diff = items.iter().any(|item| {
+            matches!(
+                item,
+                StatusLineItem::BranchLinesAdded | StatusLineItem::BranchLinesRemoved
+            )
+        });
+
+        if !needs_git_branch {
             self.status_line_branch = None;
             self.status_line_branch_pending = false;
             self.status_line_branch_lookup_complete = false;
+        }
+        if !needs_branch_diff {
+            self.status_line_branch_diff = None;
+            self.status_line_branch_diff_pending = false;
+            self.status_line_branch_diff_lookup_complete = false;
         }
         let enabled = !items.is_empty();
         self.bottom_pane.set_status_line_enabled(enabled);
@@ -1123,24 +1151,23 @@ impl ChatWidget {
         }
 
         let cwd = self.status_line_cwd().to_path_buf();
-        self.sync_status_line_branch_state(&cwd);
+        self.sync_status_line_git_state(&cwd);
 
-        if items.contains(&StatusLineItem::GitBranch) && !self.status_line_branch_lookup_complete {
-            self.request_status_line_branch(cwd);
+        if needs_git_branch && !self.status_line_branch_lookup_complete {
+            self.request_status_line_branch(cwd.clone());
+        }
+        if needs_branch_diff && !self.status_line_branch_diff_lookup_complete {
+            self.request_status_line_branch_diff(cwd);
         }
 
         let mut parts = Vec::new();
         for item in items {
-            if let Some(value) = self.status_line_value_for_item(&item) {
-                parts.push(value);
+            if let Some(value) = self.status_line_value_for_item(item) {
+                parts.push((item, value));
             }
         }
 
-        let line = if parts.is_empty() {
-            None
-        } else {
-            Some(Line::from(parts.join(" · ")))
-        };
+        let line = format_status_line(parts);
         self.set_status_line(line);
     }
 
@@ -1176,15 +1203,41 @@ impl ChatWidget {
         self.status_line_branch_lookup_complete = true;
     }
 
-    /// Forces a new git-branch lookup when `GitBranch` is part of the configured status line.
-    fn request_status_line_branch_refresh(&mut self) {
+    /// Stores async branch diff lookup results for the current status-line cwd.
+    pub(crate) fn set_status_line_branch_diff(&mut self, cwd: PathBuf, diff: Option<GitLineStats>) {
+        if self.status_line_branch_cwd.as_ref() != Some(&cwd) {
+            self.status_line_branch_diff_pending = false;
+            return;
+        }
+        self.status_line_branch_diff = diff;
+        self.status_line_branch_diff_pending = false;
+        self.status_line_branch_diff_lookup_complete = true;
+    }
+
+    /// Forces a new status-line git metadata lookup when configured items need it.
+    fn request_status_line_git_refresh(&mut self) {
         let (items, _) = self.status_line_items_with_invalids();
-        if items.is_empty() || !items.contains(&StatusLineItem::GitBranch) {
+        if items.is_empty() {
+            return;
+        }
+        let needs_git_branch = items.contains(&StatusLineItem::GitBranch);
+        let needs_branch_diff = items.iter().any(|item| {
+            matches!(
+                item,
+                StatusLineItem::BranchLinesAdded | StatusLineItem::BranchLinesRemoved
+            )
+        });
+        if !needs_git_branch && !needs_branch_diff {
             return;
         }
         let cwd = self.status_line_cwd().to_path_buf();
-        self.sync_status_line_branch_state(&cwd);
-        self.request_status_line_branch(cwd);
+        self.sync_status_line_git_state(&cwd);
+        if needs_git_branch {
+            self.request_status_line_branch(cwd.clone());
+        }
+        if needs_branch_diff {
+            self.request_status_line_branch_diff(cwd);
+        }
     }
 
     fn collect_runtime_metrics_delta(&mut self) {
@@ -1600,7 +1653,7 @@ impl ChatWidget {
             self.turn_runtime_metrics = RuntimeMetricsSummary::default();
             self.needs_final_message_separator = false;
             self.had_work_activity = false;
-            self.request_status_line_branch_refresh();
+            self.request_status_line_git_refresh();
         }
         // Mark task stopped and request redraw now that all content is in history.
         self.pending_status_indicator_restore = false;
@@ -1913,7 +1966,7 @@ impl ChatWidget {
         self.stream_controller = None;
         self.plan_stream_controller = None;
         self.pending_status_indicator_restore = false;
-        self.request_status_line_branch_refresh();
+        self.request_status_line_git_refresh();
         self.maybe_show_pending_rate_limit_prompt();
     }
 
@@ -3248,6 +3301,9 @@ impl ChatWidget {
             status_line_branch_cwd: None,
             status_line_branch_pending: false,
             status_line_branch_lookup_complete: false,
+            status_line_branch_diff: None,
+            status_line_branch_diff_pending: false,
+            status_line_branch_diff_lookup_complete: false,
             external_editor_state: ExternalEditorState::Closed,
             realtime_conversation: RealtimeConversationUiState::default(),
             last_rendered_user_message_event: None,
@@ -3431,6 +3487,9 @@ impl ChatWidget {
             status_line_branch_cwd: None,
             status_line_branch_pending: false,
             status_line_branch_lookup_complete: false,
+            status_line_branch_diff: None,
+            status_line_branch_diff_pending: false,
+            status_line_branch_diff_lookup_complete: false,
             external_editor_state: ExternalEditorState::Closed,
             realtime_conversation: RealtimeConversationUiState::default(),
             last_rendered_user_message_event: None,
@@ -3606,6 +3665,9 @@ impl ChatWidget {
             status_line_branch_cwd: None,
             status_line_branch_pending: false,
             status_line_branch_lookup_complete: false,
+            status_line_branch_diff: None,
+            status_line_branch_diff_pending: false,
+            status_line_branch_diff_lookup_complete: false,
             external_editor_state: ExternalEditorState::Closed,
             realtime_conversation: RealtimeConversationUiState::default(),
             last_rendered_user_message_event: None,
@@ -5265,7 +5327,7 @@ impl ChatWidget {
         let view = StatusLineSetupView::new(
             Some(configured_status_line_items.as_slice()),
             StatusLinePreviewData::from_iter(StatusLineItem::iter().filter_map(|item| {
-                self.status_line_value_for_item(&item)
+                self.status_line_value_for_item(item)
                     .map(|value| (item, value))
             })),
             self.app_event_tx.clone(),
@@ -5350,7 +5412,7 @@ impl ChatWidget {
     ///
     /// The branch cache is keyed by cwd because branch lookup is performed relative to that path.
     /// Keeping stale branch values across cwd changes would surface incorrect repository context.
-    fn sync_status_line_branch_state(&mut self, cwd: &Path) {
+    fn sync_status_line_git_state(&mut self, cwd: &Path) {
         if self
             .status_line_branch_cwd
             .as_ref()
@@ -5362,6 +5424,9 @@ impl ChatWidget {
         self.status_line_branch = None;
         self.status_line_branch_pending = false;
         self.status_line_branch_lookup_complete = false;
+        self.status_line_branch_diff = None;
+        self.status_line_branch_diff_pending = false;
+        self.status_line_branch_diff_lookup_complete = false;
     }
 
     /// Starts an async git-branch lookup unless one is already running.
@@ -5380,12 +5445,25 @@ impl ChatWidget {
         });
     }
 
+    /// Starts an async branch-diff lookup unless one is already running.
+    fn request_status_line_branch_diff(&mut self, cwd: PathBuf) {
+        if self.status_line_branch_diff_pending {
+            return;
+        }
+        self.status_line_branch_diff_pending = true;
+        let tx = self.app_event_tx.clone();
+        tokio::spawn(async move {
+            let diff = branch_diff_line_counts(&cwd).await;
+            tx.send(AppEvent::StatusLineBranchDiffUpdated { cwd, diff });
+        });
+    }
+
     /// Resolves a display string for one configured status-line item.
     ///
     /// Returning `None` means "omit this item for now", not "configuration error". Callers rely on
     /// this to keep partially available status lines readable while waiting for session, token, or
     /// git metadata.
-    fn status_line_value_for_item(&self, item: &StatusLineItem) -> Option<String> {
+    fn status_line_value_for_item(&self, item: StatusLineItem) -> Option<String> {
         match item {
             StatusLineItem::ModelName => Some(self.model_display_name().to_string()),
             StatusLineItem::ModelWithReasoning => {
@@ -5398,6 +5476,12 @@ impl ChatWidget {
             }
             StatusLineItem::ProjectRoot => self.status_line_project_root_name(),
             StatusLineItem::GitBranch => self.status_line_branch.clone(),
+            StatusLineItem::BranchLinesAdded => self
+                .status_line_branch_diff
+                .map(|diff| diff.added.to_string()),
+            StatusLineItem::BranchLinesRemoved => self
+                .status_line_branch_diff
+                .map(|diff| diff.removed.to_string()),
             StatusLineItem::UsedTokens => {
                 let usage = self.status_line_total_usage();
                 let total = usage.tokens_in_context_window();

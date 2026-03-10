@@ -4190,10 +4190,7 @@ impl ChatComposer {
                 };
                 let available_width =
                     hint_rect.width.saturating_sub(FOOTER_INDENT_COLS as u16) as usize;
-                let status_line = footer_props
-                    .status_line_value
-                    .as_ref()
-                    .map(|line| line.clone().dim());
+                let status_line = footer_props.status_line_value.as_ref().cloned();
                 let status_line_candidate = footer_props.status_line_enabled
                     && match footer_props.mode {
                         FooterMode::ComposerEmpty => true,

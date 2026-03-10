@@ -6,6 +6,7 @@ use std::path::PathBuf;
 
 use crate::util::resolve_path;
 use codex_app_server_protocol::GitSha;
+use codex_git::merge_base_with_head;
 use codex_protocol::protocol::GitInfo;
 use futures::future::join_all;
 use serde::Deserialize;
@@ -42,6 +43,12 @@ const GIT_COMMAND_TIMEOUT: TokioDuration = TokioDuration::from_secs(5);
 pub struct GitDiffToRemote {
     pub sha: GitSha,
     pub diff: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GitLineStats {
+    pub added: usize,
+    pub removed: usize,
 }
 
 /// Collect git repository information from the given working directory using command-line git.
@@ -250,6 +257,49 @@ pub async fn git_diff_to_remote(cwd: &Path) -> Option<GitDiffToRemote> {
         sha: base_sha,
         diff,
     })
+}
+
+pub async fn branch_diff_line_counts(cwd: &Path) -> Option<GitLineStats> {
+    get_git_repo_root(cwd)?;
+
+    let base_branch = default_branch_name(cwd).await?;
+    let repo_path = cwd.to_path_buf();
+    let merge_base = tokio::task::spawn_blocking(move || {
+        merge_base_with_head(&repo_path, &base_branch)
+            .ok()
+            .flatten()
+    })
+    .await
+    .ok()
+    .flatten()?;
+
+    let output = run_git_command_with_timeout(&["diff", "--numstat", &merge_base], cwd).await?;
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8(output.stdout).ok()?;
+    let mut added = 0usize;
+    let mut removed = 0usize;
+    for line in stdout.lines() {
+        let mut parts = line.splitn(3, '\t');
+        let Some(raw_added) = parts.next() else {
+            continue;
+        };
+        let Some(raw_removed) = parts.next() else {
+            continue;
+        };
+        let Ok(line_added) = raw_added.parse::<usize>() else {
+            continue;
+        };
+        let Ok(line_removed) = raw_removed.parse::<usize>() else {
+            continue;
+        };
+        added += line_added;
+        removed += line_removed;
+    }
+
+    Some(GitLineStats { added, removed })
 }
 
 /// Run a git command with a timeout to prevent blocking on large repositories
@@ -755,6 +805,43 @@ mod tests {
             .expect("Failed to commit");
 
         repo_path
+    }
+
+    #[tokio::test]
+    async fn branch_diff_line_counts_uses_default_branch_merge_base() {
+        skip_if_sandbox!();
+
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let repo_path = create_test_git_repo(&temp_dir).await;
+
+        Command::new("git")
+            .args(["branch", "-m", "main"])
+            .current_dir(&repo_path)
+            .output()
+            .await
+            .expect("rename branch");
+
+        Command::new("git")
+            .args(["checkout", "-b", "feature/statusline"])
+            .current_dir(&repo_path)
+            .output()
+            .await
+            .expect("create feature branch");
+
+        fs::write(repo_path.join("test.txt"), "one\ntwo\nthree\n")
+            .expect("Failed to rewrite tracked file");
+
+        let stats = branch_diff_line_counts(&repo_path)
+            .await
+            .expect("branch diff stats");
+
+        assert_eq!(
+            stats,
+            GitLineStats {
+                added: 3,
+                removed: 1,
+            }
+        );
     }
 
     #[tokio::test]
