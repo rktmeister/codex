@@ -68,6 +68,7 @@ use codex_protocol::protocol::SkillToolDependency as CoreSkillToolDependency;
 use codex_protocol::protocol::SubAgentSource as CoreSubAgentSource;
 use codex_protocol::protocol::TokenUsage as CoreTokenUsage;
 use codex_protocol::protocol::TokenUsageInfo as CoreTokenUsageInfo;
+use codex_protocol::request_permissions::PermissionGrantScope as CorePermissionGrantScope;
 use codex_protocol::user_input::ByteRange as CoreByteRange;
 use codex_protocol::user_input::TextElement as CoreTextElement;
 use codex_protocol::user_input::UserInput as CoreUserInput;
@@ -83,12 +84,18 @@ use ts_rs::TS;
 // tends to use either snake_case or kebab-case.
 macro_rules! v2_enum_from_core {
     (
-        pub enum $Name:ident from $Src:path { $( $Variant:ident ),+ $(,)? }
+        $(#[$enum_meta:meta])*
+        pub enum $Name:ident from $Src:path {
+            $( $(#[$variant_meta:meta])* $Variant:ident ),+ $(,)?
+        }
     ) => {
         #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+        $(#[$enum_meta])*
         #[serde(rename_all = "camelCase")]
         #[ts(export_to = "v2/")]
-        pub enum $Name { $( $Variant ),+ }
+        pub enum $Name {
+            $( $(#[$variant_meta])* $Variant ),+
+        }
 
         impl $Name {
             pub fn to_core(self) -> $Src {
@@ -186,6 +193,7 @@ pub enum AskForApproval {
     Reject {
         sandbox_approval: bool,
         rules: bool,
+        request_permissions: bool,
         mcp_elicitations: bool,
     },
     Never,
@@ -200,10 +208,12 @@ impl AskForApproval {
             AskForApproval::Reject {
                 sandbox_approval,
                 rules,
+                request_permissions,
                 mcp_elicitations,
             } => CoreAskForApproval::Reject(CoreRejectConfig {
                 sandbox_approval,
                 rules,
+                request_permissions,
                 mcp_elicitations,
             }),
             AskForApproval::Never => CoreAskForApproval::Never,
@@ -220,6 +230,7 @@ impl From<CoreAskForApproval> for AskForApproval {
             CoreAskForApproval::Reject(reject_config) => AskForApproval::Reject {
                 sandbox_approval: reject_config.sandbox_approval,
                 rules: reject_config.rules,
+                request_permissions: reject_config.request_permissions,
                 mcp_elicitations: reject_config.mcp_elicitations,
             },
             CoreAskForApproval::Never => AskForApproval::Never,
@@ -837,6 +848,15 @@ impl From<CoreFileSystemPermissions> for AdditionalFileSystemPermissions {
     }
 }
 
+impl From<AdditionalFileSystemPermissions> for CoreFileSystemPermissions {
+    fn from(value: AdditionalFileSystemPermissions) -> Self {
+        Self {
+            read: value.read,
+            write: value.write,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
@@ -858,6 +878,17 @@ impl From<CoreMacOsSeatbeltProfileExtensions> for AdditionalMacOsPermissions {
     }
 }
 
+impl From<AdditionalMacOsPermissions> for CoreMacOsSeatbeltProfileExtensions {
+    fn from(value: AdditionalMacOsPermissions) -> Self {
+        Self {
+            macos_preferences: value.preferences,
+            macos_automation: value.automations,
+            macos_accessibility: value.accessibility,
+            macos_calendar: value.calendar,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
@@ -867,6 +898,14 @@ pub struct AdditionalNetworkPermissions {
 
 impl From<CoreNetworkPermissions> for AdditionalNetworkPermissions {
     fn from(value: CoreNetworkPermissions) -> Self {
+        Self {
+            enabled: value.enabled,
+        }
+    }
+}
+
+impl From<AdditionalNetworkPermissions> for CoreNetworkPermissions {
+    fn from(value: AdditionalNetworkPermissions) -> Self {
         Self {
             enabled: value.enabled,
         }
@@ -888,6 +927,86 @@ impl From<CorePermissionProfile> for AdditionalPermissionProfile {
             network: value.network.map(AdditionalNetworkPermissions::from),
             file_system: value.file_system.map(AdditionalFileSystemPermissions::from),
             macos: value.macos.map(AdditionalMacOsPermissions::from),
+        }
+    }
+}
+
+impl From<AdditionalPermissionProfile> for CorePermissionProfile {
+    fn from(value: AdditionalPermissionProfile) -> Self {
+        Self {
+            network: value.network.map(CoreNetworkPermissions::from),
+            file_system: value.file_system.map(CoreFileSystemPermissions::from),
+            macos: value.macos.map(CoreMacOsSeatbeltProfileExtensions::from),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct GrantedMacOsPermissions {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub preferences: Option<CoreMacOsPreferencesPermission>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub automations: Option<CoreMacOsAutomationPermission>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub accessibility: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub calendar: Option<bool>,
+}
+
+impl From<GrantedMacOsPermissions> for CoreMacOsSeatbeltProfileExtensions {
+    fn from(value: GrantedMacOsPermissions) -> Self {
+        Self {
+            macos_preferences: value
+                .preferences
+                .unwrap_or(CoreMacOsPreferencesPermission::None),
+            macos_automation: value
+                .automations
+                .unwrap_or(CoreMacOsAutomationPermission::None),
+            macos_accessibility: value.accessibility.unwrap_or(false),
+            macos_calendar: value.calendar.unwrap_or(false),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct GrantedPermissionProfile {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub network: Option<AdditionalNetworkPermissions>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub file_system: Option<AdditionalFileSystemPermissions>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub macos: Option<GrantedMacOsPermissions>,
+}
+
+impl From<GrantedPermissionProfile> for CorePermissionProfile {
+    fn from(value: GrantedPermissionProfile) -> Self {
+        let macos = value.macos.and_then(|macos| {
+            if macos.preferences.is_none()
+                && macos.automations.is_none()
+                && macos.accessibility.is_none()
+                && macos.calendar.is_none()
+            {
+                None
+            } else {
+                Some(CoreMacOsSeatbeltProfileExtensions::from(macos))
+            }
+        });
+
+        Self {
+            network: value.network.map(CoreNetworkPermissions::from),
+            file_system: value.file_system.map(CoreFileSystemPermissions::from),
+            macos,
         }
     }
 }
@@ -2812,6 +2931,18 @@ pub struct PluginInstallParams {
 pub struct PluginInstallResponse {
     pub apps_needing_auth: Vec<AppSummary>,
 }
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct PluginUninstallParams {
+    pub plugin_id: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct PluginUninstallResponse {}
 
 impl From<CoreSkillMetadata> for SkillMetadata {
     fn from(value: CoreSkillMetadata) -> Self {
@@ -4855,6 +4986,35 @@ pub struct DynamicToolCallParams {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
+pub struct PermissionsRequestApprovalParams {
+    pub thread_id: String,
+    pub turn_id: String,
+    pub item_id: String,
+    pub reason: Option<String>,
+    pub permissions: AdditionalPermissionProfile,
+}
+
+v2_enum_from_core!(
+    #[derive(Default)]
+    pub enum PermissionGrantScope from CorePermissionGrantScope {
+        #[default]
+        Turn,
+        Session
+    }
+);
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct PermissionsRequestApprovalResponse {
+    pub permissions: GrantedPermissionProfile,
+    #[serde(default)]
+    pub scope: PermissionGrantScope,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
 pub struct DynamicToolCallResponse {
     pub content_items: Vec<DynamicToolCallOutputContentItem>,
     pub success: bool,
@@ -5204,6 +5364,140 @@ mod tests {
     }
 
     #[test]
+    fn permissions_request_approval_response_accepts_partial_macos_grants() {
+        let cases = vec![
+            (json!({}), Some(GrantedMacOsPermissions::default()), None),
+            (
+                json!({
+                    "preferences": "read_only",
+                }),
+                Some(GrantedMacOsPermissions {
+                    preferences: Some(CoreMacOsPreferencesPermission::ReadOnly),
+                    ..Default::default()
+                }),
+                Some(CoreMacOsSeatbeltProfileExtensions {
+                    macos_preferences: CoreMacOsPreferencesPermission::ReadOnly,
+                    macos_automation: CoreMacOsAutomationPermission::None,
+                    macos_accessibility: false,
+                    macos_calendar: false,
+                }),
+            ),
+            (
+                json!({
+                    "automations": {
+                        "bundle_ids": ["com.apple.Notes"],
+                    },
+                }),
+                Some(GrantedMacOsPermissions {
+                    automations: Some(CoreMacOsAutomationPermission::BundleIds(vec![
+                        "com.apple.Notes".to_string(),
+                    ])),
+                    ..Default::default()
+                }),
+                Some(CoreMacOsSeatbeltProfileExtensions {
+                    macos_preferences: CoreMacOsPreferencesPermission::None,
+                    macos_automation: CoreMacOsAutomationPermission::BundleIds(vec![
+                        "com.apple.Notes".to_string(),
+                    ]),
+                    macos_accessibility: false,
+                    macos_calendar: false,
+                }),
+            ),
+            (
+                json!({
+                    "accessibility": true,
+                }),
+                Some(GrantedMacOsPermissions {
+                    accessibility: Some(true),
+                    ..Default::default()
+                }),
+                Some(CoreMacOsSeatbeltProfileExtensions {
+                    macos_preferences: CoreMacOsPreferencesPermission::None,
+                    macos_automation: CoreMacOsAutomationPermission::None,
+                    macos_accessibility: true,
+                    macos_calendar: false,
+                }),
+            ),
+            (
+                json!({
+                    "calendar": true,
+                }),
+                Some(GrantedMacOsPermissions {
+                    calendar: Some(true),
+                    ..Default::default()
+                }),
+                Some(CoreMacOsSeatbeltProfileExtensions {
+                    macos_preferences: CoreMacOsPreferencesPermission::None,
+                    macos_automation: CoreMacOsAutomationPermission::None,
+                    macos_accessibility: false,
+                    macos_calendar: true,
+                }),
+            ),
+        ];
+
+        for (macos_json, expected_granted_macos, expected_core_macos) in cases {
+            let response = serde_json::from_value::<PermissionsRequestApprovalResponse>(json!({
+                "permissions": {
+                    "macos": macos_json,
+                },
+            }))
+            .expect("partial macos permissions response should deserialize");
+
+            assert_eq!(
+                response.permissions,
+                GrantedPermissionProfile {
+                    macos: expected_granted_macos,
+                    ..Default::default()
+                }
+            );
+
+            assert_eq!(
+                CorePermissionProfile::from(response.permissions),
+                CorePermissionProfile {
+                    macos: expected_core_macos,
+                    ..Default::default()
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn permissions_request_approval_response_omits_ungranted_macos_keys_when_serialized() {
+        let response = PermissionsRequestApprovalResponse {
+            permissions: GrantedPermissionProfile {
+                macos: Some(GrantedMacOsPermissions {
+                    accessibility: Some(true),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            scope: PermissionGrantScope::Turn,
+        };
+
+        assert_eq!(
+            serde_json::to_value(response).expect("response should serialize"),
+            json!({
+                "permissions": {
+                    "macos": {
+                        "accessibility": true,
+                    },
+                },
+                "scope": "turn",
+            })
+        );
+    }
+
+    #[test]
+    fn permissions_request_approval_response_defaults_scope_to_turn() {
+        let response = serde_json::from_value::<PermissionsRequestApprovalResponse>(json!({
+            "permissions": {},
+        }))
+        .expect("response should deserialize");
+
+        assert_eq!(response.scope, PermissionGrantScope::Turn);
+    }
+
+    #[test]
     fn command_exec_params_default_optional_streaming_flags() {
         let params = serde_json::from_value::<CommandExecParams>(json!({
             "command": ["ls", "-la"],
@@ -5539,6 +5833,30 @@ mod tests {
         );
 
         let back_to_v2 = SandboxPolicy::from(core_policy);
+        assert_eq!(back_to_v2, v2_policy);
+    }
+
+    #[test]
+    fn ask_for_approval_reject_round_trips_request_permissions_flag() {
+        let v2_policy = AskForApproval::Reject {
+            sandbox_approval: true,
+            rules: false,
+            request_permissions: true,
+            mcp_elicitations: false,
+        };
+
+        let core_policy = v2_policy.to_core();
+        assert_eq!(
+            core_policy,
+            CoreAskForApproval::Reject(CoreRejectConfig {
+                sandbox_approval: true,
+                rules: false,
+                request_permissions: true,
+                mcp_elicitations: false,
+            })
+        );
+
+        let back_to_v2 = AskForApproval::from(core_policy);
         assert_eq!(back_to_v2, v2_policy);
     }
 
