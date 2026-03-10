@@ -17,6 +17,7 @@ use codex_app_server_protocol::PluginReadParams;
 use codex_app_server_protocol::PluginReadResponse;
 use codex_app_server_protocol::PluginUninstallResponse;
 use codex_chatgpt::connectors::AppInfo;
+use codex_core::git_info::GitLineStats;
 use codex_file_search::FileMatch;
 use codex_protocol::ThreadId;
 use codex_protocol::openai_models::ModelPreset;
@@ -525,6 +526,11 @@ pub(crate) enum AppEvent {
     StatusLineBranchUpdated {
         cwd: PathBuf,
         branch: Option<String>,
+    },
+    /// Async update of branch line-diff counts for status line rendering.
+    StatusLineBranchDiffUpdated {
+        cwd: PathBuf,
+        diff: Option<GitLineStats>,
     },
     /// Apply a user-confirmed status-line item ordering/selection.
     StatusLineSetup {

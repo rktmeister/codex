@@ -27,6 +27,7 @@ use strum_macros::Display;
 use strum_macros::EnumIter;
 use strum_macros::EnumString;
 
+use super::status_line_format::format_status_line;
 use crate::app_event::AppEvent;
 use crate::app_event_sender::AppEventSender;
 use crate::bottom_pane::CancellationEvent;
@@ -45,7 +46,7 @@ use crate::render::renderable::Renderable;
 /// - Git-related items only show when in a git repository
 /// - Context/limit items only show when data is available from the API
 /// - Session ID only shows after a session has started
-#[derive(EnumIter, EnumString, Display, Debug, Clone, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(EnumIter, EnumString, Display, Debug, Clone, Copy, Eq, PartialEq, Ord, PartialOrd)]
 #[strum(serialize_all = "kebab_case")]
 pub(crate) enum StatusLineItem {
     /// The current model name.
@@ -62,6 +63,12 @@ pub(crate) enum StatusLineItem {
 
     /// Current git branch name (if in a repository).
     GitBranch,
+
+    /// Lines added in the current branch relative to the default branch.
+    BranchLinesAdded,
+
+    /// Lines removed in the current branch relative to the default branch.
+    BranchLinesRemoved,
 
     /// Percentage of context window remaining.
     ContextRemaining,
@@ -99,13 +106,19 @@ pub(crate) enum StatusLineItem {
 
 impl StatusLineItem {
     /// User-visible description shown in the popup.
-    pub(crate) fn description(&self) -> &'static str {
+    pub(crate) fn description(self) -> &'static str {
         match self {
             StatusLineItem::ModelName => "Current model name",
             StatusLineItem::ModelWithReasoning => "Current model name with reasoning level",
             StatusLineItem::CurrentDir => "Current working directory",
             StatusLineItem::ProjectRoot => "Project root directory (omitted when unavailable)",
             StatusLineItem::GitBranch => "Current Git branch (omitted when unavailable)",
+            StatusLineItem::BranchLinesAdded => {
+                "Lines added in current branch relative to default branch (omitted when unavailable)"
+            }
+            StatusLineItem::BranchLinesRemoved => {
+                "Lines removed in current branch relative to default branch (omitted when unavailable)"
+            }
             StatusLineItem::ContextRemaining => {
                 "Percentage of context window remaining (omitted when unknown)"
             }
@@ -154,14 +167,9 @@ impl StatusLinePreviewData {
             .iter()
             .filter(|item| item.enabled)
             .filter_map(|item| item.id.parse::<StatusLineItem>().ok())
-            .filter_map(|item| self.values.get(&item).cloned())
-            .collect::<Vec<_>>()
-            .join(" · ");
-        if preview.is_empty() {
-            None
-        } else {
-            Some(Line::from(preview))
-        }
+            .filter_map(|item| self.values.get(&item).cloned().map(|value| (item, value)))
+            .collect::<Vec<_>>();
+        format_status_line(preview)
     }
 }
 
@@ -297,7 +305,7 @@ mod tests {
     fn preview_uses_runtime_values() {
         let preview_data = StatusLinePreviewData::from_iter([
             (StatusLineItem::ModelName, "gpt-5".to_string()),
-            (StatusLineItem::CurrentDir, "/repo".to_string()),
+            (StatusLineItem::ProjectRoot, "repo".to_string()),
         ]);
         let items = vec![
             MultiSelectItem {
@@ -307,7 +315,7 @@ mod tests {
                 enabled: true,
             },
             MultiSelectItem {
-                id: StatusLineItem::CurrentDir.to_string(),
+                id: StatusLineItem::ProjectRoot.to_string(),
                 name: String::new(),
                 description: None,
                 enabled: true,
@@ -316,7 +324,10 @@ mod tests {
 
         assert_eq!(
             preview_data.line_for_items(&items),
-            Some(Line::from("gpt-5 · /repo"))
+            format_status_line([
+                (StatusLineItem::ModelName, "gpt-5".to_string()),
+                (StatusLineItem::ProjectRoot, "repo".to_string()),
+            ])
         );
     }
 
@@ -341,7 +352,7 @@ mod tests {
 
         assert_eq!(
             preview_data.line_for_items(&items),
-            Some(Line::from("gpt-5"))
+            format_status_line([(StatusLineItem::ModelName, "gpt-5".to_string())])
         );
     }
 
@@ -351,12 +362,12 @@ mod tests {
         let view = StatusLineSetupView::new(
             Some(&[
                 StatusLineItem::ModelName.to_string(),
-                StatusLineItem::CurrentDir.to_string(),
+                StatusLineItem::ProjectRoot.to_string(),
                 StatusLineItem::GitBranch.to_string(),
             ]),
             StatusLinePreviewData::from_iter([
                 (StatusLineItem::ModelName, "gpt-5-codex".to_string()),
-                (StatusLineItem::CurrentDir, "~/codex-rs".to_string()),
+                (StatusLineItem::ProjectRoot, "noumena".to_string()),
                 (
                     StatusLineItem::GitBranch,
                     "jif/statusline-preview".to_string(),

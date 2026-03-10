@@ -5237,6 +5237,10 @@ impl App {
                 self.chat_widget.set_status_line_branch(cwd, branch);
                 self.refresh_status_line();
             }
+            AppEvent::StatusLineBranchDiffUpdated { cwd, diff } => {
+                self.chat_widget.set_status_line_branch_diff(cwd, diff);
+                self.refresh_status_line();
+            }
             AppEvent::StatusLineSetupCancelled => {
                 self.chat_widget.cancel_status_line_setup();
             }
@@ -5697,14 +5701,10 @@ impl App {
                 code: KeyCode::Esc,
                 kind: KeyEventKind::Press | KeyEventKind::Repeat,
                 ..
-            } => {
-                if self.chat_widget.is_normal_backtrack_mode()
-                    && self.chat_widget.composer_is_empty()
-                {
-                    self.handle_backtrack_esc_key(tui);
-                } else {
-                    self.chat_widget.handle_key_event(key_event);
-                }
+            } if self.chat_widget.is_normal_backtrack_mode()
+                && self.chat_widget.composer_is_empty() =>
+            {
+                self.handle_backtrack_esc_key(tui);
             }
             // Enter confirms backtrack when primed + count > 0. Otherwise pass to widget.
             KeyEvent {
@@ -7085,7 +7085,7 @@ mod tests {
 
         assert_eq!(
             app.chat_widget.status_line_text(),
-            Some("950K window".into())
+            Some("ctx 950K window".into())
         );
     }
 
