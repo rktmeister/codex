@@ -68,6 +68,7 @@ use codex_core::git_info::branch_diff_line_counts;
 use codex_core::git_info::current_branch_name;
 use codex_core::git_info::get_git_repo_root;
 use codex_core::git_info::local_git_branches;
+use codex_core::git_info::resolve_root_git_project_for_trust;
 use codex_core::mcp::McpManager;
 use codex_core::models_manager::manager::ModelsManager;
 use codex_core::plugins::PluginsManager;
@@ -5401,11 +5402,39 @@ impl ChatWidget {
     }
 
     fn status_line_project_root_name(&self) -> Option<String> {
-        self.status_line_project_root().map(|root| {
-            root.file_name()
-                .map(|name| name.to_string_lossy().to_string())
-                .unwrap_or_else(|| format_directory_display(&root, None))
-        })
+        let root = self.status_line_project_root()?;
+        let root_name = root
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_else(|| format_directory_display(&root, None));
+
+        let Some(main_root) = resolve_root_git_project_for_trust(self.status_line_cwd()) else {
+            return Some(root_name);
+        };
+        if main_root == root {
+            return Some(root_name);
+        }
+
+        let main_name = main_root
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_else(|| format_directory_display(&main_root, None));
+        let worktree_name = if let Ok(relative) = root.strip_prefix(main_root.join(".worktrees")) {
+            let relative = relative
+                .components()
+                .map(|component| component.as_os_str().to_string_lossy())
+                .collect::<Vec<_>>()
+                .join("/");
+            if relative.is_empty() {
+                root_name.clone()
+            } else {
+                relative
+            }
+        } else {
+            root_name.clone()
+        };
+
+        Some(format!("{main_name}@{worktree_name}"))
     }
 
     /// Resets git-branch cache state when the status-line cwd changes.
