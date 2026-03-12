@@ -32,6 +32,7 @@ use crate::features::maybe_push_unstable_features_warning;
 #[cfg(test)]
 use crate::models_manager::collaboration_mode_presets::CollaborationModesConfig;
 use crate::models_manager::manager::ModelsManager;
+use crate::models_manager::manager::RefreshStrategy;
 use crate::parse_command::parse_command;
 use crate::parse_turn_item;
 use crate::realtime_conversation::RealtimeConversationManager;
@@ -206,8 +207,6 @@ use crate::mcp::maybe_prompt_and_install_mcp_dependencies;
 use crate::mcp::with_codex_apps_mcp;
 use crate::mcp_connection_manager::McpConnectionManager;
 use crate::mcp_connection_manager::codex_apps_tools_cache_key;
-use crate::mcp_connection_manager::filter_codex_apps_mcp_tools_only;
-use crate::mcp_connection_manager::filter_mcp_tools_by_name;
 use crate::mcp_connection_manager::filter_non_codex_apps_mcp_tools_only;
 use crate::memories;
 use crate::mentions::build_connector_slug_counts;
@@ -286,7 +285,6 @@ use crate::tasks::SessionTask;
 use crate::tasks::SessionTaskContext;
 use crate::tools::ToolRouter;
 use crate::tools::context::SharedTurnDiffTracker;
-use crate::tools::handlers::SEARCH_TOOL_BM25_TOOL_NAME;
 use crate::tools::js_repl::JsReplHandle;
 use crate::tools::js_repl::resolve_compatible_node;
 use crate::tools::network_approval::NetworkApprovalService;
@@ -385,6 +383,7 @@ impl Codex {
         if let SessionSource::SubAgent(SubAgentSource::ThreadSpawn { depth, .. }) = session_source
             && depth >= config.agent_max_depth
         {
+            let _ = config.features.disable(Feature::SpawnCsv);
             let _ = config.features.disable(Feature::Collab);
         }
 
@@ -403,6 +402,16 @@ impl Codex {
                 )
             };
             warn!("{message}");
+            config.startup_warnings.push(message);
+        }
+        if config.features.enabled(Feature::CodeMode)
+            && let Err(err) = resolve_compatible_node(config.js_repl_node_path.as_deref()).await
+        {
+            let message = format!(
+                "Disabled `exec` for this session because the configured Node runtime is unavailable or incompatible. {err}"
+            );
+            warn!("{message}");
+            let _ = config.features.disable(Feature::CodeMode);
             config.startup_warnings.push(message);
         }
 
@@ -646,6 +655,7 @@ pub(crate) struct Session {
     pub(crate) conversation_id: ThreadId,
     tx_event: Sender<Event>,
     agent_status: watch::Sender<AgentStatus>,
+    out_of_band_elicitation_paused: watch::Sender<bool>,
     state: Mutex<SessionState>,
     /// The set of enabled features should be invariant for the lifetime of the
     /// session.
@@ -726,6 +736,11 @@ impl TurnContext {
         })
     }
 
+    pub(crate) fn apps_enabled(&self) -> bool {
+        self.features
+            .apps_enabled_cached(self.auth_manager.as_deref())
+    }
+
     pub(crate) async fn with_model(&self, model: String, models_manager: &ModelsManager) -> Self {
         let mut config = (*self.config).clone();
         config.model = Some(model.clone());
@@ -759,6 +774,9 @@ impl TurnContext {
         let features = self.features.clone();
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
             model_info: &model_info,
+            available_models: &models_manager
+                .list_models(RefreshStrategy::OnlineIfUncached)
+                .await,
             features: &features,
             web_search_mode: self.tools_config.web_search_mode,
             session_source: self.session_source.clone(),
@@ -1107,6 +1125,14 @@ impl Session {
         state.session_configuration.codex_home().clone()
     }
 
+    pub(crate) fn subscribe_out_of_band_elicitation_pause_state(&self) -> watch::Receiver<bool> {
+        self.out_of_band_elicitation_paused.subscribe()
+    }
+
+    pub(crate) fn set_out_of_band_elicitation_pause_state(&self, paused: bool) {
+        self.out_of_band_elicitation_paused.send_replace(paused);
+    }
+
     fn start_file_watcher_listener(self: &Arc<Self>) {
         let mut rx = self.services.file_watcher.subscribe();
         let weak_sess = Arc::downgrade(self);
@@ -1138,6 +1164,7 @@ impl Session {
         session_configuration: &SessionConfiguration,
         per_turn_config: Config,
         model_info: ModelInfo,
+        models_manager: &ModelsManager,
         network: Option<NetworkProxy>,
         sub_id: String,
         js_repl: Arc<JsReplHandle>,
@@ -1159,6 +1186,7 @@ impl Session {
 
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
             model_info: &model_info,
+            available_models: &models_manager.try_list_models().unwrap_or_default(),
             features: &per_turn_config.features,
             web_search_mode: Some(per_turn_config.web_search_mode.value()),
             session_source: session_source.clone(),
@@ -1550,6 +1578,25 @@ impl Session {
                 (None, None)
             };
 
+        let mut hook_shell_argv = default_shell.derive_exec_args("", false);
+        let hook_shell_program = hook_shell_argv.remove(0);
+        let _ = hook_shell_argv.pop();
+        let hooks = Hooks::new(HooksConfig {
+            legacy_notify_argv: config.notify.clone(),
+            feature_enabled: config.features.enabled(Feature::CodexHooks),
+            config_layer_stack: Some(config.config_layer_stack.clone()),
+            shell_program: Some(hook_shell_program),
+            shell_args: hook_shell_argv,
+        });
+        for warning in hooks.startup_warnings() {
+            post_session_configured_events.push(Event {
+                id: INITIAL_SUBMIT_ID.to_owned(),
+                msg: EventMsg::Warning(WarningEvent {
+                    message: warning.clone(),
+                }),
+            });
+        }
+
         let services = SessionServices {
             // Initialize the MCP connection manager with an uninitialized
             // instance. It will be replaced with one created via
@@ -1571,9 +1618,7 @@ impl Session {
                 Arc::clone(&config),
                 Arc::clone(&auth_manager),
             ),
-            hooks: Hooks::new(HooksConfig {
-                legacy_notify_argv: config.notify.clone(),
-            }),
+            hooks,
             rollout: Mutex::new(rollout_recorder),
             user_shell: Arc::new(default_shell),
             shell_snapshot_tx,
@@ -1603,16 +1648,20 @@ impl Session {
                 config.features.enabled(Feature::RuntimeMetrics),
                 Self::build_model_client_beta_features_header(config.as_ref()),
             ),
+            code_mode_store: Default::default(),
         };
         let js_repl = Arc::new(JsReplHandle::with_node_path(
             config.js_repl_node_path.clone(),
             config.js_repl_node_module_dirs.clone(),
         ));
+        let (out_of_band_elicitation_paused, _out_of_band_elicitation_paused_rx) =
+            watch::channel(false);
 
         let sess = Arc::new(Session {
             conversation_id,
             tx_event: tx_event.clone(),
             agent_status,
+            out_of_band_elicitation_paused,
             state: Mutex::new(state),
             features: config.features.clone(),
             pending_mcp_server_refresh_config: Mutex::new(None),
@@ -1720,9 +1769,19 @@ impl Session {
         }
         sess.schedule_startup_prewarm(session_configuration.base_instructions.clone())
             .await;
+        let session_start_source = match &initial_history {
+            InitialHistory::Resumed(_) => codex_hooks::SessionStartSource::Resume,
+            InitialHistory::New | InitialHistory::Forked(_) => {
+                codex_hooks::SessionStartSource::Startup
+            }
+        };
 
         // record_initial_history can emit events. We record only after the SessionConfiguredEvent is emitted.
         sess.record_initial_history(initial_history).await;
+        {
+            let mut state = sess.state.lock().await;
+            state.set_pending_session_start_source(Some(session_start_source));
+        }
 
         memories::start_memories_startup_task(
             &sess,
@@ -1818,26 +1877,6 @@ impl Session {
         }
     }
 
-    pub(crate) async fn merge_mcp_tool_selection(&self, tool_names: Vec<String>) -> Vec<String> {
-        let mut state = self.state.lock().await;
-        state.merge_mcp_tool_selection(tool_names)
-    }
-
-    pub(crate) async fn set_mcp_tool_selection(&self, tool_names: Vec<String>) {
-        let mut state = self.state.lock().await;
-        state.set_mcp_tool_selection(tool_names);
-    }
-
-    pub(crate) async fn get_mcp_tool_selection(&self) -> Option<Vec<String>> {
-        let state = self.state.lock().await;
-        state.get_mcp_tool_selection()
-    }
-
-    pub(crate) async fn clear_mcp_tool_selection(&self) {
-        let mut state = self.state.lock().await;
-        state.clear_mcp_tool_selection();
-    }
-
     // Merges connector IDs into the session-level explicit connector selection.
     pub(crate) async fn merge_connector_selection(
         &self,
@@ -1861,7 +1900,6 @@ impl Session {
 
     async fn record_initial_history(&self, conversation_history: InitialHistory) {
         let turn_context = self.new_default_turn().await;
-        self.clear_mcp_tool_selection().await;
         let is_subagent = {
             let state = self.state.lock().await;
             matches!(
@@ -1871,26 +1909,12 @@ impl Session {
         };
         match conversation_history {
             InitialHistory::New => {
-                // Build and record initial items (user instructions + environment context)
-                // TODO(ccunningham): Defer initial context insertion until the first real turn
-                // starts so it reflects the actual first-turn settings (permissions, etc.) and
-                // we do not emit model-visible "diff" updates before the first user message.
-                let items = self.build_initial_context(&turn_context).await;
-                self.record_conversation_items(&turn_context, &items).await;
-                {
-                    let mut state = self.state.lock().await;
-                    state.set_reference_context_item(Some(turn_context.to_turn_context_item()));
-                }
+                // Defer initial context insertion until the first real turn starts so
+                // turn/start overrides can be merged before we write model-visible context.
                 self.set_previous_turn_settings(None).await;
-                // Ensure initial items are visible to immediate readers (e.g., tests, forks).
-                if !is_subagent {
-                    self.flush_rollout().await;
-                }
             }
             InitialHistory::Resumed(resumed_history) => {
                 let rollout_items = resumed_history.history;
-                let restored_tool_selection =
-                    Self::extract_mcp_tool_selection_from_rollout(&rollout_items);
 
                 let reconstructed_rollout = self
                     .reconstruct_history_from_rollout(&turn_context, &rollout_items)
@@ -1936,9 +1960,6 @@ impl Session {
                     let mut state = self.state.lock().await;
                     state.set_token_info(Some(info));
                 }
-                if let Some(selected_tools) = restored_tool_selection {
-                    self.set_mcp_tool_selection(selected_tools).await;
-                }
 
                 // Defer seeding the session's initial context until the first turn starts so
                 // turn/start overrides can be merged before we write to the rollout.
@@ -1947,9 +1968,6 @@ impl Session {
                 }
             }
             InitialHistory::Forked(rollout_items) => {
-                let restored_tool_selection =
-                    Self::extract_mcp_tool_selection_from_rollout(&rollout_items);
-
                 let reconstructed_rollout = self
                     .reconstruct_history_from_rollout(&turn_context, &rollout_items)
                     .await;
@@ -1976,9 +1994,6 @@ impl Session {
                 if let Some(info) = Self::last_token_info_from_rollout(&rollout_items) {
                     let mut state = self.state.lock().await;
                     state.set_token_info(Some(info));
-                }
-                if let Some(selected_tools) = restored_tool_selection {
-                    self.set_mcp_tool_selection(selected_tools).await;
                 }
 
                 // If persisting, persist all rollout items as-is (recorder filters)
@@ -2011,54 +2026,6 @@ impl Session {
             RolloutItem::EventMsg(EventMsg::TokenCount(ev)) => ev.info.clone(),
             _ => None,
         })
-    }
-
-    fn extract_mcp_tool_selection_from_rollout(
-        rollout_items: &[RolloutItem],
-    ) -> Option<Vec<String>> {
-        let mut search_call_ids = HashSet::new();
-        let mut active_selected_tools: Option<Vec<String>> = None;
-
-        for item in rollout_items {
-            let RolloutItem::ResponseItem(response_item) = item else {
-                continue;
-            };
-            match response_item {
-                ResponseItem::FunctionCall { name, call_id, .. } => {
-                    if name == SEARCH_TOOL_BM25_TOOL_NAME {
-                        search_call_ids.insert(call_id.clone());
-                    }
-                }
-                ResponseItem::FunctionCallOutput { call_id, output } => {
-                    if !search_call_ids.contains(call_id) {
-                        continue;
-                    }
-                    let Some(content) = output.body.to_text() else {
-                        continue;
-                    };
-                    let Ok(payload) = serde_json::from_str::<Value>(&content) else {
-                        continue;
-                    };
-                    let Some(selected_tools) = payload
-                        .get("active_selected_tools")
-                        .and_then(Value::as_array)
-                    else {
-                        continue;
-                    };
-                    let Some(selected_tools) = selected_tools
-                        .iter()
-                        .map(|value| value.as_str().map(str::to_string))
-                        .collect::<Option<Vec<_>>>()
-                    else {
-                        continue;
-                    };
-                    active_selected_tools = Some(selected_tools);
-                }
-                _ => {}
-            }
-        }
-
-        active_selected_tools
     }
 
     async fn previous_turn_settings(&self) -> Option<PreviousTurnSettings> {
@@ -2254,6 +2221,7 @@ impl Session {
             &session_configuration,
             per_turn_config,
             model_info,
+            &self.services.models_manager,
             self.services
                 .network_proxy
                 .as_ref()
@@ -3370,7 +3338,7 @@ impl Session {
                 );
             }
         }
-        if turn_context.features.enabled(Feature::Apps) {
+        if turn_context.apps_enabled() {
             developer_sections.push(render_apps_section());
         }
         if turn_context.features.enabled(Feature::CodexGitCommit)
@@ -3801,7 +3769,20 @@ impl Session {
             .await
     }
 
-    pub(crate) async fn parse_mcp_tool_name(&self, tool_name: &str) -> Option<(String, String)> {
+    pub(crate) async fn parse_mcp_tool_name(
+        &self,
+        name: &str,
+        namespace: &Option<String>,
+    ) -> Option<(String, String)> {
+        let tool_name = if let Some(namespace) = namespace {
+            if name.starts_with(namespace.as_str()) {
+                name
+            } else {
+                &format!("{namespace}{name}")
+            }
+        } else {
+            name
+        };
         self.services
             .mcp_connection_manager
             .read()
@@ -3828,6 +3809,21 @@ impl Session {
         Arc::clone(&self.services.user_shell)
     }
 
+    pub(crate) async fn current_rollout_path(&self) -> Option<PathBuf> {
+        let recorder = {
+            let guard = self.services.rollout.lock().await;
+            guard.clone()
+        };
+        recorder.map(|recorder| recorder.rollout_path().to_path_buf())
+    }
+
+    pub(crate) async fn take_pending_session_start_source(
+        &self,
+    ) -> Option<codex_hooks::SessionStartSource> {
+        let mut state = self.state.lock().await;
+        state.take_pending_session_start_source()
+    }
+
     async fn refresh_mcp_servers_inner(
         &self,
         turn_context: &TurnContext,
@@ -3842,7 +3838,7 @@ impl Session {
             .tool_plugin_provenance(config.as_ref());
         let mcp_servers = with_codex_apps_mcp(
             mcp_servers,
-            self.features.enabled(Feature::Apps),
+            self.features.apps_enabled_for_auth(auth.as_ref()),
             auth.as_ref(),
             config.as_ref(),
         );
@@ -5076,6 +5072,11 @@ async fn spawn_review_thread(
     let review_web_search_mode = WebSearchMode::Disabled;
     let tools_config = ToolsConfig::new(&ToolsConfigParams {
         model_info: &review_model_info,
+        available_models: &sess
+            .services
+            .models_manager
+            .list_models(RefreshStrategy::OnlineIfUncached)
+            .await,
         features: &review_features,
         web_search_mode: Some(review_web_search_mode),
         session_source: parent_turn_context.session_source.clone(),
@@ -5305,28 +5306,27 @@ pub(crate) async fn run_turn(
     // enabled plugins, then converted into turn-scoped guidance below.
     let mentioned_plugins =
         collect_explicit_plugin_mentions(&input, loaded_plugins.capability_summaries());
-    let mcp_tools =
-        if turn_context.config.features.enabled(Feature::Apps) || !mentioned_plugins.is_empty() {
-            // Plugin mentions need raw MCP/app inventory even when app tools
-            // are normally hidden so we can describe the plugin's currently
-            // usable capabilities for this turn.
-            match sess
-                .services
-                .mcp_connection_manager
-                .read()
-                .await
-                .list_all_tools()
-                .or_cancel(&cancellation_token)
-                .await
-            {
-                Ok(mcp_tools) => mcp_tools,
-                Err(_) if turn_context.config.features.enabled(Feature::Apps) => return None,
-                Err(_) => HashMap::new(),
-            }
-        } else {
-            HashMap::new()
-        };
-    let available_connectors = if turn_context.config.features.enabled(Feature::Apps) {
+    let mcp_tools = if turn_context.apps_enabled() || !mentioned_plugins.is_empty() {
+        // Plugin mentions need raw MCP/app inventory even when app tools
+        // are normally hidden so we can describe the plugin's currently
+        // usable capabilities for this turn.
+        match sess
+            .services
+            .mcp_connection_manager
+            .read()
+            .await
+            .list_all_tools()
+            .or_cancel(&cancellation_token)
+            .await
+        {
+            Ok(mcp_tools) => mcp_tools,
+            Err(_) if turn_context.apps_enabled() => return None,
+            Err(_) => HashMap::new(),
+        }
+    } else {
+        HashMap::new()
+    };
+    let available_connectors = if turn_context.apps_enabled() {
         let connectors = connectors::merge_plugin_apps_with_accessible(
             loaded_plugins.effective_apps(),
             connectors::accessible_connectors_from_mcp_tools(&mcp_tools),
@@ -5457,6 +5457,8 @@ pub(crate) async fn run_turn(
     sess.maybe_start_ghost_snapshot(Arc::clone(&turn_context), cancellation_token.child_token())
         .await;
     let mut last_agent_message: Option<String> = None;
+    let mut stop_hook_active = false;
+    let mut pending_stop_hook_message: Option<String> = None;
     // Although from the perspective of codex.rs, TurnDiffTracker has the lifecycle of a Task which contains
     // many turns, from the perspective of the user, it is a single turn.
     let turn_diff_tracker = Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new()));
@@ -5468,6 +5470,55 @@ pub(crate) async fn run_turn(
         prewarmed_client_session.unwrap_or_else(|| sess.services.model_client.new_session());
 
     loop {
+        if let Some(session_start_source) = sess.take_pending_session_start_source().await {
+            let session_start_permission_mode = match turn_context.approval_policy.value() {
+                AskForApproval::Never => "bypassPermissions",
+                AskForApproval::UnlessTrusted
+                | AskForApproval::OnFailure
+                | AskForApproval::OnRequest
+                | AskForApproval::Reject(_) => "default",
+            }
+            .to_string();
+            let session_start_request = codex_hooks::SessionStartRequest {
+                session_id: sess.conversation_id,
+                cwd: turn_context.cwd.clone(),
+                transcript_path: sess.current_rollout_path().await,
+                model: turn_context.model_info.slug.clone(),
+                permission_mode: session_start_permission_mode,
+                source: session_start_source,
+            };
+            for run in sess.hooks().preview_session_start(&session_start_request) {
+                sess.send_event(
+                    &turn_context,
+                    EventMsg::HookStarted(crate::protocol::HookStartedEvent {
+                        turn_id: Some(turn_context.sub_id.clone()),
+                        run,
+                    }),
+                )
+                .await;
+            }
+            let session_start_outcome = sess
+                .hooks()
+                .run_session_start(session_start_request, Some(turn_context.sub_id.clone()))
+                .await;
+            for completed in session_start_outcome.hook_events {
+                sess.send_event(&turn_context, EventMsg::HookCompleted(completed))
+                    .await;
+            }
+            if session_start_outcome.should_stop {
+                break;
+            }
+            if let Some(additional_context) = session_start_outcome.additional_context {
+                let developer_message: ResponseItem =
+                    DeveloperInstructions::new(additional_context).into();
+                sess.record_conversation_items(
+                    &turn_context,
+                    std::slice::from_ref(&developer_message),
+                )
+                .await;
+            }
+        }
+
         // Note that pending_input would be something like a message the user
         // submitted through the UI while the model was running. Though the UI
         // may support this, the model might not.
@@ -5499,11 +5550,14 @@ pub(crate) async fn run_turn(
         }
 
         // Construct the input that we will send to the model.
-        let sampling_request_input: Vec<ResponseItem> = {
+        let mut sampling_request_input: Vec<ResponseItem> = {
             sess.clone_history()
                 .await
                 .for_prompt(&turn_context.model_info.input_modalities)
         };
+        if let Some(stop_hook_message) = pending_stop_hook_message.take() {
+            sampling_request_input.push(DeveloperInstructions::new(stop_hook_message).into());
+        }
 
         let sampling_request_input_messages = sampling_request_input
             .iter()
@@ -5566,6 +5620,57 @@ pub(crate) async fn run_turn(
 
                 if !needs_follow_up {
                     last_agent_message = sampling_request_last_agent_message;
+                    let stop_hook_permission_mode = match turn_context.approval_policy.value() {
+                        AskForApproval::Never => "bypassPermissions",
+                        AskForApproval::UnlessTrusted
+                        | AskForApproval::OnFailure
+                        | AskForApproval::OnRequest
+                        | AskForApproval::Reject(_) => "default",
+                    }
+                    .to_string();
+                    let stop_request = codex_hooks::StopRequest {
+                        session_id: sess.conversation_id,
+                        turn_id: turn_context.sub_id.clone(),
+                        cwd: turn_context.cwd.clone(),
+                        transcript_path: sess.current_rollout_path().await,
+                        model: turn_context.model_info.slug.clone(),
+                        permission_mode: stop_hook_permission_mode,
+                        stop_hook_active,
+                        last_assistant_message: last_agent_message.clone(),
+                    };
+                    for run in sess.hooks().preview_stop(&stop_request) {
+                        sess.send_event(
+                            &turn_context,
+                            EventMsg::HookStarted(crate::protocol::HookStartedEvent {
+                                turn_id: Some(turn_context.sub_id.clone()),
+                                run,
+                            }),
+                        )
+                        .await;
+                    }
+                    let stop_outcome = sess.hooks().run_stop(stop_request).await;
+                    for completed in stop_outcome.hook_events {
+                        sess.send_event(&turn_context, EventMsg::HookCompleted(completed))
+                            .await;
+                    }
+                    if stop_outcome.should_block {
+                        if stop_hook_active {
+                            sess.send_event(
+                                &turn_context,
+                                EventMsg::Warning(WarningEvent {
+                                    message: "Stop hook blocked twice in the same turn; ignoring the second block to avoid an infinite loop.".to_string(),
+                                }),
+                            )
+                            .await;
+                        } else {
+                            stop_hook_active = true;
+                            pending_stop_hook_message = stop_outcome.block_message_for_model;
+                            continue;
+                        }
+                    }
+                    if stop_outcome.should_stop {
+                        break;
+                    }
                     let hook_outcomes = sess
                         .hooks()
                         .dispatch(HookPayload {
@@ -5893,7 +5998,7 @@ fn filter_codex_apps_mcp_tools(
         .iter()
         .filter(|(_, tool)| {
             if tool.server_name != CODEX_APPS_MCP_SERVER_NAME {
-                return true;
+                return false;
             }
             let Some(connector_id) = codex_apps_connector_id(tool) else {
                 return false;
@@ -6077,7 +6182,7 @@ async fn built_tools(
     let mut effective_explicitly_enabled_connectors = explicitly_enabled_connectors.clone();
     effective_explicitly_enabled_connectors.extend(sess.get_connector_selection().await);
 
-    let connectors = if turn_context.features.enabled(Feature::Apps) {
+    let connectors = if turn_context.apps_enabled() {
         let connectors = connectors::merge_plugin_apps_with_accessible(
             loaded_plugins.effective_apps(),
             connectors::accessible_connectors_from_mcp_tools(&mcp_tools),
@@ -6109,18 +6214,13 @@ async fn built_tools(
         );
 
         let mut selected_mcp_tools = filter_non_codex_apps_mcp_tools_only(&mcp_tools);
-
-        if let Some(selected_tools) = sess.get_mcp_tool_selection().await {
-            selected_mcp_tools.extend(filter_mcp_tools_by_name(&mcp_tools, &selected_tools));
-        }
-
-        selected_mcp_tools.extend(filter_codex_apps_mcp_tools_only(
+        selected_mcp_tools.extend(filter_codex_apps_mcp_tools(
             &mcp_tools,
             explicitly_enabled.as_ref(),
+            &turn_context.config,
         ));
 
-        mcp_tools =
-            connectors::filter_codex_apps_tools_by_policy(selected_mcp_tools, &turn_context.config);
+        mcp_tools = selected_mcp_tools;
     }
 
     Ok(Arc::new(ToolRouter::from_config(
@@ -6382,6 +6482,8 @@ fn realtime_text_for_event(msg: &EventMsg) -> Option<String> {
         | EventMsg::ExitedReviewMode(_)
         | EventMsg::RawResponseItem(_)
         | EventMsg::ItemStarted(_)
+        | EventMsg::HookStarted(_)
+        | EventMsg::HookCompleted(_)
         | EventMsg::AgentMessageContentDelta(_)
         | EventMsg::PlanDelta(_)
         | EventMsg::ReasoningContentDelta(_)
@@ -6636,8 +6738,7 @@ async fn handle_assistant_item_done_in_plan_mode(
     {
         maybe_complete_plan_item_from_message(sess, turn_context, state, item).await;
 
-        if let Some(turn_item) =
-            handle_non_tool_response_item(item, true, Some(&turn_context.cwd)).await
+        if let Some(turn_item) = handle_non_tool_response_item(sess, turn_context, item, true).await
         {
             emit_turn_item_in_plan_mode(
                 sess,
@@ -6818,8 +6919,13 @@ async fn try_run_sampling_request(
                 needs_follow_up |= output_result.needs_follow_up;
             }
             ResponseEvent::OutputItemAdded(item) => {
-                if let Some(turn_item) =
-                    handle_non_tool_response_item(&item, plan_mode, Some(&turn_context.cwd)).await
+                if let Some(turn_item) = handle_non_tool_response_item(
+                    sess.as_ref(),
+                    turn_context.as_ref(),
+                    &item,
+                    plan_mode,
+                )
+                .await
                 {
                     let mut turn_item = turn_item;
                     let mut seeded_parsed: Option<ParsedAssistantTextDelta> = None;

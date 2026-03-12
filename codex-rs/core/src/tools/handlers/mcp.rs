@@ -3,25 +3,22 @@ use std::sync::Arc;
 
 use crate::function_tool::FunctionCallError;
 use crate::mcp_tool_call::handle_mcp_tool_call;
-use crate::tools::context::ContentToolOutput;
-use crate::tools::context::McpToolOutput;
-use crate::tools::context::TextToolOutput;
 use crate::tools::context::ToolInvocation;
-use crate::tools::context::ToolOutputBox;
 use crate::tools::context::ToolPayload;
 use crate::tools::registry::ToolHandler;
 use crate::tools::registry::ToolKind;
-use codex_protocol::models::ResponseInputItem;
+use codex_protocol::mcp::CallToolResult;
 
 pub struct McpHandler;
-
 #[async_trait]
 impl ToolHandler for McpHandler {
+    type Output = CallToolResult;
+
     fn kind(&self) -> ToolKind {
         ToolKind::Mcp
     }
 
-    async fn handle(&self, invocation: ToolInvocation) -> Result<ToolOutputBox, FunctionCallError> {
+    async fn handle(&self, invocation: ToolInvocation) -> Result<Self::Output, FunctionCallError> {
         let ToolInvocation {
             session,
             turn,
@@ -46,7 +43,7 @@ impl ToolHandler for McpHandler {
         let (server, tool, raw_arguments) = payload;
         let arguments_str = raw_arguments;
 
-        let response = handle_mcp_tool_call(
+        let output = handle_mcp_tool_call(
             Arc::clone(&session),
             &turn,
             call_id.clone(),
@@ -56,24 +53,6 @@ impl ToolHandler for McpHandler {
         )
         .await;
 
-        match response {
-            ResponseInputItem::McpToolCallOutput { result, .. } => {
-                Ok(Box::new(McpToolOutput { result }))
-            }
-            ResponseInputItem::FunctionCallOutput { output, .. } => {
-                let success = output.success;
-                match output.body {
-                    codex_protocol::models::FunctionCallOutputBody::Text(text) => {
-                        Ok(Box::new(TextToolOutput { text, success }))
-                    }
-                    codex_protocol::models::FunctionCallOutputBody::ContentItems(content) => {
-                        Ok(Box::new(ContentToolOutput { content, success }))
-                    }
-                }
-            }
-            _ => Err(FunctionCallError::RespondToModel(
-                "mcp handler received unexpected response variant".to_string(),
-            )),
-        }
+        Ok(output)
     }
 }

@@ -43,6 +43,8 @@ use codex_app_server_protocol::FileChangeRequestApprovalParams;
 use codex_app_server_protocol::FileChangeRequestApprovalResponse;
 use codex_app_server_protocol::FileUpdateChange;
 use codex_app_server_protocol::GrantedPermissionProfile as V2GrantedPermissionProfile;
+use codex_app_server_protocol::HookCompletedNotification;
+use codex_app_server_protocol::HookStartedNotification;
 use codex_app_server_protocol::InterruptConversationResponse;
 use codex_app_server_protocol::ItemCompletedNotification;
 use codex_app_server_protocol::ItemStartedNotification;
@@ -273,6 +275,8 @@ pub(crate) async fn apply_bespoke_event_handling(
             if let ApiVersion::V2 = api_version {
                 match event.payload {
                     RealtimeEvent::SessionUpdated { .. } => {}
+                    RealtimeEvent::InputTranscriptDelta(_) => {}
+                    RealtimeEvent::OutputTranscriptDelta(_) => {}
                     RealtimeEvent::AudioOut(audio) => {
                         let notification = ThreadRealtimeOutputAudioDeltaNotification {
                             thread_id: conversation_id.to_string(),
@@ -304,7 +308,7 @@ pub(crate) async fn apply_bespoke_event_handling(
                                 "handoff_id": handoff.handoff_id,
                                 "item_id": handoff.item_id,
                                 "input_transcript": handoff.input_transcript,
-                                "messages": handoff.messages,
+                                "active_transcript": handoff.active_transcript,
                             }),
                         };
                         outgoing
@@ -858,6 +862,8 @@ pub(crate) async fn apply_bespoke_event_handling(
                 sender_thread_id: begin_event.sender_thread_id.to_string(),
                 receiver_thread_ids: Vec::new(),
                 prompt: Some(begin_event.prompt),
+                model: Some(begin_event.model),
+                reasoning_effort: Some(begin_event.reasoning_effort),
                 agents_states: HashMap::new(),
             };
             let notification = ItemStartedNotification {
@@ -895,6 +901,8 @@ pub(crate) async fn apply_bespoke_event_handling(
                 sender_thread_id: end_event.sender_thread_id.to_string(),
                 receiver_thread_ids,
                 prompt: Some(end_event.prompt),
+                model: Some(end_event.model),
+                reasoning_effort: Some(end_event.reasoning_effort),
                 agents_states,
             };
             let notification = ItemCompletedNotification {
@@ -915,6 +923,8 @@ pub(crate) async fn apply_bespoke_event_handling(
                 sender_thread_id: begin_event.sender_thread_id.to_string(),
                 receiver_thread_ids,
                 prompt: Some(begin_event.prompt),
+                model: None,
+                reasoning_effort: None,
                 agents_states: HashMap::new(),
             };
             let notification = ItemStartedNotification {
@@ -941,6 +951,8 @@ pub(crate) async fn apply_bespoke_event_handling(
                 sender_thread_id: end_event.sender_thread_id.to_string(),
                 receiver_thread_ids: vec![receiver_id.clone()],
                 prompt: Some(end_event.prompt),
+                model: None,
+                reasoning_effort: None,
                 agents_states: [(receiver_id, received_status)].into_iter().collect(),
             };
             let notification = ItemCompletedNotification {
@@ -965,6 +977,8 @@ pub(crate) async fn apply_bespoke_event_handling(
                 sender_thread_id: begin_event.sender_thread_id.to_string(),
                 receiver_thread_ids,
                 prompt: None,
+                model: None,
+                reasoning_effort: None,
                 agents_states: HashMap::new(),
             };
             let notification = ItemStartedNotification {
@@ -1001,6 +1015,8 @@ pub(crate) async fn apply_bespoke_event_handling(
                 sender_thread_id: end_event.sender_thread_id.to_string(),
                 receiver_thread_ids,
                 prompt: None,
+                model: None,
+                reasoning_effort: None,
                 agents_states,
             };
             let notification = ItemCompletedNotification {
@@ -1020,6 +1036,8 @@ pub(crate) async fn apply_bespoke_event_handling(
                 sender_thread_id: begin_event.sender_thread_id.to_string(),
                 receiver_thread_ids: vec![begin_event.receiver_thread_id.to_string()],
                 prompt: None,
+                model: None,
+                reasoning_effort: None,
                 agents_states: HashMap::new(),
             };
             let notification = ItemStartedNotification {
@@ -1060,6 +1078,8 @@ pub(crate) async fn apply_bespoke_event_handling(
                 sender_thread_id: end_event.sender_thread_id.to_string(),
                 receiver_thread_ids: vec![receiver_id],
                 prompt: None,
+                model: None,
+                reasoning_effort: None,
                 agents_states,
             };
             let notification = ItemCompletedNotification {
@@ -1307,6 +1327,30 @@ pub(crate) async fn apply_bespoke_event_handling(
             outgoing
                 .send_server_notification(ServerNotification::ItemCompleted(notification))
                 .await;
+        }
+        EventMsg::HookStarted(event) => {
+            if let ApiVersion::V2 = api_version {
+                let notification = HookStartedNotification {
+                    thread_id: conversation_id.to_string(),
+                    turn_id: event.turn_id,
+                    run: event.run.into(),
+                };
+                outgoing
+                    .send_server_notification(ServerNotification::HookStarted(notification))
+                    .await;
+            }
+        }
+        EventMsg::HookCompleted(event) => {
+            if let ApiVersion::V2 = api_version {
+                let notification = HookCompletedNotification {
+                    thread_id: conversation_id.to_string(),
+                    turn_id: event.turn_id,
+                    run: event.run.into(),
+                };
+                outgoing
+                    .send_server_notification(ServerNotification::HookCompleted(notification))
+                    .await;
+            }
         }
         EventMsg::ExitedReviewMode(review_event) => {
             let review = match review_event.review_output {
@@ -2487,6 +2531,8 @@ fn collab_resume_begin_item(
         sender_thread_id: begin_event.sender_thread_id.to_string(),
         receiver_thread_ids: vec![begin_event.receiver_thread_id.to_string()],
         prompt: None,
+        model: None,
+        reasoning_effort: None,
         agents_states: HashMap::new(),
     }
 }
@@ -2511,6 +2557,8 @@ fn collab_resume_end_item(end_event: codex_protocol::protocol::CollabResumeEndEv
         sender_thread_id: end_event.sender_thread_id.to_string(),
         receiver_thread_ids: vec![receiver_id],
         prompt: None,
+        model: None,
+        reasoning_effort: None,
         agents_states,
     }
 }
@@ -2599,6 +2647,7 @@ mod tests {
     use codex_app_server_protocol::TurnPlanStepStatus;
     use codex_protocol::mcp::CallToolResult;
     use codex_protocol::models::MacOsAutomationPermission;
+    use codex_protocol::models::MacOsContactsPermission;
     use codex_protocol::models::MacOsPreferencesPermission;
     use codex_protocol::models::MacOsSeatbeltProfileExtensions;
     use codex_protocol::plan_tool::PlanItemArg;
@@ -2688,8 +2737,11 @@ mod tests {
                     "com.apple.Notes".to_string(),
                     "com.apple.Reminders".to_string(),
                 ]),
+                macos_launch_services: true,
                 macos_accessibility: true,
                 macos_calendar: true,
+                macos_reminders: true,
+                macos_contacts: MacOsContactsPermission::ReadWrite,
             }),
             ..Default::default()
         };
@@ -2703,8 +2755,11 @@ mod tests {
                     macos: Some(MacOsSeatbeltProfileExtensions {
                         macos_preferences: MacOsPreferencesPermission::ReadOnly,
                         macos_automation: MacOsAutomationPermission::None,
+                        macos_launch_services: false,
                         macos_accessibility: false,
                         macos_calendar: false,
+                        macos_reminders: false,
+                        macos_contacts: MacOsContactsPermission::None,
                     }),
                     ..Default::default()
                 },
@@ -2721,8 +2776,28 @@ mod tests {
                         macos_automation: MacOsAutomationPermission::BundleIds(vec![
                             "com.apple.Notes".to_string(),
                         ]),
+                        macos_launch_services: false,
                         macos_accessibility: false,
                         macos_calendar: false,
+                        macos_reminders: false,
+                        macos_contacts: MacOsContactsPermission::None,
+                    }),
+                    ..Default::default()
+                },
+            ),
+            (
+                serde_json::json!({
+                    "launchServices": true,
+                }),
+                CorePermissionProfile {
+                    macos: Some(MacOsSeatbeltProfileExtensions {
+                        macos_preferences: MacOsPreferencesPermission::None,
+                        macos_automation: MacOsAutomationPermission::None,
+                        macos_launch_services: true,
+                        macos_accessibility: false,
+                        macos_calendar: false,
+                        macos_reminders: false,
+                        macos_contacts: MacOsContactsPermission::None,
                     }),
                     ..Default::default()
                 },
@@ -2735,8 +2810,11 @@ mod tests {
                     macos: Some(MacOsSeatbeltProfileExtensions {
                         macos_preferences: MacOsPreferencesPermission::None,
                         macos_automation: MacOsAutomationPermission::None,
+                        macos_launch_services: false,
                         macos_accessibility: true,
                         macos_calendar: false,
+                        macos_reminders: false,
+                        macos_contacts: MacOsContactsPermission::None,
                     }),
                     ..Default::default()
                 },
@@ -2749,8 +2827,45 @@ mod tests {
                     macos: Some(MacOsSeatbeltProfileExtensions {
                         macos_preferences: MacOsPreferencesPermission::None,
                         macos_automation: MacOsAutomationPermission::None,
+                        macos_launch_services: false,
                         macos_accessibility: false,
                         macos_calendar: true,
+                        macos_reminders: false,
+                        macos_contacts: MacOsContactsPermission::None,
+                    }),
+                    ..Default::default()
+                },
+            ),
+            (
+                serde_json::json!({
+                    "reminders": true,
+                }),
+                CorePermissionProfile {
+                    macos: Some(MacOsSeatbeltProfileExtensions {
+                        macos_preferences: MacOsPreferencesPermission::None,
+                        macos_automation: MacOsAutomationPermission::None,
+                        macos_launch_services: false,
+                        macos_accessibility: false,
+                        macos_calendar: false,
+                        macos_reminders: true,
+                        macos_contacts: MacOsContactsPermission::None,
+                    }),
+                    ..Default::default()
+                },
+            ),
+            (
+                serde_json::json!({
+                    "contacts": "read_only",
+                }),
+                CorePermissionProfile {
+                    macos: Some(MacOsSeatbeltProfileExtensions {
+                        macos_preferences: MacOsPreferencesPermission::None,
+                        macos_automation: MacOsAutomationPermission::None,
+                        macos_launch_services: false,
+                        macos_accessibility: false,
+                        macos_calendar: false,
+                        macos_reminders: false,
+                        macos_contacts: MacOsContactsPermission::ReadOnly,
                     }),
                     ..Default::default()
                 },
@@ -2816,6 +2931,8 @@ mod tests {
             sender_thread_id: event.sender_thread_id.to_string(),
             receiver_thread_ids: vec![event.receiver_thread_id.to_string()],
             prompt: None,
+            model: None,
+            reasoning_effort: None,
             agents_states: HashMap::new(),
         };
         assert_eq!(item, expected);
@@ -2841,6 +2958,8 @@ mod tests {
             sender_thread_id: event.sender_thread_id.to_string(),
             receiver_thread_ids: vec![receiver_id.clone()],
             prompt: None,
+            model: None,
+            reasoning_effort: None,
             agents_states: [(
                 receiver_id,
                 V2CollabAgentStatus::from(codex_protocol::protocol::AgentStatus::NotFound),

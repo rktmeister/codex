@@ -21,6 +21,7 @@
                   "type": "boolean"
                 },
                 "request_permissions": {
+                  "default": false,
                   "type": "boolean"
                 },
                 "rules": {
@@ -28,11 +29,14 @@
                 },
                 "sandbox_approval": {
                   "type": "boolean"
+                },
+                "skill_approval": {
+                  "default": false,
+                  "type": "boolean"
                 }
               },
               "required": [
                 "mcp_elicitations",
-                "request_permissions",
                 "rules",
                 "sandbox_approval"
               ],
