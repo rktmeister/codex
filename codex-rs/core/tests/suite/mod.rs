@@ -98,6 +98,7 @@ mod personality;
 mod personality_migration;
 mod plugins;
 mod prompt_caching;
+mod py_repl;
 mod quota_exceeded;
 mod read_file;
 mod realtime_conversation;

@@ -421,6 +421,12 @@ pub struct Config {
     /// Ordered list of directories to search for Node modules in `js_repl`.
     pub js_repl_node_module_dirs: Vec<PathBuf>,
 
+    /// Optional absolute path to the Python runtime used by `py_repl`.
+    pub py_repl_python_path: Option<PathBuf>,
+
+    /// Ordered list of directories to search for local imports in `py_repl`.
+    pub py_repl_sys_path: Vec<PathBuf>,
+
     /// Optional absolute path to patched zsh used by zsh-exec-bridge-backed shell execution.
     pub zsh_path: Option<PathBuf>,
 
@@ -642,6 +648,31 @@ impl ConfigBuilder {
 }
 
 impl Config {
+    /// Resolve the preferred Python runtime path for `py_repl`.
+    pub fn resolve_py_repl_python_path(&self) -> Option<PathBuf> {
+        if let Some(path) = std::env::var_os("CODEX_PY_REPL_PYTHON_PATH")
+            && !path.is_empty()
+        {
+            return Some(PathBuf::from(path));
+        }
+
+        self.py_repl_python_path.clone()
+    }
+
+    /// Resolve the configured import search roots for `py_repl`.
+    ///
+    /// Environment values use the platform path-list separator, matching
+    /// `std::env::split_paths`.
+    pub fn resolve_py_repl_sys_path(&self) -> Vec<PathBuf> {
+        if let Some(paths) = std::env::var_os("CODEX_PY_REPL_SYS_PATH")
+            && !paths.is_empty()
+        {
+            return std::env::split_paths(&paths).collect();
+        }
+
+        self.py_repl_sys_path.clone()
+    }
+
     /// This is the preferred way to create an instance of [Config].
     pub async fn load_with_cli_overrides(
         cli_overrides: Vec<(String, TomlValue)>,
@@ -1166,6 +1197,12 @@ pub struct ConfigToml {
 
     /// Ordered list of directories to search for Node modules in `js_repl`.
     pub js_repl_node_module_dirs: Option<Vec<AbsolutePathBuf>>,
+
+    /// Optional absolute path to the Python runtime used by `py_repl`.
+    pub py_repl_python_path: Option<AbsolutePathBuf>,
+
+    /// Ordered list of directories to search for local imports in `py_repl`.
+    pub py_repl_sys_path: Option<Vec<AbsolutePathBuf>>,
 
     /// Optional absolute path to patched zsh used by zsh-exec-bridge-backed shell execution.
     pub zsh_path: Option<AbsolutePathBuf>,
@@ -2265,6 +2302,18 @@ impl Config {
                     .map(|dirs| dirs.into_iter().map(Into::into).collect::<Vec<PathBuf>>())
             })
             .unwrap_or_default();
+        let py_repl_python_path = config_profile
+            .py_repl_python_path
+            .map(Into::into)
+            .or(cfg.py_repl_python_path.map(Into::into));
+        let py_repl_sys_path = config_profile
+            .py_repl_sys_path
+            .map(|dirs| dirs.into_iter().map(Into::into).collect::<Vec<PathBuf>>())
+            .or_else(|| {
+                cfg.py_repl_sys_path
+                    .map(|dirs| dirs.into_iter().map(Into::into).collect::<Vec<PathBuf>>())
+            })
+            .unwrap_or_default();
         let zsh_path = zsh_path_override
             .or(config_profile.zsh_path.map(Into::into))
             .or(cfg.zsh_path.map(Into::into));
@@ -2430,6 +2479,8 @@ impl Config {
             main_execve_wrapper_exe,
             js_repl_node_path,
             js_repl_node_module_dirs,
+            py_repl_python_path,
+            py_repl_sys_path,
             zsh_path,
 
             hide_agent_reasoning: cfg.hide_agent_reasoning.unwrap_or(false),

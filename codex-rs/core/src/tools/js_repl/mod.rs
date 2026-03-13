@@ -43,6 +43,7 @@ use crate::sandboxing::SandboxManager;
 use crate::sandboxing::SandboxPermissions;
 use crate::tools::ToolRouter;
 use crate::tools::context::SharedTurnDiffTracker;
+use crate::tools::repl_image::validate_repl_image_data_url;
 use crate::tools::sandboxing::SandboxablePreference;
 use crate::truncate::TruncationPolicy;
 use crate::truncate::truncate_text;
@@ -1497,14 +1498,7 @@ fn emitted_image_content_item(
 }
 
 fn validate_emitted_image_url(image_url: &str) -> Result<(), String> {
-    if image_url
-        .get(..5)
-        .is_some_and(|scheme| scheme.eq_ignore_ascii_case("data:"))
-    {
-        Ok(())
-    } else {
-        Err("codex.emitImage only accepts data URLs".to_string())
-    }
+    validate_repl_image_data_url(image_url, "codex.emitImage")
 }
 
 fn build_exec_result_content_items(
@@ -1761,6 +1755,8 @@ mod tests {
     use std::path::Path;
     use tempfile::tempdir;
 
+    const VALID_PNG_DATA_URL: &str = crate::tools::repl_image::VALID_TEST_PNG_DATA_URL;
+
     fn set_danger_full_access(turn: &mut crate::codex::TurnContext) {
         turn.sandbox_policy
             .set(SandboxPolicy::DangerFullAccess)
@@ -2016,13 +2012,13 @@ mod tests {
         let (_session, turn) = make_session_and_context().await;
         let content_item = emitted_image_content_item(
             &turn,
-            "data:image/png;base64,AAA".to_string(),
+            VALID_PNG_DATA_URL.to_string(),
             Some(ImageDetail::Low),
         );
         assert_eq!(
             content_item,
             FunctionCallOutputContentItem::InputImage {
-                image_url: "data:image/png;base64,AAA".to_string(),
+                image_url: VALID_PNG_DATA_URL.to_string(),
                 detail: None,
             }
         );
@@ -2040,13 +2036,12 @@ mod tests {
             .expect("test turn features should allow feature update");
         turn.model_info.supports_image_detail_original = true;
 
-        let content_item =
-            emitted_image_content_item(&turn, "data:image/png;base64,AAA".to_string(), None);
+        let content_item = emitted_image_content_item(&turn, VALID_PNG_DATA_URL.to_string(), None);
 
         assert_eq!(
             content_item,
             FunctionCallOutputContentItem::InputImage {
-                image_url: "data:image/png;base64,AAA".to_string(),
+                image_url: VALID_PNG_DATA_URL.to_string(),
                 detail: None,
             }
         );
@@ -2066,14 +2061,14 @@ mod tests {
 
         let content_item = emitted_image_content_item(
             &turn,
-            "data:image/png;base64,AAA".to_string(),
+            VALID_PNG_DATA_URL.to_string(),
             Some(ImageDetail::Original),
         );
 
         assert_eq!(
             content_item,
             FunctionCallOutputContentItem::InputImage {
-                image_url: "data:image/png;base64,AAA".to_string(),
+                image_url: VALID_PNG_DATA_URL.to_string(),
                 detail: Some(ImageDetail::Original),
             }
         );
@@ -2085,14 +2080,14 @@ mod tests {
 
         let content_item = emitted_image_content_item(
             &turn,
-            "data:image/png;base64,AAA".to_string(),
+            VALID_PNG_DATA_URL.to_string(),
             Some(ImageDetail::Original),
         );
 
         assert_eq!(
             content_item,
             FunctionCallOutputContentItem::InputImage {
-                image_url: "data:image/png;base64,AAA".to_string(),
+                image_url: VALID_PNG_DATA_URL.to_string(),
                 detail: None,
             }
         );
@@ -2101,7 +2096,9 @@ mod tests {
     #[test]
     fn validate_emitted_image_url_accepts_case_insensitive_data_scheme() {
         assert_eq!(
-            validate_emitted_image_url("DATA:image/png;base64,AAA"),
+            validate_emitted_image_url(
+                "DATA:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg=="
+            ),
             Ok(())
         );
     }
@@ -2111,6 +2108,25 @@ mod tests {
         assert_eq!(
             validate_emitted_image_url("https://example.com/image.png"),
             Err("codex.emitImage only accepts data URLs".to_string())
+        );
+    }
+
+    #[test]
+    fn validate_emitted_image_url_rejects_unsupported_svg_data_url() {
+        assert_eq!(
+            validate_emitted_image_url("data:image/svg+xml;base64,PHN2Zy8+"),
+            Err(
+                "codex.emitImage does not support image format `image/svg+xml`; use PNG, JPEG, GIF, or WebP"
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn validate_emitted_image_url_rejects_invalid_image_bytes() {
+        assert_eq!(
+            validate_emitted_image_url("data:image/png;base64,AAA="),
+            Err("codex.emitImage received invalid image data".to_string())
         );
     }
 
@@ -3052,6 +3068,53 @@ await codex.emitImage("https://example.com/image.png");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn js_repl_emit_image_rejects_unsupported_svg_data_url() -> anyhow::Result<()> {
+        if !can_run_js_repl_runtime_tests().await {
+            return Ok(());
+        }
+
+        let (session, turn) = make_session_and_context().await;
+        if !turn
+            .model_info
+            .input_modalities
+            .contains(&InputModality::Image)
+        {
+            return Ok(());
+        }
+
+        let session = Arc::new(session);
+        let turn = Arc::new(turn);
+        *session.active_turn.lock().await = Some(crate::state::ActiveTurn::default());
+
+        let tracker = Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::default()));
+        let manager = turn.js_repl.manager().await?;
+        let code = r#"
+await codex.emitImage("data:image/svg+xml;base64,PHN2Zy8+");
+"#;
+
+        let err = manager
+            .execute(
+                Arc::clone(&session),
+                turn,
+                tracker,
+                JsReplArgs {
+                    code: code.to_string(),
+                    timeout_ms: Some(15_000),
+                },
+            )
+            .await
+            .expect_err("unsupported SVG data URLs should fail");
+        assert!(
+            err.to_string()
+                .contains("does not support image format `image/svg+xml`"),
+            "unexpected error: {err}"
+        );
+        assert!(session.get_pending_input().await.is_empty());
+
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn js_repl_emit_image_accepts_case_insensitive_data_url() -> anyhow::Result<()> {
         if !can_run_js_repl_runtime_tests().await {
             return Ok(());
@@ -3073,7 +3136,7 @@ await codex.emitImage("https://example.com/image.png");
         let tracker = Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::default()));
         let manager = turn.js_repl.manager().await?;
         let code = r#"
-await codex.emitImage("DATA:image/png;base64,AAA");
+await codex.emitImage("DATA:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==");
 "#;
 
         let result = manager
@@ -3090,7 +3153,9 @@ await codex.emitImage("DATA:image/png;base64,AAA");
         assert_eq!(
             result.content_items.as_slice(),
             [FunctionCallOutputContentItem::InputImage {
-                image_url: "DATA:image/png;base64,AAA".to_string(),
+                image_url:
+                    "DATA:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg=="
+                        .to_string(),
                 detail: None,
             }]
             .as_slice()

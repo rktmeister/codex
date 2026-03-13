@@ -85,10 +85,14 @@ pub enum Feature {
     // Experimental
     /// Enable JavaScript REPL tools backed by a persistent Node kernel.
     JsRepl,
+    /// Enable Python REPL tools backed by a persistent Python kernel.
+    PyRepl,
     /// Enable a minimal JavaScript mode backed by Node's built-in vm runtime.
     CodeMode,
     /// Only expose js_repl tools directly to the model.
     JsReplToolsOnly,
+    /// Only expose py_repl tools directly to the model.
+    PyReplToolsOnly,
     /// Use the single unified PTY-backed exec tool.
     UnifiedExec,
     /// Route shell tool execution through the zsh exec bridge.
@@ -423,6 +427,10 @@ impl Features {
             tracing::warn!("js_repl_tools_only requires js_repl; disabling js_repl_tools_only");
             self.disable(Feature::JsReplToolsOnly);
         }
+        if self.enabled(Feature::PyReplToolsOnly) && !self.enabled(Feature::PyRepl) {
+            tracing::warn!("py_repl_tools_only requires py_repl; disabling py_repl_tools_only");
+            self.disable(Feature::PyReplToolsOnly);
+        }
     }
 }
 
@@ -543,6 +551,16 @@ pub const FEATURES: &[FeatureSpec] = &[
         default_enabled: false,
     },
     FeatureSpec {
+        id: Feature::PyRepl,
+        key: "py_repl",
+        stage: Stage::Experimental {
+            name: "Python REPL",
+            menu_description: "Enable a persistent Python REPL with top-level await in a sandboxed kernel. Requires Python >= 3.10 installed.",
+            announcement: "",
+        },
+        default_enabled: false,
+    },
+    FeatureSpec {
         id: Feature::CodeMode,
         key: "code_mode",
         stage: Stage::UnderDevelopment,
@@ -551,6 +569,12 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::JsReplToolsOnly,
         key: "js_repl_tools_only",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
+    },
+    FeatureSpec {
+        id: Feature::PyReplToolsOnly,
+        key: "py_repl_tools_only",
         stage: Stage::UnderDevelopment,
         default_enabled: false,
     },
@@ -959,6 +983,23 @@ mod tests {
             ))
         );
         assert_eq!(Feature::JsRepl.default_enabled(), false);
+    }
+
+    #[test]
+    fn py_repl_is_experimental_and_user_toggleable() {
+        let spec = Feature::PyRepl.info();
+        let stage = spec.stage;
+
+        assert!(matches!(stage, Stage::Experimental { .. }));
+        assert_eq!(stage.experimental_menu_name(), Some("Python REPL"));
+        assert_eq!(
+            stage.experimental_menu_description(),
+            Some(
+                "Enable a persistent Python REPL with top-level await in a sandboxed kernel. Requires Python >= 3.10 installed."
+            )
+        );
+        assert_eq!(stage.experimental_announcement(), None);
+        assert_eq!(Feature::PyRepl.default_enabled(), false);
     }
 
     #[test]

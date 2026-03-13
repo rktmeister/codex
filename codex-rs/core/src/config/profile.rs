@@ -39,6 +39,10 @@ pub struct ConfigProfile {
     pub js_repl_node_path: Option<AbsolutePathBuf>,
     /// Ordered list of directories to search for Node modules in `js_repl`.
     pub js_repl_node_module_dirs: Option<Vec<AbsolutePathBuf>>,
+    /// Optional absolute path to the Python runtime used by `py_repl`.
+    pub py_repl_python_path: Option<AbsolutePathBuf>,
+    /// Ordered list of directories to search for local imports in `py_repl`.
+    pub py_repl_sys_path: Option<Vec<AbsolutePathBuf>>,
     /// Optional absolute path to patched zsh used by zsh-exec-bridge-backed shell execution.
     pub zsh_path: Option<AbsolutePathBuf>,
     /// Deprecated: ignored. Use `model_instructions_file`.

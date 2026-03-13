@@ -199,20 +199,49 @@ impl ToolRouter {
         let payload_outputs_tool_search = matches!(payload, ToolPayload::ToolSearch { .. });
         let failure_call_id = call_id.clone();
 
-        if source == ToolCallSource::Direct
-            && turn.tools_config.js_repl_tools_only
-            && !matches!(tool_name.as_str(), "js_repl" | "js_repl_reset")
-        {
-            let err = FunctionCallError::RespondToModel(
-                "direct tool calls are disabled; use js_repl and codex.tool(...) instead"
-                    .to_string(),
-            );
-            return Ok(Self::failure_result(
-                failure_call_id,
-                payload_outputs_custom,
-                payload_outputs_tool_search,
-                err,
-            ));
+        if source == ToolCallSource::Direct {
+            let direct_call_error = match (
+                turn.tools_config.js_repl_tools_only,
+                turn.tools_config.py_repl_tools_only,
+            ) {
+                (true, true)
+                    if !matches!(
+                        tool_name.as_str(),
+                        "js_repl" | "js_repl_reset" | "py_repl" | "py_repl_reset"
+                    ) =>
+                {
+                    Some(
+                        "direct tool calls are disabled; use js_repl / py_repl and codex.tool(...) instead"
+                            .to_string(),
+                    )
+                }
+                (true, false)
+                    if !matches!(tool_name.as_str(), "js_repl" | "js_repl_reset") =>
+                {
+                    Some(
+                        "direct tool calls are disabled; use js_repl and codex.tool(...) instead"
+                            .to_string(),
+                    )
+                }
+                (false, true)
+                    if !matches!(tool_name.as_str(), "py_repl" | "py_repl_reset") =>
+                {
+                    Some(
+                        "direct tool calls are disabled; use py_repl and codex.tool(...) instead"
+                            .to_string(),
+                    )
+                }
+                _ => None,
+            };
+            if let Some(message) = direct_call_error {
+                let err = FunctionCallError::RespondToModel(message);
+                return Ok(Self::failure_result(
+                    failure_call_id,
+                    payload_outputs_custom,
+                    payload_outputs_tool_search,
+                    err,
+                ));
+            }
         }
 
         let invocation = ToolInvocation {
@@ -388,6 +417,169 @@ mod tests {
                 assert!(
                     !content.contains("direct tool calls are disabled"),
                     "js_repl source should bypass direct-call policy gate"
+                );
+            }
+            other => panic!("expected function call output, got {other:?}"),
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn py_repl_tools_only_blocks_direct_tool_calls() -> anyhow::Result<()> {
+        let (session, mut turn) = make_session_and_context().await;
+        turn.tools_config.py_repl_tools_only = true;
+
+        let session = Arc::new(session);
+        let turn = Arc::new(turn);
+        let mcp_tools = session
+            .services
+            .mcp_connection_manager
+            .read()
+            .await
+            .list_all_tools()
+            .await;
+        let app_tools = Some(mcp_tools.clone());
+        let router = ToolRouter::from_config(
+            &turn.tools_config,
+            Some(
+                mcp_tools
+                    .into_iter()
+                    .map(|(name, tool)| (name, tool.tool))
+                    .collect(),
+            ),
+            app_tools,
+            turn.dynamic_tools.as_slice(),
+        );
+
+        let call = ToolCall {
+            tool_name: "shell".to_string(),
+            tool_namespace: None,
+            call_id: "call-py".to_string(),
+            payload: ToolPayload::Function {
+                arguments: "{}".to_string(),
+            },
+        };
+        let tracker = Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new()));
+        let response = router
+            .dispatch_tool_call(session, turn, tracker, call, ToolCallSource::Direct)
+            .await?;
+
+        match response {
+            ResponseInputItem::FunctionCallOutput { output, .. } => {
+                let content = output.text_content().unwrap_or_default();
+                assert!(
+                    content.contains("use py_repl and codex.tool(...) instead"),
+                    "unexpected tool call message: {content}",
+                );
+            }
+            other => panic!("expected function call output, got {other:?}"),
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn py_repl_tools_only_allows_py_repl_source_calls() -> anyhow::Result<()> {
+        let (session, mut turn) = make_session_and_context().await;
+        turn.tools_config.py_repl_tools_only = true;
+
+        let session = Arc::new(session);
+        let turn = Arc::new(turn);
+        let mcp_tools = session
+            .services
+            .mcp_connection_manager
+            .read()
+            .await
+            .list_all_tools()
+            .await;
+        let app_tools = Some(mcp_tools.clone());
+        let router = ToolRouter::from_config(
+            &turn.tools_config,
+            Some(
+                mcp_tools
+                    .into_iter()
+                    .map(|(name, tool)| (name, tool.tool))
+                    .collect(),
+            ),
+            app_tools,
+            turn.dynamic_tools.as_slice(),
+        );
+
+        let call = ToolCall {
+            tool_name: "shell".to_string(),
+            tool_namespace: None,
+            call_id: "call-py-source".to_string(),
+            payload: ToolPayload::Function {
+                arguments: "{}".to_string(),
+            },
+        };
+        let tracker = Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new()));
+        let response = router
+            .dispatch_tool_call(session, turn, tracker, call, ToolCallSource::PyRepl)
+            .await?;
+
+        match response {
+            ResponseInputItem::FunctionCallOutput { output, .. } => {
+                let content = output.text_content().unwrap_or_default();
+                assert!(
+                    !content.contains("direct tool calls are disabled"),
+                    "py_repl source should bypass direct-call policy gate"
+                );
+            }
+            other => panic!("expected function call output, got {other:?}"),
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn combined_repl_tools_only_lists_both_allowed_repls() -> anyhow::Result<()> {
+        let (session, mut turn) = make_session_and_context().await;
+        turn.tools_config.js_repl_tools_only = true;
+        turn.tools_config.py_repl_tools_only = true;
+
+        let session = Arc::new(session);
+        let turn = Arc::new(turn);
+        let mcp_tools = session
+            .services
+            .mcp_connection_manager
+            .read()
+            .await
+            .list_all_tools()
+            .await;
+        let app_tools = Some(mcp_tools.clone());
+        let router = ToolRouter::from_config(
+            &turn.tools_config,
+            Some(
+                mcp_tools
+                    .into_iter()
+                    .map(|(name, tool)| (name, tool.tool))
+                    .collect(),
+            ),
+            app_tools,
+            turn.dynamic_tools.as_slice(),
+        );
+
+        let call = ToolCall {
+            tool_name: "shell".to_string(),
+            tool_namespace: None,
+            call_id: "call-both".to_string(),
+            payload: ToolPayload::Function {
+                arguments: "{}".to_string(),
+            },
+        };
+        let tracker = Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new()));
+        let response = router
+            .dispatch_tool_call(session, turn, tracker, call, ToolCallSource::Direct)
+            .await?;
+
+        match response {
+            ResponseInputItem::FunctionCallOutput { output, .. } => {
+                let content = output.text_content().unwrap_or_default();
+                assert!(
+                    content.contains("use js_repl / py_repl and codex.tool(...) instead"),
+                    "unexpected combined tools_only message: {content}",
                 );
             }
             other => panic!("expected function call output, got {other:?}"),

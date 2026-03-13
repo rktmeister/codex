@@ -110,6 +110,8 @@ pub(crate) struct ToolsConfig {
     pub code_mode_enabled: bool,
     pub js_repl_enabled: bool,
     pub js_repl_tools_only: bool,
+    pub py_repl_enabled: bool,
+    pub py_repl_tools_only: bool,
     pub can_request_original_image_detail: bool,
     pub collab_tools: bool,
     pub artifact_tools: bool,
@@ -142,6 +144,9 @@ impl ToolsConfig {
         let include_js_repl = features.enabled(Feature::JsRepl);
         let include_js_repl_tools_only =
             include_js_repl && features.enabled(Feature::JsReplToolsOnly);
+        let include_py_repl = features.enabled(Feature::PyRepl);
+        let include_py_repl_tools_only =
+            include_py_repl && features.enabled(Feature::PyReplToolsOnly);
         let include_collab_tools = features.enabled(Feature::Collab);
         let include_agent_jobs = features.enabled(Feature::SpawnCsv);
         let include_request_user_input = !matches!(session_source, SessionSource::SubAgent(_));
@@ -220,6 +225,8 @@ impl ToolsConfig {
             code_mode_enabled: include_code_mode,
             js_repl_enabled: include_js_repl,
             js_repl_tools_only: include_js_repl_tools_only,
+            py_repl_enabled: include_py_repl,
+            py_repl_tools_only: include_py_repl_tools_only,
             can_request_original_image_detail: include_original_image_detail,
             collab_tools: include_collab_tools,
             artifact_tools: include_artifact_tools,
@@ -1636,6 +1643,35 @@ JS_SOURCE: /(?:\s*)(?:[^\s{\"`]|`[^`]|``[^`])[\s\S]*/
     })
 }
 
+fn create_py_repl_tool() -> ToolSpec {
+    // Keep Python input freeform while rejecting the most common malformed
+    // wrapper shapes before they reach runtime validation.
+    const PY_REPL_FREEFORM_GRAMMAR: &str = r#"
+start: pragma_source | plain_source
+
+pragma_source: PRAGMA_LINE NEWLINE py_source
+plain_source: PLAIN_PY_SOURCE
+
+py_source: PY_SOURCE
+
+PRAGMA_LINE: /[ \t]*#[ \t]*codex-py-repl:[^\r\n]*/
+NEWLINE: /\r?\n/
+PLAIN_PY_SOURCE: /(?:\s*)(?:[^\s{\"'`]|#[^\r\n])[\s\S]*/
+PY_SOURCE: /(?:\s*)(?:[^\s{\"'`]|#[^\r\n])[\s\S]*/
+"#;
+
+    ToolSpec::Freeform(FreeformTool {
+        name: "py_repl".to_string(),
+        description: "Runs Python in a persistent kernel with top-level await. This is a freeform tool: send raw Python source text, optionally with a first-line pragma like `# codex-py-repl: timeout_ms=15000`; do not send JSON/quotes/markdown fences."
+            .to_string(),
+        format: FreeformToolFormat {
+            r#type: "grammar".to_string(),
+            syntax: "lark".to_string(),
+            definition: PY_REPL_FREEFORM_GRAMMAR.to_string(),
+        },
+    })
+}
+
 fn create_artifacts_tool() -> ToolSpec {
     const ARTIFACTS_FREEFORM_GRAMMAR: &str = r#"
 start: pragma_source | plain_source
@@ -1668,6 +1704,23 @@ fn create_js_repl_reset_tool() -> ToolSpec {
         name: "js_repl_reset".to_string(),
         description:
             "Restarts the js_repl kernel for this run and clears persisted top-level bindings."
+                .to_string(),
+        strict: false,
+        defer_loading: None,
+        parameters: JsonSchema::Object {
+            properties: BTreeMap::new(),
+            required: None,
+            additional_properties: Some(false.into()),
+        },
+        output_schema: None,
+    })
+}
+
+fn create_py_repl_reset_tool() -> ToolSpec {
+    ToolSpec::Function(ResponsesApiTool {
+        name: "py_repl_reset".to_string(),
+        description:
+            "Restarts the py_repl kernel for this run and clears persisted top-level bindings."
                 .to_string(),
         strict: false,
         defer_loading: None,
@@ -2101,6 +2154,8 @@ pub(crate) fn build_specs(
     use crate::tools::handlers::McpResourceHandler;
     use crate::tools::handlers::MultiAgentHandler;
     use crate::tools::handlers::PlanHandler;
+    use crate::tools::handlers::PyReplHandler;
+    use crate::tools::handlers::PyReplResetHandler;
     use crate::tools::handlers::ReadFileHandler;
     use crate::tools::handlers::RequestPermissionsHandler;
     use crate::tools::handlers::RequestUserInputHandler;
@@ -2130,6 +2185,8 @@ pub(crate) fn build_specs(
     let code_mode_handler = Arc::new(CodeModeHandler);
     let js_repl_handler = Arc::new(JsReplHandler);
     let js_repl_reset_handler = Arc::new(JsReplResetHandler);
+    let py_repl_handler = Arc::new(PyReplHandler);
+    let py_repl_reset_handler = Arc::new(PyReplResetHandler);
     let artifacts_handler = Arc::new(ArtifactsHandler);
     let request_permission_enabled = config.request_permission_enabled;
 
@@ -2260,6 +2317,23 @@ pub(crate) fn build_specs(
         );
         builder.register_handler("js_repl", js_repl_handler);
         builder.register_handler("js_repl_reset", js_repl_reset_handler);
+    }
+
+    if config.py_repl_enabled {
+        push_tool_spec(
+            &mut builder,
+            create_py_repl_tool(),
+            false,
+            config.code_mode_enabled,
+        );
+        push_tool_spec(
+            &mut builder,
+            create_py_repl_reset_tool(),
+            false,
+            config.code_mode_enabled,
+        );
+        builder.register_handler("py_repl", py_repl_handler);
+        builder.register_handler("py_repl_reset", py_repl_reset_handler);
     }
 
     if config.request_user_input {
@@ -3307,6 +3381,53 @@ mod tests {
     }
 
     #[test]
+    fn py_repl_requires_feature_flag() {
+        let config = test_config();
+        let model_info =
+            ModelsManager::construct_model_info_offline_for_tests("gpt-5-codex", &config);
+        let features = Features::with_defaults();
+
+        let available_models = Vec::new();
+        let tools_config = ToolsConfig::new(&ToolsConfigParams {
+            model_info: &model_info,
+            available_models: &available_models,
+            features: &features,
+            web_search_mode: Some(WebSearchMode::Cached),
+            session_source: SessionSource::Cli,
+        });
+        let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
+
+        assert!(
+            !tools.iter().any(|tool| tool.spec.name() == "py_repl"),
+            "py_repl should be disabled when the feature is off"
+        );
+        assert!(
+            !tools.iter().any(|tool| tool.spec.name() == "py_repl_reset"),
+            "py_repl_reset should be disabled when the feature is off"
+        );
+    }
+
+    #[test]
+    fn py_repl_enabled_adds_tools() {
+        let config = test_config();
+        let model_info =
+            ModelsManager::construct_model_info_offline_for_tests("gpt-5-codex", &config);
+        let mut features = Features::with_defaults();
+        features.enable(Feature::PyRepl);
+
+        let available_models = Vec::new();
+        let tools_config = ToolsConfig::new(&ToolsConfigParams {
+            model_info: &model_info,
+            available_models: &available_models,
+            features: &features,
+            web_search_mode: Some(WebSearchMode::Cached),
+            session_source: SessionSource::Cli,
+        });
+        let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
+        assert_contains_tool_names(&tools, &["py_repl", "py_repl_reset"]);
+    }
+
+    #[test]
     fn image_generation_tools_require_feature_and_supported_model() {
         let config = test_config();
         let mut supported_model_info =
@@ -3380,6 +3501,20 @@ mod tests {
         assert!(format.definition.contains("``[^`]"));
         assert!(format.definition.contains("PLAIN_JS_SOURCE"));
         assert!(format.definition.contains("codex-js-repl:"));
+        assert!(!format.definition.contains("(?!"));
+    }
+
+    #[test]
+    fn py_repl_freeform_grammar_blocks_common_non_python_prefixes() {
+        let ToolSpec::Freeform(FreeformTool { format, .. }) = create_py_repl_tool() else {
+            panic!("py_repl should use a freeform tool spec");
+        };
+
+        assert_eq!(format.syntax, "lark");
+        assert!(format.definition.contains("PRAGMA_LINE"));
+        assert!(format.definition.contains("PLAIN_PY_SOURCE"));
+        assert!(format.definition.contains("PY_SOURCE"));
+        assert!(format.definition.contains("codex-py-repl:"));
         assert!(!format.definition.contains("(?!"));
     }
 

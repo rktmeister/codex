@@ -151,12 +151,38 @@ pub async fn load_default_config_for_test(codex_home: &TempDir) -> Config {
 }
 
 #[cfg(target_os = "linux")]
+pub fn find_test_codex_linux_sandbox_exe() -> Result<PathBuf, CargoBinError> {
+    codex_utils_cargo_bin::cargo_bin("codex-linux-sandbox").or_else(|cargo_bin_err| {
+        find_program_on_path("codex-linux-sandbox")
+            .or_else(|| find_adjacent_test_binary("codex-linux-sandbox"))
+            .ok_or(cargo_bin_err)
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn find_program_on_path(program: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .map(|dir| dir.join(program))
+        .find(|candidate| candidate.is_file())
+}
+
+#[cfg(target_os = "linux")]
+fn find_adjacent_test_binary(program: &str) -> Option<PathBuf> {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(PathBuf::from))
+        .and_then(|deps_dir| deps_dir.parent().map(|parent| parent.join(program)))
+        .filter(|candidate| candidate.is_file())
+}
+
+#[cfg(target_os = "linux")]
 fn default_test_overrides() -> ConfigOverrides {
     ConfigOverrides {
-        codex_linux_sandbox_exe: Some(
-            codex_utils_cargo_bin::cargo_bin("codex-linux-sandbox")
-                .expect("should find binary for codex-linux-sandbox"),
-        ),
+        // Filtered Cargo integration runs do not always export the standalone
+        // helper binary through CARGO_BIN_EXE, so fall back to the arg0 alias
+        // injected into PATH and then to the adjacent target/debug helper.
+        codex_linux_sandbox_exe: find_test_codex_linux_sandbox_exe().ok(),
         ..ConfigOverrides::default()
     }
 }
@@ -480,7 +506,7 @@ macro_rules! codex_linux_sandbox_exe_or_skip {
     () => {{
         #[cfg(target_os = "linux")]
         {
-            match codex_utils_cargo_bin::cargo_bin("codex-linux-sandbox") {
+            match $crate::find_test_codex_linux_sandbox_exe() {
                 Ok(path) => Some(path),
                 Err(err) => {
                     eprintln!("codex-linux-sandbox binary not available, skipping test: {err}");
@@ -496,7 +522,7 @@ macro_rules! codex_linux_sandbox_exe_or_skip {
     ($return_value:expr $(,)?) => {{
         #[cfg(target_os = "linux")]
         {
-            match codex_utils_cargo_bin::cargo_bin("codex-linux-sandbox") {
+            match $crate::find_test_codex_linux_sandbox_exe() {
                 Ok(path) => Some(path),
                 Err(err) => {
                     eprintln!("codex-linux-sandbox binary not available, skipping test: {err}");

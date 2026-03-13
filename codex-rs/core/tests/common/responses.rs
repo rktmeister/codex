@@ -303,12 +303,19 @@ impl ResponsesRequest {
 pub(crate) fn output_value_to_text(value: &Value) -> Option<String> {
     match value {
         Value::String(text) => Some(text.clone()),
-        Value::Array(items) => match items.as_slice() {
-            [item] if item.get("type").and_then(Value::as_str) == Some("input_text") => {
-                item.get("text").and_then(Value::as_str).map(str::to_string)
-            }
-            [_] | [] | [_, _, ..] => None,
-        },
+        Value::Array(items) => {
+            let text_segments = items
+                .iter()
+                .filter_map(|item| {
+                    (item.get("type").and_then(Value::as_str) == Some("input_text"))
+                        .then(|| item.get("text").and_then(Value::as_str))
+                        .flatten()
+                        .map(str::trim)
+                        .filter(|text| !text.is_empty())
+                })
+                .collect::<Vec<_>>();
+            (!text_segments.is_empty()).then(|| text_segments.join("\n"))
+        }
         Value::Object(_) | Value::Number(_) | Value::Bool(_) | Value::Null => None,
     }
 }
@@ -372,7 +379,7 @@ mod tests {
         ]));
         assert_eq!(
             mixed_content.function_call_output_content_and_success("call-3"),
-            Some((None, None))
+            Some((Some("hello".to_string()), None))
         );
         assert_eq!(
             mixed_content.custom_tool_call_output_content_and_success("call-4"),

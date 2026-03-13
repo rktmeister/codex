@@ -7405,6 +7405,35 @@ async fn experimental_popup_includes_guardian_approval() {
 }
 
 #[tokio::test]
+async fn experimental_popup_includes_py_repl() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+    let py_repl_stage = FEATURES
+        .iter()
+        .find(|spec| spec.id == Feature::PyRepl)
+        .map(|spec| spec.stage)
+        .expect("expected py_repl feature metadata");
+    let py_repl_name = py_repl_stage
+        .experimental_menu_name()
+        .expect("expected py_repl experimental menu name");
+    let py_repl_description = py_repl_stage
+        .experimental_menu_description()
+        .expect("expected py_repl experimental description");
+
+    chat.open_experimental_popup();
+
+    let popup = render_bottom_popup(&chat, 120);
+    let normalized_popup = popup.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        popup.contains(py_repl_name),
+        "expected py_repl entry in experimental popup, got:\n{popup}"
+    );
+    assert!(
+        normalized_popup.contains(py_repl_description),
+        "expected py_repl description in experimental popup, got:\n{popup}"
+    );
+}
+
+#[tokio::test]
 async fn multi_agent_enable_prompt_snapshot() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
 

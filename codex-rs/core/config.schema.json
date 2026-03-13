@@ -417,6 +417,12 @@
             "prevent_idle_sleep": {
               "type": "boolean"
             },
+            "py_repl": {
+              "type": "boolean"
+            },
+            "py_repl_tools_only": {
+              "type": "boolean"
+            },
             "realtime_conversation": {
               "type": "boolean"
             },
@@ -548,6 +554,21 @@
         },
         "plan_mode_reasoning_effort": {
           "$ref": "#/definitions/ReasoningEffort"
+        },
+        "py_repl_python_path": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/AbsolutePathBuf"
+            }
+          ],
+          "description": "Optional absolute path to the Python runtime used by `py_repl`."
+        },
+        "py_repl_sys_path": {
+          "description": "Ordered list of directories to search for local imports in `py_repl`.",
+          "items": {
+            "$ref": "#/definitions/AbsolutePathBuf"
+          },
+          "type": "array"
         },
         "sandbox_mode": {
           "$ref": "#/definitions/SandboxMode"
@@ -1919,6 +1940,12 @@
         "prevent_idle_sleep": {
           "type": "boolean"
         },
+        "py_repl": {
+          "type": "boolean"
+        },
+        "py_repl_tools_only": {
+          "type": "boolean"
+        },
         "realtime_conversation": {
           "type": "boolean"
         },
@@ -2265,6 +2292,21 @@
         "$ref": "#/definitions/ProjectConfig"
       },
       "type": "object"
+    },
+    "py_repl_python_path": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/AbsolutePathBuf"
+        }
+      ],
+      "description": "Optional absolute path to the Python runtime used by `py_repl`."
+    },
+    "py_repl_sys_path": {
+      "description": "Ordered list of directories to search for local imports in `py_repl`.",
+      "items": {
+        "$ref": "#/definitions/AbsolutePathBuf"
+      },
+      "type": "array"
     },
     "review_model": {
       "description": "Review model override used by the `/review` feature.",
