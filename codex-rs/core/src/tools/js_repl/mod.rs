@@ -42,6 +42,7 @@ use crate::original_image_detail::normalize_output_image_detail;
 use crate::sandboxing::ExecOptions;
 use crate::tools::ToolRouter;
 use crate::tools::context::SharedTurnDiffTracker;
+use crate::tools::repl_image::validate_repl_image_data_url;
 use codex_sandboxing::SandboxCommand;
 use codex_sandboxing::SandboxManager;
 use codex_sandboxing::SandboxTransformRequest;
@@ -1723,14 +1724,7 @@ fn emitted_image_content_item(
 }
 
 fn validate_emitted_image_url(image_url: &str) -> Result<(), String> {
-    if image_url
-        .get(..5)
-        .is_some_and(|scheme| scheme.eq_ignore_ascii_case("data:"))
-    {
-        Ok(())
-    } else {
-        Err("codex.emitImage only accepts data URLs".to_string())
-    }
+    validate_repl_image_data_url(image_url, "codex.emitImage")
 }
 
 fn build_exec_result_content_items(

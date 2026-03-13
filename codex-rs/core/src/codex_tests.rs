@@ -2710,6 +2710,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         config.js_repl_node_path.clone(),
         config.js_repl_node_module_dirs.clone(),
     ));
+    let py_repl = Arc::new(PyReplHandle::with_python_path(None, Vec::new()));
 
     let plugin_outcome = services
         .plugins_manager
@@ -2734,6 +2735,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         environment,
         "turn_id".to_string(),
         Arc::clone(&js_repl),
+        Arc::clone(&py_repl),
         skills_outcome,
     );
 
@@ -2751,6 +2753,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         guardian_review_session: crate::guardian::GuardianReviewSessionManager::default(),
         services,
         js_repl,
+        py_repl,
         next_internal_sub_id: AtomicU64::new(0),
     };
 
@@ -3550,6 +3553,7 @@ pub(crate) async fn make_session_and_context_with_dynamic_tools_and_rx(
         config.js_repl_node_path.clone(),
         config.js_repl_node_module_dirs.clone(),
     ));
+    let py_repl = Arc::new(PyReplHandle::with_python_path(None, Vec::new()));
 
     let plugin_outcome = services
         .plugins_manager
@@ -3574,6 +3578,7 @@ pub(crate) async fn make_session_and_context_with_dynamic_tools_and_rx(
         environment,
         "turn_id".to_string(),
         Arc::clone(&js_repl),
+        Arc::clone(&py_repl),
         skills_outcome,
     ));
 
@@ -3591,6 +3596,7 @@ pub(crate) async fn make_session_and_context_with_dynamic_tools_and_rx(
         guardian_review_session: crate::guardian::GuardianReviewSessionManager::default(),
         services,
         js_repl,
+        py_repl,
         next_internal_sub_id: AtomicU64::new(0),
     });
 

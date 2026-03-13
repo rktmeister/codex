@@ -4427,6 +4427,8 @@ fn test_precedence_fixture_with_o3_profile() -> std::io::Result<()> {
             main_execve_wrapper_exe: None,
             js_repl_node_path: None,
             js_repl_node_module_dirs: Vec::new(),
+            py_repl_python_path: None,
+            py_repl_sys_path: Vec::new(),
             zsh_path: None,
             hide_agent_reasoning: false,
             show_raw_agent_reasoning: false,
@@ -4569,6 +4571,8 @@ fn test_precedence_fixture_with_gpt3_profile() -> std::io::Result<()> {
         main_execve_wrapper_exe: None,
         js_repl_node_path: None,
         js_repl_node_module_dirs: Vec::new(),
+        py_repl_python_path: None,
+        py_repl_sys_path: Vec::new(),
         zsh_path: None,
         hide_agent_reasoning: false,
         show_raw_agent_reasoning: false,
@@ -4709,6 +4713,8 @@ fn test_precedence_fixture_with_zdr_profile() -> std::io::Result<()> {
         main_execve_wrapper_exe: None,
         js_repl_node_path: None,
         js_repl_node_module_dirs: Vec::new(),
+        py_repl_python_path: None,
+        py_repl_sys_path: Vec::new(),
         zsh_path: None,
         hide_agent_reasoning: false,
         show_raw_agent_reasoning: false,
@@ -4835,6 +4841,8 @@ fn test_precedence_fixture_with_gpt5_profile() -> std::io::Result<()> {
         main_execve_wrapper_exe: None,
         js_repl_node_path: None,
         js_repl_node_module_dirs: Vec::new(),
+        py_repl_python_path: None,
+        py_repl_sys_path: Vec::new(),
         zsh_path: None,
         hide_agent_reasoning: false,
         show_raw_agent_reasoning: false,
@@ -5409,6 +5417,137 @@ allow_login_shell = false
     )?;
 
     assert!(!config.permissions.allow_login_shell);
+    Ok(())
+}
+
+#[test]
+fn config_toml_deserializes_py_repl_paths() {
+    let python_path = test_absolute_path("/opt/codex/python");
+    let first_sys_path = test_absolute_path("/workspace/src");
+    let second_sys_path = test_absolute_path("/workspace/lib");
+    let toml = format!(
+        r#"
+py_repl_python_path = "{}"
+py_repl_sys_path = ["{}", "{}"]
+"#,
+        python_path.display(),
+        first_sys_path.display(),
+        second_sys_path.display(),
+    );
+    let cfg: ConfigToml =
+        toml::from_str(&toml).expect("TOML deserialization should succeed for py_repl paths");
+
+    assert_eq!(cfg.py_repl_python_path, Some(python_path));
+    assert_eq!(
+        cfg.py_repl_sys_path,
+        Some(vec![first_sys_path, second_sys_path])
+    );
+}
+
+#[test]
+fn config_loads_py_repl_paths_from_global_config() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    let python_path = test_absolute_path("/opt/codex/python");
+    let sys_path = vec![
+        test_absolute_path("/workspace/src"),
+        test_absolute_path("/workspace/lib"),
+    ];
+    let cfg = ConfigToml {
+        py_repl_python_path: Some(python_path.clone()),
+        py_repl_sys_path: Some(sys_path.clone()),
+        ..Default::default()
+    };
+
+    let config = Config::load_from_base_config_with_overrides(
+        cfg,
+        ConfigOverrides::default(),
+        codex_home.path().to_path_buf(),
+    )?;
+
+    assert_eq!(
+        config.py_repl_python_path,
+        Some(python_path.clone().into_path_buf())
+    );
+    assert_eq!(
+        config.py_repl_sys_path,
+        sys_path
+            .iter()
+            .cloned()
+            .map(codex_utils_absolute_path::AbsolutePathBuf::into_path_buf)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        config.resolve_py_repl_python_path(),
+        Some(python_path.into_path_buf())
+    );
+    assert_eq!(
+        config.resolve_py_repl_sys_path(),
+        sys_path
+            .into_iter()
+            .map(codex_utils_absolute_path::AbsolutePathBuf::into_path_buf)
+            .collect::<Vec<_>>()
+    );
+    Ok(())
+}
+
+#[test]
+fn config_loads_py_repl_paths_from_profile() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    let global_python_path = test_absolute_path("/opt/codex/global-python");
+    let global_sys_path = vec![test_absolute_path("/workspace/global-lib")];
+    let profile_python_path = test_absolute_path("/opt/codex/profile-python");
+    let profile_sys_path = vec![
+        test_absolute_path("/workspace/profile-src"),
+        test_absolute_path("/workspace/profile-lib"),
+    ];
+    let mut profiles = HashMap::new();
+    profiles.insert(
+        "py".to_string(),
+        ConfigProfile {
+            py_repl_python_path: Some(profile_python_path.clone()),
+            py_repl_sys_path: Some(profile_sys_path.clone()),
+            ..Default::default()
+        },
+    );
+    let cfg = ConfigToml {
+        py_repl_python_path: Some(global_python_path),
+        py_repl_sys_path: Some(global_sys_path),
+        profiles,
+        ..Default::default()
+    };
+
+    let config = Config::load_from_base_config_with_overrides(
+        cfg,
+        ConfigOverrides {
+            config_profile: Some("py".to_string()),
+            ..Default::default()
+        },
+        codex_home.path().to_path_buf(),
+    )?;
+
+    assert_eq!(
+        config.py_repl_python_path,
+        Some(profile_python_path.clone().into_path_buf())
+    );
+    assert_eq!(
+        config.py_repl_sys_path,
+        profile_sys_path
+            .iter()
+            .cloned()
+            .map(codex_utils_absolute_path::AbsolutePathBuf::into_path_buf)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        config.resolve_py_repl_python_path(),
+        Some(profile_python_path.into_path_buf())
+    );
+    assert_eq!(
+        config.resolve_py_repl_sys_path(),
+        profile_sys_path
+            .into_iter()
+            .map(codex_utils_absolute_path::AbsolutePathBuf::into_path_buf)
+            .collect::<Vec<_>>()
+    );
     Ok(())
 }
 

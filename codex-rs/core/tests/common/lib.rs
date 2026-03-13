@@ -29,6 +29,9 @@ pub mod zsh_fork;
 
 static TEST_ARG0_PATH_ENTRY: OnceLock<Option<Arg0PathEntryGuard>> = OnceLock::new();
 
+#[cfg(target_os = "linux")]
+const CODEX_LINUX_SANDBOX_PROGRAM: &str = "codex-linux-sandbox";
+
 #[ctor]
 fn enable_deterministic_unified_exec_process_ids_for_tests() {
     codex_core::test_support::set_thread_manager_test_mode(/*enabled*/ true);
@@ -192,6 +195,28 @@ pub async fn load_default_config_for_test(codex_home: &TempDir) -> Config {
 }
 
 #[cfg(target_os = "linux")]
+pub fn find_test_codex_exe() -> Result<PathBuf, CargoBinError> {
+    codex_utils_cargo_bin::cargo_bin("codex")
+        .or_else(|cargo_bin_err| find_adjacent_test_binary("codex").ok_or(cargo_bin_err))
+}
+
+#[cfg(target_os = "linux")]
+pub fn find_test_codex_linux_sandbox_exe() -> Result<PathBuf, CargoBinError> {
+    codex_utils_cargo_bin::cargo_bin("codex-linux-sandbox").or_else(|cargo_bin_err| {
+        find_adjacent_test_binary("codex-linux-sandbox").ok_or(cargo_bin_err)
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn find_adjacent_test_binary(program: &str) -> Option<PathBuf> {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(PathBuf::from))
+        .and_then(|deps_dir| deps_dir.parent().map(|parent| parent.join(program)))
+        .filter(|candidate| candidate.is_file())
+}
+
+#[cfg(target_os = "linux")]
 fn default_test_overrides() -> ConfigOverrides {
     ConfigOverrides {
         codex_linux_sandbox_exe: Some(
@@ -216,11 +241,13 @@ pub fn find_codex_linux_sandbox_exe() -> Result<PathBuf, CargoBinError> {
         return Ok(path);
     }
 
-    if let Ok(path) = std::env::current_exe() {
+    if let Ok(path) = std::env::current_exe()
+        && path.file_name().and_then(|name| name.to_str()) == Some(CODEX_LINUX_SANDBOX_PROGRAM)
+    {
         return Ok(path);
     }
 
-    codex_utils_cargo_bin::cargo_bin("codex-linux-sandbox")
+    find_test_codex_linux_sandbox_exe()
 }
 
 /// Builds an SSE stream body from a JSON fixture.

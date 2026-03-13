@@ -339,6 +339,8 @@ use crate::tools::network_approval::NetworkApprovalService;
 use crate::tools::network_approval::build_blocked_request_observer;
 use crate::tools::network_approval::build_network_policy_decider;
 use crate::tools::parallel::ToolCallRuntime;
+use crate::tools::py_repl::PyReplHandle;
+use crate::tools::py_repl::resolve_compatible_python;
 use crate::tools::router::ToolRouterParams;
 use crate::tools::sandboxing::ApprovalStore;
 use crate::tools::spec::ToolsConfig;
@@ -451,7 +453,7 @@ impl Codex {
         .await
     }
 
-    async fn spawn_internal(args: CodexSpawnArgs) -> CodexResult<CodexSpawnOk> {
+     async fn spawn_internal(args: CodexSpawnArgs) -> CodexResult<CodexSpawnOk> {
         let CodexSpawnArgs {
             mut config,
             auth_manager,
@@ -520,6 +522,24 @@ impl Codex {
             );
             warn!("{message}");
             let _ = config.features.disable(Feature::CodeMode);
+            config.startup_warnings.push(message);
+        }
+        let py_repl_python_path = config.resolve_py_repl_python_path();
+        if config.features.enabled(Feature::PyRepl)
+            && let Err(err) = resolve_compatible_python(py_repl_python_path.as_deref()).await
+        {
+            let _ = config.features.disable(Feature::PyRepl);
+            let _ = config.features.disable(Feature::PyReplToolsOnly);
+            let message = if config.features.enabled(Feature::PyRepl) {
+                format!(
+                    "`py_repl` remains enabled because enterprise requirements pin it on, but the configured Python runtime is unavailable or incompatible. {err}"
+                )
+            } else {
+                format!(
+                    "Disabled `py_repl` for this session because the configured Python runtime is unavailable or incompatible. {err}"
+                )
+            };
+            warn!("{message}");
             config.startup_warnings.push(message);
         }
 
@@ -810,6 +830,7 @@ pub(crate) struct Session {
     pub(crate) guardian_review_session: GuardianReviewSessionManager,
     pub(crate) services: SessionServices,
     js_repl: Arc<JsReplHandle>,
+    py_repl: Arc<PyReplHandle>,
     next_internal_sub_id: AtomicU64,
 }
 
@@ -871,6 +892,7 @@ pub(crate) struct TurnContext {
     pub(crate) tool_call_gate: Arc<ReadinessFlag>,
     pub(crate) truncation_policy: TruncationPolicy,
     pub(crate) js_repl: Arc<JsReplHandle>,
+    pub(crate) py_repl: Arc<PyReplHandle>,
     pub(crate) dynamic_tools: Vec<DynamicToolSpec>,
     pub(crate) turn_metadata_state: Arc<TurnMetadataState>,
     pub(crate) turn_skills: TurnSkillsContext,
@@ -979,6 +1001,7 @@ impl TurnContext {
             tool_call_gate: Arc::new(ReadinessFlag::new()),
             truncation_policy,
             js_repl: Arc::clone(&self.js_repl),
+            py_repl: Arc::clone(&self.py_repl),
             dynamic_tools: self.dynamic_tools.clone(),
             turn_metadata_state: self.turn_metadata_state.clone(),
             turn_skills: self.turn_skills.clone(),
@@ -1364,6 +1387,7 @@ impl Session {
         environment: Arc<Environment>,
         sub_id: String,
         js_repl: Arc<JsReplHandle>,
+        py_repl: Arc<PyReplHandle>,
         skills_outcome: Arc<SkillLoadOutcome>,
     ) -> TurnContext {
         let reasoning_effort = session_configuration.collaboration_mode.reasoning_effort();
@@ -1445,6 +1469,7 @@ impl Session {
             tool_call_gate: Arc::new(ReadinessFlag::new()),
             truncation_policy: model_info.truncation_policy.into(),
             js_repl,
+            py_repl,
             dynamic_tools: session_configuration.dynamic_tools.clone(),
             turn_metadata_state,
             turn_skills: TurnSkillsContext::new(skills_outcome),
@@ -1904,6 +1929,10 @@ impl Session {
             config.js_repl_node_path.clone(),
             config.js_repl_node_module_dirs.clone(),
         ));
+        let py_repl = Arc::new(PyReplHandle::with_python_path(
+            config.resolve_py_repl_python_path(),
+            config.resolve_py_repl_sys_path(),
+        ));
         let (out_of_band_elicitation_paused, _out_of_band_elicitation_paused_rx) =
             watch::channel(false);
 
@@ -1921,6 +1950,7 @@ impl Session {
             guardian_review_session: GuardianReviewSessionManager::default(),
             services,
             js_repl,
+            py_repl,
             next_internal_sub_id: AtomicU64::new(0),
         });
         if let Some(network_policy_decider_session) = network_policy_decider_session {
@@ -1951,7 +1981,7 @@ impl Session {
                 rollout_path,
             }),
         })
-        .chain(post_session_configured_events.into_iter());
+        .chain(post_session_configured_events);
         for event in events {
             sess.send_event_raw(event).await;
         }
@@ -2480,6 +2510,7 @@ impl Session {
             Arc::clone(&self.services.environment),
             sub_id,
             Arc::clone(&self.js_repl),
+            Arc::clone(&self.py_repl),
             skills_outcome,
         );
         turn_context.realtime_active = self.conversation.running_state().await.is_some();
@@ -5448,6 +5479,7 @@ async fn spawn_review_thread(
         codex_linux_sandbox_exe: parent_turn_context.codex_linux_sandbox_exe.clone(),
         tool_call_gate: Arc::new(ReadinessFlag::new()),
         js_repl: Arc::clone(&sess.js_repl),
+        py_repl: Arc::clone(&sess.py_repl),
         dynamic_tools: parent_turn_context.dynamic_tools.clone(),
         truncation_policy: model_info.truncation_policy.into(),
         turn_metadata_state,

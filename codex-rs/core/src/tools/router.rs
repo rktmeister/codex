@@ -4,9 +4,11 @@ use crate::codex::TurnContext;
 use crate::function_tool::FunctionCallError;
 use crate::mcp_connection_manager::ToolInfo;
 use crate::sandboxing::SandboxPermissions;
+use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::SharedTurnDiffTracker;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
+use crate::tools::context::ToolSearchOutput;
 use crate::tools::discoverable::DiscoverableTool;
 use crate::tools::registry::AnyToolResult;
 use crate::tools::registry::ToolRegistry;
@@ -14,6 +16,7 @@ use crate::tools::spec::ToolsConfig;
 use crate::tools::spec::build_specs_with_discoverable_tools;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::models::LocalShellAction;
+use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::models::SearchToolCallParams;
 use codex_protocol::models::ShellToolCallParams;
@@ -38,6 +41,8 @@ pub struct ToolRouter {
     specs: Vec<ConfiguredToolSpec>,
     model_visible_specs: Vec<ToolSpec>,
 }
+
+const SHELL_TOOL_ALIASES: &[&str] = &["shell", "container.exec", "local_shell", "shell_command"];
 
 pub(crate) struct ToolRouterParams<'a> {
     pub(crate) mcp_tools: Option<HashMap<String, Tool>>,
@@ -106,10 +111,25 @@ impl ToolRouter {
     }
 
     pub fn tool_supports_parallel(&self, tool_name: &str) -> bool {
-        self.specs
+        let supports_parallel = self
+            .specs
             .iter()
-            .filter(|config| config.supports_parallel_tool_calls)
-            .any(|config| config.name() == tool_name)
+            .find(|config| config.name() == tool_name)
+            .map(|config| config.supports_parallel_tool_calls);
+        if let Some(supports_parallel) = supports_parallel {
+            return supports_parallel;
+        }
+
+        if SHELL_TOOL_ALIASES.contains(&tool_name) {
+            return self
+                .specs
+                .iter()
+                .find(|config| matches!(config.spec.name(), "shell_command" | "exec_command"))
+                .map(|config| config.supports_parallel_tool_calls)
+                .unwrap_or(false);
+        }
+
+        false
     }
 
     #[instrument(level = "trace", skip_all, err)]
@@ -211,6 +231,60 @@ impl ToolRouter {
     }
 
     #[instrument(level = "trace", skip_all, err)]
+    pub async fn dispatch_tool_call(
+        &self,
+        session: Arc<Session>,
+        turn: Arc<TurnContext>,
+        tracker: SharedTurnDiffTracker,
+        call: ToolCall,
+        source: ToolCallSource,
+    ) -> Result<ResponseInputItem, FunctionCallError> {
+        let response_call_id = call.call_id.clone();
+        let payload_outputs_custom = matches!(&call.payload, ToolPayload::Custom { .. });
+        let payload_outputs_tool_search = matches!(&call.payload, ToolPayload::ToolSearch { .. });
+
+        match self
+            .dispatch_tool_call_with_code_mode_result(session, turn, tracker, call, source)
+            .await
+        {
+            Ok(result) => Ok(result.into_response()),
+            Err(FunctionCallError::Fatal(message)) => Err(FunctionCallError::Fatal(message)),
+            Err(err) => {
+                let message = err.to_string();
+                let result = if payload_outputs_tool_search {
+                    AnyToolResult {
+                        call_id: response_call_id,
+                        payload: ToolPayload::ToolSearch {
+                            arguments: SearchToolCallParams {
+                                query: String::new(),
+                                limit: None,
+                            },
+                        },
+                        result: Box::new(ToolSearchOutput { tools: Vec::new() }),
+                    }
+                } else if payload_outputs_custom {
+                    AnyToolResult {
+                        call_id: response_call_id,
+                        payload: ToolPayload::Custom {
+                            input: String::new(),
+                        },
+                        result: Box::new(FunctionToolOutput::from_text(message, Some(false))),
+                    }
+                } else {
+                    AnyToolResult {
+                        call_id: response_call_id,
+                        payload: ToolPayload::Function {
+                            arguments: "{}".to_string(),
+                        },
+                        result: Box::new(FunctionToolOutput::from_text(message, Some(false))),
+                    }
+                };
+                Ok(result.into_response())
+            }
+        }
+    }
+
+    #[instrument(level = "trace", skip_all, err)]
     pub async fn dispatch_tool_call_with_code_mode_result(
         &self,
         session: Arc<Session>,
@@ -226,14 +300,40 @@ impl ToolRouter {
             payload,
         } = call;
 
-        if source == ToolCallSource::Direct
-            && turn.tools_config.js_repl_tools_only
-            && !matches!(tool_name.as_str(), "js_repl" | "js_repl_reset")
-        {
-            return Err(FunctionCallError::RespondToModel(
-                "direct tool calls are disabled; use js_repl and codex.tool(...) instead"
-                    .to_string(),
-            ));
+        if source == ToolCallSource::Direct {
+            let direct_call_error = match (
+                turn.tools_config.js_repl_tools_only,
+                turn.tools_config.py_repl_tools_only,
+            ) {
+                (true, true)
+                    if !matches!(
+                        tool_name.as_str(),
+                        "js_repl" | "js_repl_reset" | "py_repl" | "py_repl_reset"
+                    ) =>
+                {
+                    Some(
+                        "direct tool calls are disabled; use js_repl / py_repl and codex.tool(...) instead"
+                            .to_string(),
+                    )
+                }
+                (true, false) if !matches!(tool_name.as_str(), "js_repl" | "js_repl_reset") => {
+                    Some(
+                        "direct tool calls are disabled; use js_repl and codex.tool(...) instead"
+                            .to_string(),
+                    )
+                }
+                (false, true) if !matches!(tool_name.as_str(), "py_repl" | "py_repl_reset") => {
+                    Some(
+                        "direct tool calls are disabled; use py_repl and codex.tool(...) instead"
+                            .to_string(),
+                    )
+                }
+                _ => None,
+            };
+
+            if let Some(message) = direct_call_error {
+                return Err(FunctionCallError::RespondToModel(message));
+            }
         }
 
         let invocation = ToolInvocation {

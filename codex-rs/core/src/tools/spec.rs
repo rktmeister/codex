@@ -41,6 +41,8 @@ use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_tools::CommandToolOptions;
+use codex_tools::FreeformTool;
+use codex_tools::FreeformToolFormat;
 use codex_tools::ResponsesApiTool;
 use codex_tools::ShellToolOptions;
 use codex_tools::SpawnAgentToolOptions;
@@ -50,15 +52,8 @@ use codex_tools::augment_tool_spec_for_code_mode;
 use codex_tools::create_assign_task_tool;
 use codex_tools::create_close_agent_tool_v1;
 use codex_tools::create_close_agent_tool_v2;
-use codex_tools::create_code_mode_tool;
 use codex_tools::create_exec_command_tool;
-use codex_tools::create_js_repl_reset_tool;
-use codex_tools::create_js_repl_tool;
 use codex_tools::create_list_agents_tool;
-use codex_tools::create_list_dir_tool;
-use codex_tools::create_list_mcp_resource_templates_tool;
-use codex_tools::create_list_mcp_resources_tool;
-use codex_tools::create_read_mcp_resource_tool;
 use codex_tools::create_report_agent_job_result_tool;
 use codex_tools::create_request_permissions_tool;
 use codex_tools::create_request_user_input_tool;
@@ -70,11 +65,9 @@ use codex_tools::create_shell_tool;
 use codex_tools::create_spawn_agent_tool_v1;
 use codex_tools::create_spawn_agent_tool_v2;
 use codex_tools::create_spawn_agents_on_csv_tool;
-use codex_tools::create_test_sync_tool;
 use codex_tools::create_view_image_tool;
 use codex_tools::create_wait_agent_tool_v1;
 use codex_tools::create_wait_agent_tool_v2;
-use codex_tools::create_wait_tool;
 use codex_tools::create_write_stdin_tool;
 use codex_tools::dynamic_tool_to_responses_api_tool;
 use codex_tools::mcp_tool_to_responses_api_tool;
@@ -178,6 +171,8 @@ pub(crate) struct ToolsConfig {
     pub code_mode_only_enabled: bool,
     pub js_repl_enabled: bool,
     pub js_repl_tools_only: bool,
+    pub py_repl_enabled: bool,
+    pub py_repl_tools_only: bool,
     pub can_request_original_image_detail: bool,
     pub collab_tools: bool,
     pub multi_agent_v2: bool,
@@ -228,6 +223,9 @@ impl ToolsConfig {
         let include_js_repl = features.enabled(Feature::JsRepl);
         let include_js_repl_tools_only =
             include_js_repl && features.enabled(Feature::JsReplToolsOnly);
+        let include_py_repl = features.enabled(Feature::PyRepl);
+        let include_py_repl_tools_only =
+            include_py_repl && features.enabled(Feature::PyReplToolsOnly);
         let include_collab_tools = features.enabled(Feature::Collab);
         let include_multi_agent_v2 = features.enabled(Feature::MultiAgentV2);
         let include_agent_jobs = features.enabled(Feature::SpawnCsv);
@@ -312,6 +310,8 @@ impl ToolsConfig {
             code_mode_only_enabled: include_code_mode_only,
             js_repl_enabled: include_js_repl,
             js_repl_tools_only: include_js_repl_tools_only,
+            py_repl_enabled: include_py_repl,
+            py_repl_tools_only: include_py_repl_tools_only,
             can_request_original_image_detail: include_original_image_detail,
             collab_tools: include_collab_tools,
             multi_agent_v2: include_multi_agent_v2,
@@ -371,6 +371,160 @@ impl ToolsConfig {
 
 fn supports_image_generation(model_info: &ModelInfo) -> bool {
     model_info.input_modalities.contains(&InputModality::Image)
+}
+
+fn create_wait_tool() -> ToolSpec {
+    let properties = BTreeMap::from([
+        (
+            "cell_id".to_string(),
+            JsonSchema::String {
+                description: Some("Identifier of the running exec cell.".to_string()),
+            },
+        ),
+        (
+            "yield_time_ms".to_string(),
+            JsonSchema::Number {
+                description: Some(
+                    "How long to wait (in milliseconds) for more output before yielding again."
+                        .to_string(),
+                ),
+            },
+        ),
+        (
+            "max_tokens".to_string(),
+            JsonSchema::Number {
+                description: Some(
+                    "Maximum number of output tokens to return for this wait call.".to_string(),
+                ),
+            },
+        ),
+        (
+            "terminate".to_string(),
+            JsonSchema::Boolean {
+                description: Some("Whether to terminate the running exec cell.".to_string()),
+            },
+        ),
+    ]);
+
+    ToolSpec::Function(ResponsesApiTool {
+        name: WAIT_TOOL_NAME.to_string(),
+        description: format!(
+            "Waits on a yielded `{PUBLIC_TOOL_NAME}` cell and returns new output or completion.\n{}",
+            codex_code_mode::build_wait_tool_description().trim()
+        ),
+        strict: false,
+        parameters: JsonSchema::Object {
+            properties,
+            required: Some(vec!["cell_id".to_string()]),
+            additional_properties: Some(false.into()),
+        },
+        output_schema: None,
+        defer_loading: None,
+    })
+}
+
+fn create_test_sync_tool() -> ToolSpec {
+    let barrier_properties = BTreeMap::from([
+        (
+            "id".to_string(),
+            JsonSchema::String {
+                description: Some(
+                    "Identifier shared by concurrent calls that should rendezvous".to_string(),
+                ),
+            },
+        ),
+        (
+            "participants".to_string(),
+            JsonSchema::Number {
+                description: Some(
+                    "Number of tool calls that must arrive before the barrier opens".to_string(),
+                ),
+            },
+        ),
+        (
+            "timeout_ms".to_string(),
+            JsonSchema::Number {
+                description: Some(
+                    "Maximum time in milliseconds to wait at the barrier".to_string(),
+                ),
+            },
+        ),
+    ]);
+    let file_barrier_properties = BTreeMap::from([
+        (
+            "path".to_string(),
+            JsonSchema::String {
+                description: Some(
+                    "Filesystem path used by concurrent calls to signal readiness".to_string(),
+                ),
+            },
+        ),
+        (
+            "participants".to_string(),
+            JsonSchema::Number {
+                description: Some(
+                    "Number of tool calls that must signal before the file barrier opens"
+                        .to_string(),
+                ),
+            },
+        ),
+        (
+            "timeout_ms".to_string(),
+            JsonSchema::Number {
+                description: Some(
+                    "Maximum time in milliseconds to wait for the file barrier".to_string(),
+                ),
+            },
+        ),
+    ]);
+
+    let properties = BTreeMap::from([
+        (
+            "sleep_before_ms".to_string(),
+            JsonSchema::Number {
+                description: Some(
+                    "Optional delay in milliseconds before any other action".to_string(),
+                ),
+            },
+        ),
+        (
+            "sleep_after_ms".to_string(),
+            JsonSchema::Number {
+                description: Some(
+                    "Optional delay in milliseconds after completing the barrier".to_string(),
+                ),
+            },
+        ),
+        (
+            "barrier".to_string(),
+            JsonSchema::Object {
+                properties: barrier_properties,
+                required: Some(vec!["id".to_string(), "participants".to_string()]),
+                additional_properties: Some(false.into()),
+            },
+        ),
+        (
+            "file_barrier".to_string(),
+            JsonSchema::Object {
+                properties: file_barrier_properties,
+                required: Some(vec!["path".to_string(), "participants".to_string()]),
+                additional_properties: Some(false.into()),
+            },
+        ),
+    ]);
+
+    ToolSpec::Function(ResponsesApiTool {
+        name: "test_sync_tool".to_string(),
+        description: "Internal synchronization helper used by Codex integration tests.".to_string(),
+        strict: false,
+        defer_loading: None,
+        parameters: JsonSchema::Object {
+            properties,
+            required: None,
+            additional_properties: Some(false.into()),
+        },
+        output_schema: None,
+    })
 }
 
 fn create_tool_search_tool(app_tools: &HashMap<String, ToolInfo>) -> ToolSpec {
@@ -587,6 +741,287 @@ fn format_plugin_summary(plugin: &DiscoverablePluginInfo) -> String {
     }
 }
 
+fn create_list_dir_tool() -> ToolSpec {
+    let properties = BTreeMap::from([
+        (
+            "dir_path".to_string(),
+            JsonSchema::String {
+                description: Some("Absolute path to the directory to list.".to_string()),
+            },
+        ),
+        (
+            "offset".to_string(),
+            JsonSchema::Number {
+                description: Some(
+                    "The entry number to start listing from. Must be 1 or greater.".to_string(),
+                ),
+            },
+        ),
+        (
+            "limit".to_string(),
+            JsonSchema::Number {
+                description: Some("The maximum number of entries to return.".to_string()),
+            },
+        ),
+        (
+            "depth".to_string(),
+            JsonSchema::Number {
+                description: Some(
+                    "The maximum directory depth to traverse. Must be 1 or greater.".to_string(),
+                ),
+            },
+        ),
+    ]);
+
+    ToolSpec::Function(ResponsesApiTool {
+        name: "list_dir".to_string(),
+        description:
+            "Lists entries in a local directory with 1-indexed entry numbers and simple type labels."
+                .to_string(),
+        strict: false,
+        defer_loading: None,
+        parameters: JsonSchema::Object {
+            properties,
+            required: Some(vec!["dir_path".to_string()]),
+            additional_properties: Some(false.into()),
+        },
+        output_schema: None,
+    })
+}
+
+fn create_js_repl_tool() -> ToolSpec {
+    // Keep JS input freeform, but block the most common malformed payload shapes
+    // (JSON wrappers, quoted strings, and markdown fences) before they reach the
+    // runtime `reject_json_or_quoted_source` validation. The API's regex engine
+    // does not support look-around, so this uses a "first significant token"
+    // pattern rather than negative lookaheads.
+    const JS_REPL_FREEFORM_GRAMMAR: &str = r#"
+start: pragma_source | plain_source
+
+pragma_source: PRAGMA_LINE NEWLINE js_source
+plain_source: PLAIN_JS_SOURCE
+
+js_source: JS_SOURCE
+
+PRAGMA_LINE: /[ \t]*\/\/ codex-js-repl:[^\r\n]*/
+NEWLINE: /\r?\n/
+PLAIN_JS_SOURCE: /(?:\s*)(?:[^\s{\"`]|`[^`]|``[^`])[\s\S]*/
+JS_SOURCE: /(?:\s*)(?:[^\s{\"`]|`[^`]|``[^`])[\s\S]*/
+"#;
+
+    ToolSpec::Freeform(FreeformTool {
+        name: "js_repl".to_string(),
+        description: "Runs JavaScript in a persistent Node kernel with top-level await. This is a freeform tool: send raw JavaScript source text, optionally with a first-line pragma like `// codex-js-repl: timeout_ms=15000`; do not send JSON/quotes/markdown fences."
+            .to_string(),
+        format: FreeformToolFormat {
+            r#type: "grammar".to_string(),
+            syntax: "lark".to_string(),
+            definition: JS_REPL_FREEFORM_GRAMMAR.to_string(),
+        },
+    })
+}
+
+fn create_py_repl_tool() -> ToolSpec {
+    // Keep Python input freeform while rejecting the most common malformed
+    // wrapper shapes before they reach runtime validation.
+    const PY_REPL_FREEFORM_GRAMMAR: &str = r#"
+start: pragma_source | plain_source
+
+pragma_source: PRAGMA_LINE NEWLINE py_source
+plain_source: PLAIN_PY_SOURCE
+
+py_source: PY_SOURCE
+
+PRAGMA_LINE: /[ \t]*#[ \t]*codex-py-repl:[^\r\n]*/
+NEWLINE: /\r?\n/
+PLAIN_PY_SOURCE: /(?:\s*)(?:[^\s{\"'`]|#[^\r\n])[\s\S]*/
+PY_SOURCE: /(?:\s*)(?:[^\s{\"'`]|#[^\r\n])[\s\S]*/
+"#;
+
+    ToolSpec::Freeform(FreeformTool {
+        name: "py_repl".to_string(),
+        description: "Runs Python in a persistent kernel with top-level await. This is a freeform tool: send raw Python source text, optionally with a first-line pragma like `# codex-py-repl: timeout_ms=15000`; do not send JSON/quotes/markdown fences."
+            .to_string(),
+        format: FreeformToolFormat {
+            r#type: "grammar".to_string(),
+            syntax: "lark".to_string(),
+            definition: PY_REPL_FREEFORM_GRAMMAR.to_string(),
+        },
+    })
+}
+
+fn create_js_repl_reset_tool() -> ToolSpec {
+    ToolSpec::Function(ResponsesApiTool {
+        name: "js_repl_reset".to_string(),
+        description:
+            "Restarts the js_repl kernel for this run and clears persisted top-level bindings."
+                .to_string(),
+        strict: false,
+        defer_loading: None,
+        parameters: JsonSchema::Object {
+            properties: BTreeMap::new(),
+            required: None,
+            additional_properties: Some(false.into()),
+        },
+        output_schema: None,
+    })
+}
+
+fn create_py_repl_reset_tool() -> ToolSpec {
+    ToolSpec::Function(ResponsesApiTool {
+        name: "py_repl_reset".to_string(),
+        description:
+            "Restarts the py_repl kernel for this run and clears persisted top-level bindings."
+                .to_string(),
+        strict: false,
+        defer_loading: None,
+        parameters: JsonSchema::Object {
+            properties: BTreeMap::new(),
+            required: None,
+            additional_properties: Some(false.into()),
+        },
+        output_schema: None,
+    })
+}
+
+fn create_code_mode_tool(
+    enabled_tools: &[(String, String)],
+    code_mode_only_enabled: bool,
+) -> ToolSpec {
+    const CODE_MODE_FREEFORM_GRAMMAR: &str = r#"
+start: pragma_source | plain_source
+pragma_source: PRAGMA_LINE NEWLINE SOURCE
+plain_source: SOURCE
+
+PRAGMA_LINE: /[ \t]*\/\/ @exec:[^\r\n]*/
+NEWLINE: /\r?\n/
+SOURCE: /[\s\S]+/
+"#;
+
+    ToolSpec::Freeform(FreeformTool {
+        name: PUBLIC_TOOL_NAME.to_string(),
+        description: codex_code_mode::build_exec_tool_description(
+            enabled_tools,
+            code_mode_only_enabled,
+        ),
+        format: FreeformToolFormat {
+            r#type: "grammar".to_string(),
+            syntax: "lark".to_string(),
+            definition: CODE_MODE_FREEFORM_GRAMMAR.to_string(),
+        },
+    })
+}
+
+fn create_list_mcp_resources_tool() -> ToolSpec {
+    let properties = BTreeMap::from([
+        (
+            "server".to_string(),
+            JsonSchema::String {
+                description: Some(
+                    "Optional MCP server name. When omitted, lists resources from every configured server."
+                        .to_string(),
+                ),
+            },
+        ),
+        (
+            "cursor".to_string(),
+            JsonSchema::String {
+                description: Some(
+                    "Opaque cursor returned by a previous list_mcp_resources call for the same server."
+                        .to_string(),
+                ),
+            },
+        ),
+    ]);
+
+    ToolSpec::Function(ResponsesApiTool {
+        name: "list_mcp_resources".to_string(),
+        description: "Lists resources provided by MCP servers. Resources allow servers to share data that provides context to language models, such as files, database schemas, or application-specific information. Prefer resources over web search when possible.".to_string(),
+        strict: false,
+        defer_loading: None,
+        parameters: JsonSchema::Object {
+            properties,
+            required: None,
+            additional_properties: Some(false.into()),
+        },
+        output_schema: None,
+    })
+}
+
+fn create_list_mcp_resource_templates_tool() -> ToolSpec {
+    let properties = BTreeMap::from([
+        (
+            "server".to_string(),
+            JsonSchema::String {
+                description: Some(
+                    "Optional MCP server name. When omitted, lists resource templates from all configured servers."
+                        .to_string(),
+                ),
+            },
+        ),
+        (
+            "cursor".to_string(),
+            JsonSchema::String {
+                description: Some(
+                    "Opaque cursor returned by a previous list_mcp_resource_templates call for the same server."
+                        .to_string(),
+                ),
+            },
+        ),
+    ]);
+
+    ToolSpec::Function(ResponsesApiTool {
+        name: "list_mcp_resource_templates".to_string(),
+        description: "Lists resource templates provided by MCP servers. Parameterized resource templates allow servers to share data that takes parameters and provides context to language models, such as files, database schemas, or application-specific information. Prefer resource templates over web search when possible.".to_string(),
+        strict: false,
+        defer_loading: None,
+        parameters: JsonSchema::Object {
+            properties,
+            required: None,
+            additional_properties: Some(false.into()),
+        },
+        output_schema: None,
+    })
+}
+
+fn create_read_mcp_resource_tool() -> ToolSpec {
+    let properties = BTreeMap::from([
+        (
+            "server".to_string(),
+            JsonSchema::String {
+                description: Some(
+                    "MCP server name exactly as configured. Must match the 'server' field returned by list_mcp_resources."
+                        .to_string(),
+                ),
+            },
+        ),
+        (
+            "uri".to_string(),
+            JsonSchema::String {
+                description: Some(
+                    "Resource URI to read. Must be one of the URIs returned by list_mcp_resources."
+                        .to_string(),
+                ),
+            },
+        ),
+    ]);
+
+    ToolSpec::Function(ResponsesApiTool {
+        name: "read_mcp_resource".to_string(),
+        description:
+            "Read a specific resource from an MCP server given the server name and resource URI."
+                .to_string(),
+        strict: false,
+        defer_loading: None,
+        parameters: JsonSchema::Object {
+            properties,
+            required: Some(vec!["server".to_string(), "uri".to_string()]),
+            additional_properties: Some(false.into()),
+        },
+        output_schema: None,
+    })
+}
+
 /// TODO(dylan): deprecate once we get rid of json tool
 #[derive(Serialize, Deserialize)]
 pub(crate) struct ApplyPatchToolArgs {
@@ -645,6 +1080,8 @@ pub(crate) fn build_specs_with_discoverable_tools(
     use crate::tools::handlers::McpHandler;
     use crate::tools::handlers::McpResourceHandler;
     use crate::tools::handlers::PlanHandler;
+    use crate::tools::handlers::PyReplHandler;
+    use crate::tools::handlers::PyReplResetHandler;
     use crate::tools::handlers::RequestPermissionsHandler;
     use crate::tools::handlers::RequestUserInputHandler;
     use crate::tools::handlers::ShellCommandHandler;
@@ -687,6 +1124,8 @@ pub(crate) fn build_specs_with_discoverable_tools(
     let code_mode_wait_handler = Arc::new(CodeModeWaitHandler);
     let js_repl_handler = Arc::new(JsReplHandler);
     let js_repl_reset_handler = Arc::new(JsReplResetHandler);
+    let py_repl_handler = Arc::new(PyReplHandler);
+    let py_repl_reset_handler = Arc::new(PyReplResetHandler);
     let exec_permission_approvals_enabled = config.exec_permission_approvals_enabled;
 
     if config.code_mode_enabled {
@@ -831,6 +1270,23 @@ pub(crate) fn build_specs_with_discoverable_tools(
         );
         builder.register_handler("js_repl", js_repl_handler);
         builder.register_handler("js_repl_reset", js_repl_reset_handler);
+    }
+
+    if config.py_repl_enabled {
+        push_tool_spec(
+            &mut builder,
+            create_py_repl_tool(),
+            false,
+            config.code_mode_enabled,
+        );
+        push_tool_spec(
+            &mut builder,
+            create_py_repl_reset_tool(),
+            false,
+            config.code_mode_enabled,
+        );
+        builder.register_handler("py_repl", py_repl_handler);
+        builder.register_handler("py_repl_reset", py_repl_reset_handler);
     }
 
     if config.request_user_input {
