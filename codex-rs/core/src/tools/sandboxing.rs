@@ -161,8 +161,8 @@ impl ExecApprovalRequirement {
 
 /// - Never, OnFailure: do not ask
 /// - OnRequest: ask unless filesystem access is unrestricted
-/// - Reject: ask unless filesystem access is unrestricted, but auto-reject
-///   when `sandbox_approval` rejection is enabled.
+/// - Granular: ask unless filesystem access is unrestricted, but auto-reject
+///   when granular sandbox approval is disabled.
 /// - UnlessTrusted: always ask
 pub(crate) fn default_exec_approval_requirement(
     policy: AskForApproval,
@@ -170,7 +170,7 @@ pub(crate) fn default_exec_approval_requirement(
 ) -> ExecApprovalRequirement {
     let needs_approval = match policy {
         AskForApproval::Never | AskForApproval::OnFailure => false,
-        AskForApproval::OnRequest | AskForApproval::Reject(_) => {
+        AskForApproval::OnRequest | AskForApproval::Granular(_) => {
             matches!(
                 file_system_sandbox_policy.kind,
                 FileSystemSandboxKind::Restricted
@@ -182,11 +182,12 @@ pub(crate) fn default_exec_approval_requirement(
     if needs_approval
         && matches!(
             policy,
-            AskForApproval::Reject(reject_config) if reject_config.rejects_sandbox_approval()
+            AskForApproval::Granular(granular_config)
+                if !granular_config.allows_sandbox_approval()
         )
     {
         ExecApprovalRequirement::Forbidden {
-            reason: "approval policy rejected sandbox approval prompt".to_string(),
+            reason: "approval policy disallowed sandbox approval prompt".to_string(),
         }
     } else if needs_approval {
         ExecApprovalRequirement::NeedsApproval {
@@ -268,7 +269,7 @@ pub(crate) trait Approvable<Req> {
             AskForApproval::UnlessTrusted => true,
             AskForApproval::Never => false,
             AskForApproval::OnRequest => false,
-            AskForApproval::Reject(reject_config) => !reject_config.sandbox_approval,
+            AskForApproval::Granular(granular_config) => granular_config.sandbox_approval,
         }
     }
 
@@ -330,7 +331,7 @@ pub(crate) struct SandboxAttempt<'a> {
     pub(crate) manager: &'a SandboxManager,
     pub(crate) sandbox_cwd: &'a Path,
     pub codex_linux_sandbox_exe: Option<&'a std::path::PathBuf>,
-    pub use_linux_sandbox_bwrap: bool,
+    pub use_legacy_landlock: bool,
     pub windows_sandbox_level: codex_protocol::config_types::WindowsSandboxLevel,
 }
 
@@ -353,126 +354,12 @@ impl<'a> SandboxAttempt<'a> {
                 #[cfg(target_os = "macos")]
                 macos_seatbelt_profile_extensions: None,
                 codex_linux_sandbox_exe: self.codex_linux_sandbox_exe,
-                use_linux_sandbox_bwrap: self.use_linux_sandbox_bwrap,
+                use_legacy_landlock: self.use_legacy_landlock,
                 windows_sandbox_level: self.windows_sandbox_level,
             })
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::sandboxing::SandboxPermissions;
-    use codex_protocol::protocol::NetworkAccess;
-    use codex_protocol::protocol::RejectConfig;
-    use pretty_assertions::assert_eq;
-
-    #[test]
-    fn external_sandbox_skips_exec_approval_on_request() {
-        let sandbox_policy = SandboxPolicy::ExternalSandbox {
-            network_access: NetworkAccess::Restricted,
-        };
-        assert_eq!(
-            default_exec_approval_requirement(
-                AskForApproval::OnRequest,
-                &FileSystemSandboxPolicy::from(&sandbox_policy),
-            ),
-            ExecApprovalRequirement::Skip {
-                bypass_sandbox: false,
-                proposed_execpolicy_amendment: None,
-            }
-        );
-    }
-
-    #[test]
-    fn restricted_sandbox_requires_exec_approval_on_request() {
-        let sandbox_policy = SandboxPolicy::new_read_only_policy();
-        assert_eq!(
-            default_exec_approval_requirement(
-                AskForApproval::OnRequest,
-                &FileSystemSandboxPolicy::from(&sandbox_policy)
-            ),
-            ExecApprovalRequirement::NeedsApproval {
-                reason: None,
-                proposed_execpolicy_amendment: None,
-            }
-        );
-    }
-
-    #[test]
-    fn default_exec_approval_requirement_rejects_sandbox_prompt_when_configured() {
-        let policy = AskForApproval::Reject(RejectConfig {
-            sandbox_approval: true,
-            rules: false,
-            skill_approval: false,
-            request_permissions: false,
-            mcp_elicitations: false,
-        });
-
-        let sandbox_policy = SandboxPolicy::new_read_only_policy();
-        let requirement = default_exec_approval_requirement(
-            policy,
-            &FileSystemSandboxPolicy::from(&sandbox_policy),
-        );
-
-        assert_eq!(
-            requirement,
-            ExecApprovalRequirement::Forbidden {
-                reason: "approval policy rejected sandbox approval prompt".to_string(),
-            }
-        );
-    }
-
-    #[test]
-    fn default_exec_approval_requirement_keeps_prompt_when_sandbox_rejection_is_disabled() {
-        let policy = AskForApproval::Reject(RejectConfig {
-            sandbox_approval: false,
-            rules: true,
-            skill_approval: false,
-            request_permissions: false,
-            mcp_elicitations: true,
-        });
-
-        let sandbox_policy = SandboxPolicy::new_read_only_policy();
-        let requirement = default_exec_approval_requirement(
-            policy,
-            &FileSystemSandboxPolicy::from(&sandbox_policy),
-        );
-
-        assert_eq!(
-            requirement,
-            ExecApprovalRequirement::NeedsApproval {
-                reason: None,
-                proposed_execpolicy_amendment: None,
-            }
-        );
-    }
-
-    #[test]
-    fn additional_permissions_allow_bypass_sandbox_first_attempt_when_execpolicy_skips() {
-        assert_eq!(
-            sandbox_override_for_first_attempt(
-                SandboxPermissions::WithAdditionalPermissions,
-                &ExecApprovalRequirement::Skip {
-                    bypass_sandbox: true,
-                    proposed_execpolicy_amendment: None,
-                },
-            ),
-            SandboxOverride::BypassSandboxFirstAttempt
-        );
-    }
-
-    #[test]
-    fn guardian_bypasses_sandbox_for_explicit_escalation_on_first_attempt() {
-        assert_eq!(
-            sandbox_override_for_first_attempt(
-                SandboxPermissions::RequireEscalated,
-                &ExecApprovalRequirement::Skip {
-                    bypass_sandbox: false,
-                    proposed_execpolicy_amendment: None,
-                },
-            ),
-            SandboxOverride::BypassSandboxFirstAttempt
-        );
-    }
-}
+#[path = "sandboxing_tests.rs"]
+mod tests;

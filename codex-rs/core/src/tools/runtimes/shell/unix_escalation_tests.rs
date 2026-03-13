@@ -16,8 +16,8 @@ use crate::config::Permissions;
 use crate::config::types::ShellEnvironmentPolicy;
 use crate::exec::SandboxType;
 use crate::protocol::AskForApproval;
+use crate::protocol::GranularApprovalConfig;
 use crate::protocol::ReadOnlyAccess;
-use crate::protocol::RejectConfig;
 use crate::protocol::SandboxPolicy;
 use crate::sandboxing::SandboxPermissions;
 #[cfg(target_os = "macos")]
@@ -92,6 +92,7 @@ fn test_skill_metadata(permission_profile: Option<PermissionProfile>) -> SkillMe
         dependencies: None,
         policy: None,
         permission_profile,
+        managed_network_override: None,
         path_to_skills_md: PathBuf::from("/tmp/skill/SKILL.md"),
         scope: SkillScope::User,
     }
@@ -105,12 +106,12 @@ fn execve_prompt_rejection_uses_skill_approval_for_skill_scripts() {
 
     assert_eq!(
         super::execve_prompt_is_rejected_by_policy(
-            AskForApproval::Reject(RejectConfig {
+            AskForApproval::Granular(GranularApprovalConfig {
                 sandbox_approval: true,
                 rules: true,
-                skill_approval: false,
-                request_permissions: false,
-                mcp_elicitations: false,
+                skill_approval: true,
+                request_permissions: true,
+                mcp_elicitations: true,
             }),
             &decision_source,
         ),
@@ -118,16 +119,16 @@ fn execve_prompt_rejection_uses_skill_approval_for_skill_scripts() {
     );
     assert_eq!(
         super::execve_prompt_is_rejected_by_policy(
-            AskForApproval::Reject(RejectConfig {
-                sandbox_approval: false,
-                rules: false,
-                skill_approval: true,
-                request_permissions: false,
-                mcp_elicitations: false,
+            AskForApproval::Granular(GranularApprovalConfig {
+                sandbox_approval: true,
+                rules: true,
+                skill_approval: false,
+                request_permissions: true,
+                mcp_elicitations: true,
             }),
             &decision_source,
         ),
-        Some("approval required by skill, but AskForApproval::Reject.skill_approval is set"),
+        Some("approval required by skill, but AskForApproval::Granular.skill_approval is false"),
     );
 }
 
@@ -135,16 +136,16 @@ fn execve_prompt_rejection_uses_skill_approval_for_skill_scripts() {
 fn execve_prompt_rejection_keeps_prefix_rules_on_rules_flag() {
     assert_eq!(
         super::execve_prompt_is_rejected_by_policy(
-            AskForApproval::Reject(RejectConfig {
+            AskForApproval::Granular(GranularApprovalConfig {
                 sandbox_approval: true,
-                rules: true,
-                skill_approval: false,
-                request_permissions: false,
-                mcp_elicitations: false,
+                rules: false,
+                skill_approval: true,
+                request_permissions: true,
+                mcp_elicitations: true,
             }),
             &super::DecisionSource::PrefixRule,
         ),
-        Some("approval required by policy rule, but AskForApproval::Reject.rules is set"),
+        Some("approval required by policy rule, but AskForApproval::Granular.rules is false"),
     );
 }
 
@@ -152,16 +153,32 @@ fn execve_prompt_rejection_keeps_prefix_rules_on_rules_flag() {
 fn execve_prompt_rejection_keeps_unmatched_commands_on_sandbox_flag() {
     assert_eq!(
         super::execve_prompt_is_rejected_by_policy(
-            AskForApproval::Reject(RejectConfig {
-                sandbox_approval: true,
-                rules: false,
-                skill_approval: false,
-                request_permissions: false,
-                mcp_elicitations: false,
+            AskForApproval::Granular(GranularApprovalConfig {
+                sandbox_approval: false,
+                rules: true,
+                skill_approval: true,
+                request_permissions: true,
+                mcp_elicitations: true,
             }),
             &super::DecisionSource::UnmatchedCommandFallback,
         ),
-        Some("approval required by policy, but AskForApproval::Reject.sandbox_approval is set"),
+        Some("approval required by policy, but AskForApproval::Granular.sandbox_approval is false"),
+    );
+}
+
+#[test]
+fn approval_sandbox_permissions_only_downgrades_preapproved_additional_permissions() {
+    assert_eq!(
+        super::approval_sandbox_permissions(SandboxPermissions::WithAdditionalPermissions, true),
+        SandboxPermissions::UseDefault,
+    );
+    assert_eq!(
+        super::approval_sandbox_permissions(SandboxPermissions::WithAdditionalPermissions, false),
+        SandboxPermissions::WithAdditionalPermissions,
+    );
+    assert_eq!(
+        super::approval_sandbox_permissions(SandboxPermissions::RequireEscalated, true),
+        SandboxPermissions::RequireEscalated,
     );
 }
 
@@ -549,6 +566,47 @@ host_executable(name = "git", paths = ["{git_path_literal}"])
 }
 
 #[test]
+fn intercepted_exec_policy_treats_preapproved_additional_permissions_as_default() {
+    let policy = PolicyParser::new().build();
+    let program = AbsolutePathBuf::try_from(host_absolute_path(&["usr", "bin", "printf"])).unwrap();
+    let argv = ["printf".to_string(), "hello".to_string()];
+    let approval_policy = AskForApproval::OnRequest;
+    let sandbox_policy = SandboxPolicy::new_workspace_write_policy();
+    let file_system_sandbox_policy = read_only_file_system_sandbox_policy();
+
+    let preapproved = evaluate_intercepted_exec_policy(
+        &policy,
+        &program,
+        &argv,
+        InterceptedExecPolicyContext {
+            approval_policy,
+            sandbox_policy: &sandbox_policy,
+            file_system_sandbox_policy: &file_system_sandbox_policy,
+            sandbox_permissions: super::approval_sandbox_permissions(
+                SandboxPermissions::WithAdditionalPermissions,
+                true,
+            ),
+            enable_shell_wrapper_parsing: false,
+        },
+    );
+    let fresh_request = evaluate_intercepted_exec_policy(
+        &policy,
+        &program,
+        &argv,
+        InterceptedExecPolicyContext {
+            approval_policy,
+            sandbox_policy: &sandbox_policy,
+            file_system_sandbox_policy: &file_system_sandbox_policy,
+            sandbox_permissions: SandboxPermissions::WithAdditionalPermissions,
+            enable_shell_wrapper_parsing: false,
+        },
+    );
+
+    assert_eq!(preapproved.decision, Decision::Allow);
+    assert_eq!(fresh_request.decision, Decision::Prompt);
+}
+
+#[test]
 fn intercepted_exec_policy_rejects_disallowed_host_executable_mapping() {
     let allowed_git = host_absolute_path(&["usr", "bin", "git"]);
     let other_git = host_absolute_path(&["opt", "homebrew", "bin", "git"]);
@@ -611,7 +669,7 @@ async fn prepare_escalated_exec_turn_default_preserves_macos_seatbelt_extensions
             ..Default::default()
         }),
         codex_linux_sandbox_exe: None,
-        use_linux_sandbox_bwrap: false,
+        use_legacy_landlock: false,
     };
 
     let prepared = executor
@@ -660,7 +718,7 @@ async fn prepare_escalated_exec_permissions_preserve_macos_seatbelt_extensions()
         sandbox_policy_cwd: cwd.to_path_buf(),
         macos_seatbelt_profile_extensions: None,
         codex_linux_sandbox_exe: None,
-        use_linux_sandbox_bwrap: false,
+        use_legacy_landlock: false,
     };
 
     let permissions = Permissions {
@@ -737,7 +795,7 @@ async fn prepare_escalated_exec_permission_profile_unions_turn_and_requested_mac
             ..Default::default()
         }),
         codex_linux_sandbox_exe: None,
-        use_linux_sandbox_bwrap: false,
+        use_legacy_landlock: false,
     };
 
     let prepared = executor
