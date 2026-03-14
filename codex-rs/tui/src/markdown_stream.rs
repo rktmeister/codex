@@ -44,12 +44,10 @@ impl MarkdownStreamCollector {
     /// final rendered line is considered incomplete and is not emitted.
     pub fn commit_complete_lines(&mut self) -> Vec<Line<'static>> {
         let source = self.buffer.clone();
-        let last_newline_idx = source.rfind('\n');
-        let source = if let Some(last_newline_idx) = last_newline_idx {
-            source[..=last_newline_idx].to_string()
-        } else {
+        let Some(commit_end) = stable_commit_end(&source) else {
             return Vec::new();
         };
+        let source = source[..commit_end].to_string();
         let mut rendered: Vec<Line<'static>> = Vec::new();
         markdown::append_markdown(&source, self.width, Some(self.cwd.as_path()), &mut rendered);
         let mut complete_line_count = rendered.len();
@@ -104,6 +102,143 @@ impl MarkdownStreamCollector {
         self.clear();
         out
     }
+}
+
+fn stable_commit_end(source: &str) -> Option<usize> {
+    let last_newline_idx = source.rfind('\n')?;
+    let source = &source[..=last_newline_idx];
+
+    let mut line_ends = Vec::new();
+    let mut end = 0usize;
+    for line in source.split_inclusive('\n') {
+        end += line.len();
+        line_ends.push((line.trim_end_matches('\n'), end));
+    }
+
+    if let Some(open_fence_start) = trailing_open_fence_start(&line_ends) {
+        return if open_fence_start == 0 {
+            None
+        } else {
+            Some(line_ends[open_fence_start - 1].1)
+        };
+    }
+
+    if line_ends
+        .last()
+        .is_some_and(|(line, _)| is_blank_like_markdown_line(line))
+    {
+        return Some(source.len());
+    }
+
+    let last_nonblank_idx = line_ends
+        .iter()
+        .rposition(|(line, _)| !is_blank_like_markdown_line(line))?;
+    let trailing_block_start = line_ends[..=last_nonblank_idx]
+        .iter()
+        .rposition(|(line, _)| is_blank_like_markdown_line(line))
+        .map_or(0, |idx| idx + 1);
+    let trailing_block: Vec<&str> = line_ends[trailing_block_start..=last_nonblank_idx]
+        .iter()
+        .map(|(line, _)| *line)
+        .collect();
+
+    if trailing_block_contains_callout_marker(&trailing_block)
+        || trailing_block_is_table_candidate(&trailing_block)
+    {
+        if trailing_block_start == 0 {
+            None
+        } else {
+            Some(line_ends[trailing_block_start - 1].1)
+        }
+    } else {
+        Some(source.len())
+    }
+}
+
+fn trailing_open_fence_start(line_ends: &[(&str, usize)]) -> Option<usize> {
+    let mut open_fence: Option<(usize, char, usize)> = None;
+
+    for (idx, (line, _)) in line_ends.iter().enumerate() {
+        let stripped = strip_fence_line_prefix(strip_blockquote_prefixes(line));
+        if let Some((_, open_marker, open_len)) = open_fence {
+            if is_closing_fence(stripped, open_marker, open_len) {
+                open_fence = None;
+            }
+            continue;
+        }
+
+        if let Some((marker, len)) = fence_delimiter(stripped) {
+            open_fence = Some((idx, marker, len));
+        }
+    }
+
+    open_fence.map(|(idx, _, _)| idx)
+}
+
+fn strip_fence_line_prefix(line: &str) -> &str {
+    let space_count = line.bytes().take_while(|b| *b == b' ').take(4).count();
+    if space_count <= 3 {
+        &line[space_count..]
+    } else {
+        line
+    }
+}
+
+fn fence_delimiter(line: &str) -> Option<(char, usize)> {
+    let mut chars = line.chars();
+    let marker = chars.next()?;
+    if !matches!(marker, '`' | '~') {
+        return None;
+    }
+
+    let len = line.chars().take_while(|ch| *ch == marker).count();
+    (len >= 3).then_some((marker, len))
+}
+
+fn is_closing_fence(line: &str, marker: char, min_len: usize) -> bool {
+    let len = line.chars().take_while(|ch| *ch == marker).count();
+    len >= min_len && line[len..].trim().is_empty()
+}
+
+fn strip_blockquote_prefixes(mut line: &str) -> &str {
+    loop {
+        line = line.trim_start();
+        let Some(rest) = line.strip_prefix('>') else {
+            return line;
+        };
+        line = rest.strip_prefix(' ').unwrap_or(rest);
+    }
+}
+
+fn is_blank_like_markdown_line(line: &str) -> bool {
+    strip_blockquote_prefixes(line).trim().is_empty()
+}
+
+fn trailing_block_contains_callout_marker(lines: &[&str]) -> bool {
+    lines.iter().any(|line| {
+        matches!(
+            strip_blockquote_prefixes(line).trim(),
+            "[!NOTE]" | "[!TIP]" | "[!IMPORTANT]" | "[!WARNING]" | "[!CAUTION]"
+        )
+    })
+}
+
+fn trailing_block_is_table_candidate(lines: &[&str]) -> bool {
+    is_table_row_line(lines[0])
+        && (lines.len() == 1 || (lines.len() >= 2 && is_table_delimiter_line(lines[1])))
+}
+
+fn is_table_row_line(line: &str) -> bool {
+    let trimmed = strip_blockquote_prefixes(line).trim();
+    trimmed.starts_with('|') && trimmed.ends_with('|')
+}
+
+fn is_table_delimiter_line(line: &str) -> bool {
+    let trimmed = strip_blockquote_prefixes(line).trim();
+    trimmed.contains('|')
+        && trimmed
+            .chars()
+            .all(|ch| matches!(ch, '|' | ':' | '-' | ' '))
 }
 
 #[cfg(test)]
@@ -426,6 +561,19 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn streaming_language_fence_matches_full_render() {
+        assert_streamed_equals_full(&[
+            "```python\n",
+            "def make_routes(\n",
+            "    mode: str,\n",
+            ") -> None:\n",
+            "    pass\n",
+            "```\n",
+        ])
+        .await;
+    }
+
+    #[tokio::test]
     async fn utf8_boundary_safety_and_wide_chars() {
         // Emoji (wide), CJK, control char, digit + combining macron sequences
         let input = "🙂🙂🙂\n汉字漢字\nA\u{0003}0\u{0304}\n";
@@ -669,8 +817,8 @@ mod tests {
             "".to_string(),
             "   This paragraph belongs to the same list item.".to_string(),
             "4. Second loose item with a nested list after a blank line.".to_string(),
-            "    - Nested bullet under a loose item".to_string(),
-            "    - Another nested bullet".to_string(),
+            "    • Nested bullet under a loose item".to_string(),
+            "    • Another nested bullet".to_string(),
         ];
         assert_eq!(
             streamed_strs, expected,
@@ -719,6 +867,30 @@ mod tests {
             "HTML block:\n",
             "<div>inline block</div>\n",
             "more stuff\n",
+        ])
+        .await;
+    }
+
+    #[tokio::test]
+    async fn streaming_callout_block_matches_full_render() {
+        assert_streamed_equals_full(&[
+            "> [!NOTE]\n",
+            "> GitHub-style callouts should render as a semantic block.\n",
+            ">\n",
+            "> Streaming should preserve the block layout.\n",
+            "\n",
+        ])
+        .await;
+    }
+
+    #[tokio::test]
+    async fn streaming_table_block_matches_full_render() {
+        assert_streamed_equals_full(&[
+            "| Metric | Baseline | New |\n",
+            "|:-------|---------:|----:|\n",
+            "| Latency (ms) | 84.2 | 71.5 |\n",
+            "| Throughput (tok/s) | 12600 | 14900 |\n",
+            "\n",
         ])
         .await;
     }

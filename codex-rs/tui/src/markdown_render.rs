@@ -5,12 +5,17 @@
 //! transcripts show the real file target (including normalized location suffixes) and can shorten
 //! absolute paths relative to a known working directory.
 
+use crate::line_truncation::line_width;
+use crate::markdown_code_block::render_markdown_code_block;
+use crate::markdown_table::MarkdownTableRow;
+use crate::markdown_table::render_markdown_table;
 use crate::render::highlight::highlight_code_to_lines;
 use crate::render::line_utils::line_to_static;
 use crate::wrapping::RtOptions;
 use crate::wrapping::adaptive_wrap_line;
 use codex_utils_string::normalize_markdown_hash_location_suffix;
 use dirs::home_dir;
+use pulldown_cmark::Alignment;
 use pulldown_cmark::CodeBlockKind;
 use pulldown_cmark::CowStr;
 use pulldown_cmark::Event;
@@ -19,6 +24,7 @@ use pulldown_cmark::Options;
 use pulldown_cmark::Parser;
 use pulldown_cmark::Tag;
 use pulldown_cmark::TagEnd;
+use pulldown_cmark::TextMergeStream;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
@@ -27,6 +33,7 @@ use regex_lite::Regex;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::LazyLock;
+use unicode_width::UnicodeWidthStr;
 use url::Url;
 
 struct MarkdownStyles {
@@ -42,8 +49,16 @@ struct MarkdownStyles {
     strikethrough: Style,
     ordered_list_marker: Style,
     unordered_list_marker: Style,
+    task_checked: Style,
+    task_unchecked: Style,
     link: Style,
     blockquote: Style,
+    callout_note: Style,
+    callout_warning: Style,
+    code_label: Style,
+    footnote: Style,
+    table_border: Style,
+    table_header: Style,
 }
 
 impl Default for MarkdownStyles {
@@ -63,8 +78,16 @@ impl Default for MarkdownStyles {
             strikethrough: Style::new().crossed_out(),
             ordered_list_marker: Style::new().light_blue(),
             unordered_list_marker: Style::new(),
+            task_checked: Style::new().green(),
+            task_unchecked: Style::new().dim(),
             link: Style::new().cyan().underlined(),
             blockquote: Style::new().green(),
+            callout_note: Style::new().green(),
+            callout_warning: Style::new().red(),
+            code_label: Style::new().cyan(),
+            footnote: Style::new().cyan(),
+            table_border: Style::new().dim(),
+            table_header: Style::new().bold(),
         }
     }
 }
@@ -74,14 +97,21 @@ struct IndentContext {
     prefix: Vec<Span<'static>>,
     marker: Option<Vec<Span<'static>>>,
     is_list: bool,
+    style: Option<Style>,
 }
 
 impl IndentContext {
-    fn new(prefix: Vec<Span<'static>>, marker: Option<Vec<Span<'static>>>, is_list: bool) -> Self {
+    fn new(
+        prefix: Vec<Span<'static>>,
+        marker: Option<Vec<Span<'static>>>,
+        is_list: bool,
+        style: Option<Style>,
+    ) -> Self {
         Self {
             prefix,
             marker,
             is_list,
+            style,
         }
     }
 }
@@ -107,8 +137,11 @@ pub(crate) fn render_markdown_text_with_width_and_cwd(
     cwd: Option<&Path>,
 ) -> Text<'static> {
     let mut options = Options::empty();
+    options.insert(Options::ENABLE_TABLES);
+    options.insert(Options::ENABLE_FOOTNOTES);
     options.insert(Options::ENABLE_STRIKETHROUGH);
-    let parser = Parser::new_ext(input, options);
+    options.insert(Options::ENABLE_TASKLISTS);
+    let parser = TextMergeStream::new(Parser::new_ext(input, options));
     let mut w = Writer::new(parser, width, cwd);
     w.run();
     w.text
@@ -129,6 +162,21 @@ fn should_render_link_destination(dest_url: &str) -> bool {
     !is_local_path_like_link(dest_url)
 }
 
+#[derive(Clone, Debug, Default)]
+struct ActiveTable {
+    alignments: Vec<Alignment>,
+    rows: Vec<MarkdownTableRow>,
+    current_row: Vec<Line<'static>>,
+    current_cell: Option<Line<'static>>,
+    in_header: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct PendingCallout {
+    label: &'static str,
+    style: Style,
+}
+
 static COLON_LOCATION_SUFFIX_RE: LazyLock<Regex> =
     LazyLock::new(
         || match Regex::new(r":\d+(?::\d+)?(?:[-–]\d+(?::\d+)?)?$") {
@@ -143,6 +191,8 @@ static HASH_LOCATION_SUFFIX_RE: LazyLock<Regex> =
         Ok(regex) => regex,
         Err(error) => panic!("invalid hash location regex: {error}"),
     });
+
+const UNORDERED_LIST_MARKER: &str = "• ";
 
 struct Writer<'a, I>
 where
@@ -170,6 +220,8 @@ where
     current_subsequent_indent: Vec<Span<'static>>,
     current_line_style: Style,
     current_line_in_code_block: bool,
+    active_table: Option<ActiveTable>,
+    pending_callout: Option<PendingCallout>,
 }
 
 impl<'a, I> Writer<'a, I>
@@ -200,6 +252,8 @@ where
             current_subsequent_indent: Vec::new(),
             current_line_style: Style::default(),
             current_line_in_code_block: false,
+            active_table: None,
+            pending_callout: None,
         }
     }
 
@@ -229,8 +283,8 @@ where
             }
             Event::Html(html) => self.html(html, /*inline*/ false),
             Event::InlineHtml(html) => self.html(html, /*inline*/ true),
-            Event::FootnoteReference(_) => {}
-            Event::TaskListMarker(_) => {}
+            Event::FootnoteReference(name) => self.footnote_reference(name),
+            Event::TaskListMarker(checked) => self.task_list_marker(checked),
         }
     }
 
@@ -273,14 +327,12 @@ where
             Tag::Strong => self.push_inline_style(self.styles.strong),
             Tag::Strikethrough => self.push_inline_style(self.styles.strikethrough),
             Tag::Link { dest_url, .. } => self.push_link(dest_url.to_string()),
-            Tag::HtmlBlock
-            | Tag::FootnoteDefinition(_)
-            | Tag::Table(_)
-            | Tag::TableHead
-            | Tag::TableRow
-            | Tag::TableCell
-            | Tag::Image { .. }
-            | Tag::MetadataBlock(_) => {}
+            Tag::FootnoteDefinition(name) => self.start_footnote_definition(name),
+            Tag::Table(alignments) => self.start_table(alignments),
+            Tag::TableHead => self.start_table_head(),
+            Tag::TableRow => self.start_table_row(),
+            Tag::TableCell => self.start_table_cell(),
+            Tag::HtmlBlock | Tag::Image { .. } | Tag::MetadataBlock(_) => {}
         }
     }
 
@@ -297,14 +349,12 @@ where
             }
             TagEnd::Emphasis | TagEnd::Strong | TagEnd::Strikethrough => self.pop_inline_style(),
             TagEnd::Link => self.pop_link(),
-            TagEnd::HtmlBlock
-            | TagEnd::FootnoteDefinition
-            | TagEnd::Table
-            | TagEnd::TableHead
-            | TagEnd::TableRow
-            | TagEnd::TableCell
-            | TagEnd::Image
-            | TagEnd::MetadataBlock(_) => {}
+            TagEnd::FootnoteDefinition => self.end_footnote_definition(),
+            TagEnd::Table => self.end_table(),
+            TagEnd::TableHead => self.end_table_head(),
+            TagEnd::TableRow => self.end_table_row(),
+            TagEnd::TableCell => self.end_table_cell(),
+            TagEnd::HtmlBlock | TagEnd::Image | TagEnd::MetadataBlock(_) => {}
         }
     }
 
@@ -318,6 +368,9 @@ where
     }
 
     fn end_paragraph(&mut self) {
+        if let Some(callout) = self.pending_callout.take() {
+            self.apply_callout_header(callout);
+        }
         self.needs_newline = true;
         self.in_paragraph = false;
         self.pending_marker_line = false;
@@ -356,6 +409,7 @@ where
             vec![Span::from("> ")],
             /*marker*/ None,
             /*is_list*/ false,
+            Some(self.styles.blockquote),
         ));
     }
 
@@ -368,11 +422,18 @@ where
         if self.suppressing_local_link_label() {
             return;
         }
+        let text = self.maybe_apply_callout_marker(text);
         self.line_ends_with_local_link_target = false;
         if self.pending_marker_line {
             self.push_line(Line::default());
         }
         self.pending_marker_line = false;
+
+        if self.in_table_cell() {
+            self.push_table_text(&text);
+            self.needs_newline = false;
+            return;
+        }
 
         // When inside a fenced code block with a known language, accumulate
         // text into the buffer for batch highlighting in end_codeblock().
@@ -408,6 +469,9 @@ where
                 self.push_line(Line::default());
             }
             let content = line.to_string();
+            if !content.is_empty() {
+                self.apply_pending_callout_if_needed();
+            }
             let span = Span::styled(
                 content,
                 self.inline_styles.last().copied().unwrap_or_default(),
@@ -421,6 +485,10 @@ where
         if self.suppressing_local_link_label() {
             return;
         }
+        if self.in_table_cell() {
+            self.push_span(Span::from(code.into_string()).style(self.styles.code));
+            return;
+        }
         self.line_ends_with_local_link_target = false;
         if self.pending_marker_line {
             self.push_line(Line::default());
@@ -432,6 +500,11 @@ where
 
     fn html(&mut self, html: CowStr<'a>, inline: bool) {
         if self.suppressing_local_link_label() {
+            return;
+        }
+        if self.in_table_cell() {
+            self.push_table_text(&html);
+            self.needs_newline = false;
             return;
         }
         self.line_ends_with_local_link_target = false;
@@ -454,12 +527,28 @@ where
         if self.suppressing_local_link_label() {
             return;
         }
+        if self.in_table_cell() {
+            self.push_span(" ".into());
+            return;
+        }
         self.line_ends_with_local_link_target = false;
         self.push_line(Line::default());
     }
 
     fn soft_break(&mut self) {
         if self.suppressing_local_link_label() {
+            return;
+        }
+        if self.in_table_cell() {
+            self.push_span(" ".into());
+            return;
+        }
+        if self.pending_callout.is_some()
+            && self
+                .current_line_content
+                .as_ref()
+                .is_some_and(|line| line.spans.is_empty())
+        {
             return;
         }
         if self.line_ends_with_local_link_target {
@@ -495,7 +584,7 @@ where
         let marker = if let Some(last_index) = self.list_indices.last_mut() {
             match last_index {
                 None => Some(vec![Span::styled(
-                    " ".repeat(width - 1) + "- ",
+                    " ".repeat(width - 1) + UNORDERED_LIST_MARKER,
                     self.styles.unordered_list_marker,
                 )]),
                 Some(index) => {
@@ -519,6 +608,7 @@ where
             indent_prefix,
             marker,
             /*is_list*/ true,
+            None,
         ));
         self.needs_newline = false;
     }
@@ -528,7 +618,6 @@ where
         if !self.text.lines.is_empty() {
             self.push_blank_line();
         }
-        self.in_code_block = true;
 
         // Extract the language token from the info string.  CommonMark info
         // strings can contain metadata after the language, separated by commas,
@@ -546,7 +635,9 @@ where
             vec![indent.unwrap_or_default()],
             /*marker*/ None,
             /*is_list*/ false,
+            None,
         ));
+        self.in_code_block = true;
         self.needs_newline = true;
     }
 
@@ -554,20 +645,151 @@ where
         // If we buffered code for a known language, syntax-highlight it now.
         if let Some(lang) = self.code_block_lang.take() {
             let code = std::mem::take(&mut self.code_block_buffer);
-            if !code.is_empty() {
-                let highlighted = highlight_code_to_lines(&code, &lang);
-                for hl_line in highlighted {
-                    self.push_line(Line::default());
-                    for span in hl_line.spans {
-                        self.push_span(span);
-                    }
-                }
+            let highlighted = if code.is_empty() {
+                vec![Line::default()]
+            } else {
+                highlight_code_to_lines(&code, &lang)
+            };
+            let available_width = self.wrap_width.map(|width| {
+                width.saturating_sub(line_width(&Line::from(self.prefix_spans(false))))
+            });
+            let rendered = render_markdown_code_block(
+                highlighted,
+                Some(&lang),
+                available_width,
+                self.styles.table_border,
+                self.styles.code_label,
+            );
+            for line in rendered {
+                self.push_unwrapped_line(line);
             }
         }
 
         self.needs_newline = true;
         self.in_code_block = false;
         self.indent_stack.pop();
+    }
+
+    fn footnote_reference(&mut self, name: CowStr<'a>) {
+        self.push_span(Span::styled(
+            format!("[{}]", name.as_ref()),
+            self.styles.footnote,
+        ));
+    }
+
+    fn task_list_marker(&mut self, checked: bool) {
+        let (marker, style) = if checked {
+            ("☑ ".to_string(), self.styles.task_checked)
+        } else {
+            ("☐ ".to_string(), self.styles.task_unchecked)
+        };
+        if let Some(context) = self.current_item_context_mut() {
+            context.marker = Some(vec![Span::styled(marker, style)]);
+        }
+    }
+
+    fn start_footnote_definition(&mut self, name: CowStr<'a>) {
+        if self.needs_newline {
+            self.push_blank_line();
+        }
+        let label = format!("[{name}] ");
+        let width = UnicodeWidthStr::width(label.as_str());
+        self.indent_stack.push(IndentContext::new(
+            vec![Span::from(" ".repeat(width))],
+            Some(vec![Span::styled(label, self.styles.footnote)]),
+            false,
+            None,
+        ));
+        self.pending_marker_line = true;
+        self.needs_newline = false;
+    }
+
+    fn end_footnote_definition(&mut self) {
+        self.indent_stack.pop();
+        self.pending_marker_line = false;
+        self.needs_newline = false;
+    }
+
+    fn start_table(&mut self, alignments: Vec<Alignment>) {
+        self.flush_current_line();
+        if !self.text.lines.is_empty() {
+            self.push_blank_line();
+        }
+        self.active_table = Some(ActiveTable {
+            alignments,
+            ..Default::default()
+        });
+        self.needs_newline = false;
+    }
+
+    fn end_table(&mut self) {
+        let Some(table) = self.active_table.take() else {
+            return;
+        };
+        let available_width = self
+            .wrap_width
+            .map(|width| width.saturating_sub(Line::from(self.prefix_spans(false)).width()));
+        let lines = render_markdown_table(
+            &table.alignments,
+            &table.rows,
+            available_width,
+            self.styles.table_border,
+            self.styles.table_header,
+        );
+        for line in lines {
+            self.push_unwrapped_line(line);
+        }
+        self.needs_newline = true;
+    }
+
+    fn start_table_head(&mut self) {
+        if let Some(table) = self.active_table.as_mut() {
+            table.in_header = true;
+            table.current_row.clear();
+        }
+    }
+
+    fn end_table_head(&mut self) {
+        if let Some(table) = self.active_table.as_mut() {
+            let cells = std::mem::take(&mut table.current_row);
+            if !cells.is_empty() {
+                table.rows.push(MarkdownTableRow {
+                    cells,
+                    is_header: true,
+                });
+            }
+            table.in_header = false;
+        }
+    }
+
+    fn start_table_row(&mut self) {
+        if let Some(table) = self.active_table.as_mut() {
+            table.current_row.clear();
+        }
+    }
+
+    fn end_table_row(&mut self) {
+        if let Some(table) = self.active_table.as_mut() {
+            let cells = std::mem::take(&mut table.current_row);
+            table.rows.push(MarkdownTableRow {
+                cells,
+                is_header: table.in_header,
+            });
+        }
+    }
+
+    fn start_table_cell(&mut self) {
+        if let Some(table) = self.active_table.as_mut() {
+            table.current_cell = Some(Line::default());
+        }
+    }
+
+    fn end_table_cell(&mut self) {
+        if let Some(table) = self.active_table.as_mut()
+            && let Some(cell) = table.current_cell.take()
+        {
+            table.current_row.push(cell);
+        }
     }
 
     fn push_inline_style(&mut self, style: Style) {
@@ -624,6 +846,108 @@ where
             .is_some()
     }
 
+    fn in_table_cell(&self) -> bool {
+        self.active_table
+            .as_ref()
+            .and_then(|table| table.current_cell.as_ref())
+            .is_some()
+    }
+
+    fn current_item_context_mut(&mut self) -> Option<&mut IndentContext> {
+        self.indent_stack.iter_mut().rev().find(|ctx| ctx.is_list)
+    }
+
+    fn active_indent_style(&self) -> Option<Style> {
+        self.indent_stack.iter().rev().find_map(|ctx| ctx.style)
+    }
+
+    fn push_table_text(&mut self, text: &str) {
+        for (idx, line) in text.lines().enumerate() {
+            if idx > 0 {
+                self.push_span(" ".into());
+            }
+            self.push_span(Span::styled(
+                line.to_string(),
+                self.inline_styles.last().copied().unwrap_or_default(),
+            ));
+        }
+    }
+
+    fn maybe_apply_callout_marker(&mut self, text: CowStr<'a>) -> CowStr<'a> {
+        let Some(current_line) = self.current_line_content.as_ref() else {
+            return text;
+        };
+        if !current_line.spans.is_empty() {
+            return text;
+        }
+        let Some((label, style, rest)) = self.parse_callout_marker(text.as_ref()) else {
+            return text;
+        };
+        let rest = rest.to_string();
+        let Some(context) = self
+            .indent_stack
+            .iter_mut()
+            .rev()
+            .find(|ctx| ctx.style.is_some())
+        else {
+            return text;
+        };
+
+        context.prefix = vec![Span::from("│ ")];
+        context.style = Some(style);
+        let pending_callout = PendingCallout { label, style };
+        if rest.is_empty() {
+            self.pending_callout = Some(pending_callout);
+        } else {
+            self.apply_callout_header(pending_callout);
+        }
+        CowStr::from(rest)
+    }
+
+    fn apply_callout_header(&mut self, callout: PendingCallout) {
+        let label_style = callout.style.patch(self.styles.strong);
+        let mut initial_indent = self.prefix_spans(false);
+        initial_indent.push(Span::styled(format!("{}: ", callout.label), label_style));
+        self.current_initial_indent = initial_indent;
+        self.current_subsequent_indent = self.prefix_spans(false);
+        self.current_line_style = callout.style;
+    }
+
+    fn apply_pending_callout_if_needed(&mut self) {
+        let Some(callout) = self.pending_callout.take() else {
+            return;
+        };
+        if self.current_line_content.is_none() {
+            self.push_line(Line::default());
+        }
+        self.apply_callout_header(callout);
+    }
+
+    fn parse_callout_marker<'b>(&self, text: &'b str) -> Option<(&'static str, Style, &'b str)> {
+        for (marker, label, style) in [
+            ("[!NOTE]", "NOTE", self.styles.callout_note),
+            ("[!TIP]", "TIP", self.styles.callout_note),
+            ("[!IMPORTANT]", "IMPORTANT", self.styles.callout_note),
+            ("[!WARNING]", "WARNING", self.styles.callout_warning),
+            ("[!CAUTION]", "CAUTION", self.styles.callout_warning),
+        ] {
+            if let Some(rest) = text.strip_prefix(marker) {
+                return Some((label, style, rest.trim_start()));
+            }
+        }
+        None
+    }
+
+    fn push_unwrapped_line(&mut self, line: Line<'static>) {
+        self.flush_current_line();
+        let style = self.active_indent_style().unwrap_or(line.style);
+        let mut spans = self.prefix_spans(false);
+        let mut line = line;
+        spans.append(&mut line.spans);
+        self.text.lines.push(Line::from_iter(spans).style(style));
+        self.line_ends_with_local_link_target = false;
+    }
+
     fn flush_current_line(&mut self) {
         if let Some(line) = self.current_line_content.take() {
             let style = self.current_line_style;
@@ -653,15 +977,7 @@ where
 
     fn push_line(&mut self, line: Line<'static>) {
         self.flush_current_line();
-        let blockquote_active = self
-            .indent_stack
-            .iter()
-            .any(|ctx| ctx.prefix.iter().any(|s| s.content.contains('>')));
-        let style = if blockquote_active {
-            self.styles.blockquote
-        } else {
-            line.style
-        };
+        let style = self.active_indent_style().unwrap_or(line.style);
         let was_pending = self.pending_marker_line;
 
         self.current_initial_indent = self.prefix_spans(was_pending);
@@ -675,6 +991,12 @@ where
     }
 
     fn push_span(&mut self, span: Span<'static>) {
+        if let Some(table) = self.active_table.as_mut()
+            && let Some(cell) = table.current_cell.as_mut()
+        {
+            cell.push_span(span);
+            return;
+        }
         if let Some(line) = self.current_line_content.as_mut() {
             line.push_span(span);
         } else {
@@ -988,7 +1310,7 @@ mod tests {
         let lines = lines_to_strings(&rendered);
         assert_eq!(
             lines,
-            vec!["- first second".to_string(), "  third fourth".to_string(),]
+            vec!["• first second".to_string(), "  third fourth".to_string(),]
         );
     }
 
@@ -1001,10 +1323,10 @@ mod tests {
         assert_eq!(
             lines,
             vec![
-                "- outer item with".to_string(),
+                "• outer item with".to_string(),
                 "  several words to".to_string(),
                 "  wrap".to_string(),
-                "    - inner item".to_string(),
+                "    • inner item".to_string(),
                 "      that also".to_string(),
                 "      needs wrapping".to_string(),
             ]
@@ -1050,7 +1372,7 @@ mod tests {
         assert_eq!(
             lines,
             vec![
-                "- list item".to_string(),
+                "• list item".to_string(),
                 "  > block quote inside".to_string(),
                 "  > list that wraps".to_string(),
             ]
@@ -1124,11 +1446,11 @@ mod tests {
         let markdown = "```rust\r\nfn main() {}\r\n    line2\r\n```\r\n";
         let rendered = render_markdown_text(markdown);
         let lines = lines_to_strings(&rendered);
-        // Should be exactly two code lines; no spurious blank line between them.
-        assert_eq!(
-            lines,
-            vec!["fn main() {}".to_string(), "    line2".to_string()],
-            "CRLF code block should not produce extra blank lines: {lines:?}"
-        );
+        // Should be exactly one label line plus two code lines; no spurious blank line between
+        // the code lines.
+        assert_eq!(lines.first(), Some(&"╭─[rust]".to_string()));
+        assert_eq!(lines.get(1), Some(&"│ fn main() {}".to_string()));
+        assert_eq!(lines.get(2), Some(&"│     line2".to_string()));
+        assert_eq!(lines.last(), Some(&"╰─".to_string()));
     }
 }

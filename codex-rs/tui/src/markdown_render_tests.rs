@@ -136,8 +136,8 @@ fn blockquote_with_list_items() {
     let md = "> - item 1\n> - item 2\n";
     let text = render_markdown_text(md);
     let expected = Text::from_iter([
-        Line::from_iter(["> ", "- ", "item 1"]).green(),
-        Line::from_iter(["> ", "- ", "item 2"]).green(),
+        Line::from_iter(["> ", "• ", "item 1"]).green(),
+        Line::from_iter(["> ", "• ", "item 2"]).green(),
     ]);
     assert_eq!(text, expected);
 }
@@ -168,7 +168,7 @@ fn blockquote_list_then_nested_blockquote() {
     let md = "> - parent\n>   > child\n";
     let text = render_markdown_text(md);
     let expected = Text::from_iter([
-        Line::from_iter(["> ", "- ", "parent"]).green(),
+        Line::from_iter(["> ", "• ", "parent"]).green(),
         Line::from_iter(["> ", "  ", "> ", "child"]).green(),
     ]);
     assert_eq!(text, expected);
@@ -246,7 +246,7 @@ fn blockquote_in_unordered_list_on_next_line() {
                 .collect::<String>()
         })
         .collect();
-    assert_eq!(lines, vec!["- > quoted".to_string()]);
+    assert_eq!(lines, vec!["• > quoted".to_string()]);
 }
 
 #[test]
@@ -289,7 +289,7 @@ fn blockquote_inside_nested_list() {
                 .collect::<String>()
         })
         .collect();
-    assert_eq!(lines, vec!["1. A", "    - B", "      > inner"]);
+    assert_eq!(lines, vec!["1. A", "    • B", "      > inner"]);
 }
 
 #[test]
@@ -466,7 +466,7 @@ fn nested_blockquote_with_inline_and_fenced_code() {
 #[test]
 fn list_unordered_single() {
     let text = render_markdown_text("- List item 1\n");
-    let expected = Text::from_iter([Line::from_iter(["- ", "List item 1"])]);
+    let expected = Text::from_iter([Line::from_iter(["• ", "List item 1"])]);
     assert_eq!(text, expected);
 }
 
@@ -474,8 +474,8 @@ fn list_unordered_single() {
 fn list_unordered_multiple() {
     let text = render_markdown_text("- List item 1\n- List item 2\n");
     let expected = Text::from_iter([
-        Line::from_iter(["- ", "List item 1"]),
-        Line::from_iter(["- ", "List item 2"]),
+        Line::from_iter(["• ", "List item 1"]),
+        Line::from_iter(["• ", "List item 2"]),
     ]);
     assert_eq!(text, expected);
 }
@@ -494,8 +494,8 @@ fn list_ordered() {
 fn list_nested() {
     let text = render_markdown_text("- List item 1\n  - Nested list item 1\n");
     let expected = Text::from_iter([
-        Line::from_iter(["- ", "List item 1"]),
-        Line::from_iter(["    - ", "Nested list item 1"]),
+        Line::from_iter(["• ", "List item 1"]),
+        Line::from_iter(["    • ", "Nested list item 1"]),
     ]);
     assert_eq!(text, expected);
 }
@@ -516,8 +516,8 @@ fn nested_unordered_in_ordered() {
     let text = render_markdown_text(md);
     let expected = Text::from_iter([
         Line::from_iter(["1. ".light_blue(), "Outer".into()]),
-        Line::from_iter(["    - ", "Inner A"]),
-        Line::from_iter(["    - ", "Inner B"]),
+        Line::from_iter(["    • ", "Inner A"]),
+        Line::from_iter(["    • ", "Inner B"]),
         Line::from_iter(["2. ".light_blue(), "Next".into()]),
     ]);
     assert_eq!(text, expected);
@@ -528,10 +528,10 @@ fn nested_ordered_in_unordered() {
     let md = "- Outer\n    1. One\n    2. Two\n- Last\n";
     let text = render_markdown_text(md);
     let expected = Text::from_iter([
-        Line::from_iter(["- ", "Outer"]),
+        Line::from_iter(["• ", "Outer"]),
         Line::from_iter(["    1. ".light_blue(), "One".into()]),
         Line::from_iter(["    2. ".light_blue(), "Two".into()]),
-        Line::from_iter(["- ", "Last"]),
+        Line::from_iter(["• ", "Last"]),
     ]);
     assert_eq!(text, expected);
 }
@@ -554,7 +554,7 @@ fn tight_item_with_soft_break() {
     let md = "- item line1\n  item line2\n";
     let text = render_markdown_text(md);
     let expected = Text::from_iter([
-        Line::from_iter(["- ", "item line1"]),
+        Line::from_iter(["• ", "item line1"]),
         Line::from_iter(["  ", "item line2"]),
     ]);
     assert_eq!(text, expected);
@@ -566,7 +566,7 @@ fn deeply_nested_mixed_three_levels() {
     let text = render_markdown_text(md);
     let expected = Text::from_iter([
         Line::from_iter(["1. ".light_blue(), "A".into()]),
-        Line::from_iter(["    - ", "B"]),
+        Line::from_iter(["    • ", "B"]),
         Line::from_iter(["        1. ".light_blue(), "C".into()]),
         Line::from_iter(["2. ".light_blue(), "D".into()]),
     ]);
@@ -812,10 +812,16 @@ fn markdown_render_file_link_snapshot() {
         .lines
         .iter()
         .map(|l| {
-            l.spans
+            let line = l
+                .spans
                 .iter()
                 .map(|s| s.content.clone())
-                .collect::<String>()
+                .collect::<String>();
+            if line.trim_end() == ">" {
+                ">".to_string()
+            } else {
+                line
+            }
         })
         .collect::<Vec<_>>()
         .join("\n");
@@ -843,7 +849,7 @@ fn unordered_list_local_file_link_stays_inline_with_following_text() {
     assert_eq!(
         rendered,
         vec![
-            "- codex-rs/README.md:93: core is the agent/business logic, tui is the",
+            "• codex-rs/README.md:93: core is the agent/business logic, tui is the",
             "  terminal UI, exec is the headless automation surface, and cli is the",
             "  top-level multitool binary.",
         ]
@@ -869,7 +875,7 @@ fn unordered_list_local_file_link_soft_break_before_colon_stays_inline() {
         .collect::<Vec<_>>();
     assert_eq!(
         rendered,
-        vec!["- codex-rs/README.md:93: core is the agent/business logic.",]
+        vec!["• codex-rs/README.md:93: core is the agent/business logic.",]
     );
 }
 
@@ -893,8 +899,8 @@ fn consecutive_unordered_list_local_file_links_do_not_detach_paths() {
     assert_eq!(
         rendered,
         vec![
-            "- codex-rs/README.md:93: cli is the top-level multitool binary.",
-            "- codex-rs/core/README.md:1: codex-core owns the real runtime behavior.",
+            "• codex-rs/README.md:93: cli is the top-level multitool binary.",
+            "• codex-rs/core/README.md:1: codex-core owns the real runtime behavior.",
         ]
     );
 }
@@ -918,12 +924,16 @@ fn code_block_known_lang_has_syntax_colors() {
         .map(std::string::String::as_str)
         .filter(|s| !s.is_empty())
         .collect();
-    assert_eq!(content, vec!["fn main() {}"]);
+    assert_eq!(content.first(), Some(&"╭─[rust]"));
+    assert_eq!(content.get(1), Some(&"│ fn main() {}"));
+    assert_eq!(content.last(), Some(&"╰─"));
 
     // At least one span should have non-default style (syntax highlighting).
     let has_colored_span = text
         .lines
         .iter()
+        .skip(1)
+        .take(text.lines.len().saturating_sub(2))
         .flat_map(|l| l.spans.iter())
         .any(|sp| sp.style.fg.is_some());
     assert!(has_colored_span, "expected syntax-highlighted spans with color");
@@ -947,15 +957,62 @@ fn code_block_unknown_lang_plain() {
         .map(std::string::String::as_str)
         .filter(|s| !s.is_empty())
         .collect();
-    assert_eq!(content, vec!["hello world"]);
+    assert_eq!(content.first(), Some(&"╭─[xyzlang]"));
+    assert_eq!(content.get(1), Some(&"│ hello world"));
+    assert_eq!(content.last(), Some(&"╰─"));
 
-    // No syntax coloring for unknown language — all spans have default style.
+    // Unknown-language fences still get a visible label, but the code body should stay plain.
     let has_colored_span = text
         .lines
         .iter()
+        .skip(1)
+        .take(text.lines.len().saturating_sub(2))
         .flat_map(|l| l.spans.iter())
         .any(|sp| sp.style.fg.is_some());
     assert!(!has_colored_span, "expected no syntax coloring for unknown lang");
+}
+
+#[test]
+fn diff_code_block_colors_added_and_removed_lines_differently() {
+    let text =
+        render_markdown_text("```diff\n- learning_rate = 0.01\n+ learning_rate = 0.001\n```\n");
+
+    assert_eq!(
+        text.lines
+            .first()
+            .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect::<String>()),
+        Some("╭─[diff]".to_string())
+    );
+    assert_eq!(
+        text.lines
+            .last()
+            .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect::<String>()),
+        Some("╰─".to_string())
+    );
+
+    let deleted_fg = text.lines[1]
+        .spans
+        .iter()
+        .find_map(|span| span.content.contains("learning_rate").then_some(span.style.fg))
+        .flatten();
+    let added_fg = text.lines[2]
+        .spans
+        .iter()
+        .find_map(|span| span.content.contains("learning_rate").then_some(span.style.fg))
+        .flatten();
+
+    assert!(
+        deleted_fg.is_some(),
+        "expected removed diff line to be colorized: {text:?}"
+    );
+    assert!(
+        added_fg.is_some(),
+        "expected added diff line to be colorized: {text:?}"
+    );
+    assert_ne!(
+        deleted_fg, added_fg,
+        "expected added/removed diff lines to use distinct colors: {text:?}"
+    );
 }
 
 #[test]
@@ -1051,18 +1108,20 @@ Here is a code block that shows another fenced block:
         }
         v
     };
+    assert_eq!(trimmed.first(), Some(&"╭─[text]"));
     assert_eq!(
-        trimmed,
-        vec![
-            "Here is a code block that shows another fenced block:",
-            "",
-            "```md",
-            "# Inside fence",
-            "- bullet",
-            "- `inline code`",
-            "```",
+        &trimmed[1..trimmed.len() - 1],
+        [
+            "│ Here is a code block that shows another fenced block:",
+            "│ ",
+            "│ ```md",
+            "│ # Inside fence",
+            "│ - bullet",
+            "│ - `inline code`",
+            "│ ```",
         ]
     );
+    assert_eq!(trimmed.last(), Some(&"╰─"));
 }
 
 #[test]
@@ -1079,7 +1138,7 @@ fn code_block_inside_unordered_list_item_is_indented() {
                 .collect::<String>()
         })
         .collect();
-    assert_eq!(lines, vec!["- Item", "", "  code line"]);
+    assert_eq!(lines, vec!["• Item", "", "  code line"]);
 }
 
 #[test]
@@ -1096,7 +1155,7 @@ fn code_block_multiple_lines_inside_unordered_list() {
                 .collect::<String>()
         })
         .collect();
-    assert_eq!(lines, vec!["- Item", "", "  first", "  second"]);
+    assert_eq!(lines, vec!["• Item", "", "  first", "  second"]);
 }
 
 #[test]
@@ -1113,7 +1172,7 @@ fn code_block_inside_unordered_list_item_multiple_lines() {
                 .collect::<String>()
         })
         .collect();
-    assert_eq!(lines, vec!["- Item", "", "  first", "  second"]);
+    assert_eq!(lines, vec!["• Item", "", "  first", "  second"]);
 }
 
 #[test]
@@ -1126,6 +1185,9 @@ Link with title: [hover me](https://example.com "Example") and mailto <mailto:te
 Image: ![alt text](https://example.com/img.png "Title")
 > Blockquote level 1
 >> Blockquote level 2 with `inline code`
+>
+> [!NOTE]
+> GitHub callout example.
 - Unordered list item 1
   - Nested bullet with italics _inner_
 - Unordered list item 2 with ~~strikethrough~~
@@ -1139,6 +1201,7 @@ Table below (alignment test):
 | Left | Center | Right |
 |:-----|:------:|------:|
 | a    |   b    |     c |
+
 Inline HTML: <sup>sup</sup> and <sub>sub</sub>.
 HTML block:
 <div style="border:1px solid #ccc;padding:2px">inline block</div>
@@ -1146,25 +1209,31 @@ Escapes: \_underscores\_, backslash \\, ticks ``code with `backtick` inside``.
 Emoji shortcodes: :sparkles: :tada: (if supported).
 Hard break test (line ends with two spaces)  
 Next line should be close to previous.
+
 Footnote reference here[^1] and another[^longnote].
 Horizontal rule with asterisks:
 ***
 Fenced code block (JSON):
+
 ```json
 { "a": 1, "b": [true, false] }
 ```
 Fenced code with tildes and triple backticks inside:
+
 ~~~markdown
 To close ``` you need tildes.
 ~~~
 Indented code block:
+
     for i in range(3): print(i)
 Definition-like list:
 Term
 : Definition with `code`.
 Character entities: &amp; &lt; &gt; &quot; &#39;
+
 [^1]: This is the first footnote.
 [^longnote]: A longer footnote with a link to [Rust](https://www.rust-lang.org/).
+
 Escaped pipe in text: a \| b \| c.
 URL with parentheses: [link](https://example.com/path_(with)_parens).
 [r1]: https://example.com/ref "Reference link title"
@@ -1176,10 +1245,16 @@ URL with parentheses: [link](https://example.com/path_(with)_parens).
         .lines
         .iter()
         .map(|l| {
-            l.spans
+            let line = l
+                .spans
                 .iter()
                 .map(|s| s.content.clone())
-                .collect::<String>()
+                .collect::<String>();
+            if line.trim_end() == ">" {
+                ">".to_string()
+            } else {
+                line
+            }
         })
         .collect::<Vec<_>>()
         .join("\n");
@@ -1208,7 +1283,7 @@ fn ordered_item_with_code_block_and_nested_bullet() {
             "2. item 2".to_string(),
             String::new(),
             "   code".to_string(),
-            "    - PROCESS_START (a OnceLock<Instant>) keeps the start time for the entire process.".to_string(),
+            "    • PROCESS_START (a OnceLock<Instant>) keeps the start time for the entire process.".to_string(),
         ]
     );
 }
@@ -1219,15 +1294,98 @@ fn nested_five_levels_mixed_lists() {
     let text = render_markdown_text(md);
     let expected = Text::from_iter([
         Line::from_iter(["1. ".light_blue(), "First".into()]),
-        Line::from_iter(["    - ", "Second level"]),
+        Line::from_iter(["    • ", "Second level"]),
         Line::from_iter(["        1. ".light_blue(), "Third level (ordered)".into()]),
-        Line::from_iter(["            - ", "Fourth level (bullet)"]),
+        Line::from_iter(["            • ", "Fourth level (bullet)"]),
         Line::from_iter([
-            "                - ",
+            "                • ",
             "Fifth level to test indent consistency",
         ]),
     ]);
     assert_eq!(text, expected);
+}
+
+#[test]
+fn task_lists_render_checkbox_markers() {
+    let md = "- [ ] unchecked\n- [x] checked\n";
+    let text = render_markdown_text(md);
+    let lines: Vec<String> = text
+        .lines
+        .iter()
+        .map(|line| {
+            line.spans
+                .iter()
+                .map(|span| span.content.clone())
+                .collect::<String>()
+        })
+        .collect();
+    assert_eq!(lines, vec!["☐ unchecked", "☑ checked"]);
+}
+
+#[test]
+fn tables_render_as_aligned_grid() {
+    let md = "| Left | Center | Right |\n|:-----|:------:|------:|\n| a | b | c |\n";
+    let text = render_markdown_text(md);
+    let lines: Vec<String> = text
+        .lines
+        .iter()
+        .map(|line| {
+            line.spans
+                .iter()
+                .map(|span| span.content.clone())
+                .collect::<String>()
+        })
+        .collect();
+    assert_eq!(
+        lines,
+        vec![
+            "┌──────┬────────┬───────┐",
+            "│ Left │ Center │ Right │",
+            "├──────┼────────┼───────┤",
+            "│ a    │   b    │     c │",
+            "└──────┴────────┴───────┘",
+        ]
+    );
+}
+
+#[test]
+fn github_note_blockquote_renders_as_callout() {
+    let md = "> [!NOTE]\n> Keep it simple.\n";
+    let text = render_markdown_text(md);
+    let expected = Text::from(
+        Line::from_iter([
+            "│ ".into(),
+            "NOTE: ".green().bold(),
+            "Keep it simple.".into(),
+        ])
+        .green(),
+    );
+    assert_eq!(text, expected);
+}
+
+#[test]
+fn footnotes_render_reference_and_definitions() {
+    let md = "Ref[^1] and more[^note]\n\n[^1]: First footnote.\n[^note]: Named footnote.\n";
+    let text = render_markdown_text(md);
+    let lines: Vec<String> = text
+        .lines
+        .iter()
+        .map(|line| {
+            line.spans
+                .iter()
+                .map(|span| span.content.clone())
+                .collect::<String>()
+        })
+        .collect();
+    assert_eq!(
+        lines,
+        vec![
+            "Ref[1] and more[note]".to_string(),
+            String::new(),
+            "[1] First footnote.".to_string(),
+            "[note] Named footnote.".to_string(),
+        ]
+    );
 }
 
 #[test]
@@ -1266,7 +1424,7 @@ fn html_continuation_paragraph_in_unordered_item_indented() {
     let md = "- Item\n\n  <em>continued</em>\n";
     let text = render_markdown_text(md);
     let expected = Text::from_iter([
-        Line::from_iter(["- ", "Item"]),
+        Line::from_iter(["• ", "Item"]),
         Line::default(),
         Line::from_iter(["  ", "<em>", "continued", "</em>"]),
     ]);
@@ -1290,7 +1448,7 @@ fn unordered_item_continuation_paragraph_is_indented() {
     assert_eq!(
         lines,
         vec![
-            "- Intro".to_string(),
+            "• Intro".to_string(),
             String::new(),
             "  Continuation paragraph line 1".to_string(),
             "  Continuation paragraph line 2".to_string(),
@@ -1316,7 +1474,7 @@ fn nested_item_continuation_paragraph_is_indented() {
     let text = render_markdown_text(md);
     let expected = Text::from_iter([
         Line::from_iter(["1. ".light_blue(), "A".into()]),
-        Line::from_iter(["    - ", "B"]),
+        Line::from_iter(["    • ", "B"]),
         Line::default(),
         Line::from_iter(["      ", "Continuation for B"]),
         Line::from_iter(["2. ".light_blue(), "C".into()]),
@@ -1339,20 +1497,35 @@ fn code_block_preserves_trailing_blank_lines() {
                 .collect::<String>()
         })
         .collect();
-    // Should have: "fn main() {}" then "" (the blank line).
-    // Filter only to content lines (skip leading/trailing empty from rendering).
     assert!(
-        content.iter().any(|c| c == "fn main() {}"),
+        content.iter().any(|c| c == "│ fn main() {}"),
         "expected code line, got {content:?}"
     );
-    // The trailing blank line inside the fence should be preserved.
-    let code_start = content.iter().position(|c| c == "fn main() {}").unwrap();
+    let code_start = content.iter().position(|c| c == "│ fn main() {}").unwrap();
     assert!(
         content.len() > code_start + 1,
         "expected a line after 'fn main() {{}}' but content ends: {content:?}"
     );
     assert_eq!(
-        content[code_start + 1], "",
+        content[code_start + 1], "│ ",
         "trailing blank line inside code fence was lost: {content:?}"
     );
+}
+
+#[test]
+fn fenced_code_blocks_render_visible_language_labels() {
+    let text = render_markdown_text("```python\nprint('hi')\n```\n");
+    let lines: Vec<String> = text
+        .lines
+        .iter()
+        .map(|line| {
+            line.spans
+                .iter()
+                .map(|span| span.content.clone())
+                .collect::<String>()
+        })
+        .collect();
+    assert_eq!(lines.first(), Some(&"╭─[python]".to_string()));
+    assert_eq!(lines.get(1), Some(&"│ print('hi')".to_string()));
+    assert_eq!(lines.last(), Some(&"╰─".to_string()));
 }
