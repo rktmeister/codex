@@ -165,8 +165,10 @@ pub fn run_main() -> ! {
 
     if !use_legacy_landlock {
         // Outer stage: bubblewrap first, then re-enter this binary in the
-        // sandboxed environment to apply seccomp. This path never falls back
-        // to legacy Landlock on failure.
+        // sandboxed environment to apply seccomp. If preflight detects known
+        // unsupported bubblewrap setup in this environment, fall back to
+        // legacy Landlock only when the active split policy can be enforced
+        // safely by the legacy backend.
         let proxy_route_spec =
             if allow_network_for_proxy {
                 Some(prepare_host_proxy_route_spec().unwrap_or_else(|err| {
@@ -175,6 +177,8 @@ pub fn run_main() -> ! {
             } else {
                 None
             };
+        let allow_legacy_fallback = !file_system_sandbox_policy
+            .needs_direct_runtime_enforcement(network_sandbox_policy, &sandbox_policy_cwd);
         let inner = build_inner_seccomp_command(InnerSeccompCommandArgs {
             sandbox_policy_cwd: &sandbox_policy_cwd,
             sandbox_policy: &sandbox_policy,
@@ -182,16 +186,21 @@ pub fn run_main() -> ! {
             network_sandbox_policy,
             allow_network_for_proxy,
             proxy_route_spec,
-            command,
+            command: command.clone(),
         });
-        run_bwrap_with_proc_fallback(
+        if let Some(reason) = run_bwrap_with_proc_fallback(
             &sandbox_policy_cwd,
             &file_system_sandbox_policy,
             network_sandbox_policy,
             inner,
             !no_proc,
             allow_network_for_proxy,
-        );
+            allow_legacy_fallback,
+        ) {
+            eprintln!(
+                "codex-linux-sandbox: bwrap setup failed ({reason}); falling back to legacy Linux sandbox backend"
+            );
+        }
     }
 
     // Legacy path: Landlock enforcement only, when bwrap sandboxing is not enabled.
@@ -392,20 +401,39 @@ fn run_bwrap_with_proc_fallback(
     inner: Vec<String>,
     mount_proc: bool,
     allow_network_for_proxy: bool,
-) -> ! {
+    allow_legacy_fallback: bool,
+) -> Option<String> {
     let network_mode = bwrap_network_mode(network_sandbox_policy, allow_network_for_proxy);
     let mut mount_proc = mount_proc;
 
-    if mount_proc
-        && !preflight_proc_mount_support(
+    loop {
+        match preflight_bwrap_support(
             sandbox_policy_cwd,
             file_system_sandbox_policy,
+            mount_proc,
             network_mode,
-        )
-    {
-        // Keep the retry silent so sandbox-internal diagnostics do not leak into the
-        // child process stderr stream.
-        mount_proc = false;
+        ) {
+            BwrapPreflightSupport::Ready => break,
+            BwrapPreflightSupport::RetryWithoutProc => {
+                eprintln!(
+                    "codex-linux-sandbox: bwrap could not mount /proc; retrying with --no-proc"
+                );
+                mount_proc = false;
+            }
+            BwrapPreflightSupport::FallbackToLegacy => {
+                if allow_network_for_proxy {
+                    panic!(
+                        "error isolating Linux network namespace for proxy mode: user namespace setup is unavailable"
+                    );
+                }
+                if !allow_legacy_fallback {
+                    panic!(
+                        "error isolating Linux filesystem sandbox: user namespace setup is unavailable and this split sandbox policy requires bubblewrap-only direct runtime enforcement"
+                    );
+                }
+                return Some("user namespace setup is unavailable".to_string());
+            }
+        }
     }
 
     let options = BwrapOptions {
@@ -419,6 +447,13 @@ fn run_bwrap_with_proc_fallback(
         options,
     );
     exec_vendored_bwrap(bwrap_args.args, bwrap_args.preserved_files);
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BwrapPreflightSupport {
+    Ready,
+    RetryWithoutProc,
+    FallbackToLegacy,
 }
 
 fn bwrap_network_mode(
@@ -466,15 +501,28 @@ fn build_bwrap_argv(
     }
 }
 
-fn preflight_proc_mount_support(
+fn preflight_bwrap_support(
     sandbox_policy_cwd: &Path,
     file_system_sandbox_policy: &FileSystemSandboxPolicy,
+    mount_proc: bool,
     network_mode: BwrapNetworkMode,
-) -> bool {
-    let preflight_argv =
-        build_preflight_bwrap_argv(sandbox_policy_cwd, file_system_sandbox_policy, network_mode);
+) -> BwrapPreflightSupport {
+    let preflight_argv = if mount_proc {
+        build_preflight_bwrap_argv(sandbox_policy_cwd, file_system_sandbox_policy, network_mode)
+    } else {
+        let preflight_command = vec![resolve_true_command()];
+        build_bwrap_argv(
+            preflight_command,
+            file_system_sandbox_policy,
+            sandbox_policy_cwd,
+            BwrapOptions {
+                mount_proc,
+                network_mode,
+            },
+        )
+    };
     let stderr = run_bwrap_in_child_capture_stderr(preflight_argv);
-    !is_proc_mount_failure(stderr.as_str())
+    classify_bwrap_preflight_failure(stderr.as_str(), mount_proc)
 }
 
 fn build_preflight_bwrap_argv(
@@ -506,11 +554,11 @@ fn resolve_true_command() -> String {
 /// Run a short-lived bubblewrap preflight in a child process and capture stderr.
 ///
 /// Strategy:
-/// - This is used only by `preflight_proc_mount_support`, which runs `/bin/true`
-///   under bubblewrap with `--proc /proc`.
-/// - The goal is to detect environments where mounting `/proc` fails (for
-///   example, restricted containers), so we can retry the real run with
-///   `--no-proc`.
+/// - This is used only by `preflight_bwrap_support`, which runs `/bin/true`
+///   under bubblewrap before the real exec path.
+/// - The goal is to detect environments where mounting `/proc` fails or user
+///   namespace setup is unavailable, so we can retry with `--no-proc` or fall
+///   back to the legacy backend.
 /// - We capture stderr from that preflight to match known mount-failure text.
 ///   We do not stream it because this is a one-shot probe with a trivial
 ///   command, and reads are bounded to a fixed max size.
@@ -587,6 +635,24 @@ fn is_proc_mount_failure(stderr: &str) -> bool {
         && (stderr.contains("Invalid argument")
             || stderr.contains("Operation not permitted")
             || stderr.contains("Permission denied"))
+}
+
+fn is_user_namespace_setup_failure(stderr: &str) -> bool {
+    (stderr.contains("setting up uid map")
+        && (stderr.contains("Operation not permitted") || stderr.contains("Permission denied")))
+        || stderr.contains("setting up gid map")
+        || stderr.contains("No permissions to create a new namespace")
+        || stderr.contains("Creating new namespace failed")
+}
+
+fn classify_bwrap_preflight_failure(stderr: &str, mount_proc: bool) -> BwrapPreflightSupport {
+    if is_user_namespace_setup_failure(stderr) {
+        BwrapPreflightSupport::FallbackToLegacy
+    } else if mount_proc && is_proc_mount_failure(stderr) {
+        BwrapPreflightSupport::RetryWithoutProc
+    } else {
+        BwrapPreflightSupport::Ready
+    }
 }
 
 struct InnerSeccompCommandArgs<'a> {

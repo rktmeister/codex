@@ -450,7 +450,7 @@ async fn sandbox_allows_git_index_but_blocks_high_risk_git_and_codex_writes() {
         ],
         &[tmpdir.path().to_path_buf()],
         LONG_TIMEOUT_MS,
-        true,
+        false,
         true,
     )
     .await
@@ -485,7 +485,7 @@ async fn sandbox_allows_git_index_but_blocks_high_risk_git_and_codex_writes() {
             ],
             &[tmpdir.path().to_path_buf()],
             LONG_TIMEOUT_MS,
-            true,
+            false,
             true,
         )
         .await,

@@ -633,16 +633,19 @@ fn create_seatbelt_args_with_read_only_git_and_codex_subpaths() {
     let args = create_seatbelt_command_args(shell_command.clone(), &policy, &cwd, false, None);
 
     // Build the expected policy text using a raw string for readability.
+    let dot_git_config_canonical = dot_git_canonical.join("config");
+    let dot_git_hooks_canonical = dot_git_canonical.join("hooks");
     // Note that the policy includes:
     // - the base policy,
     // - read-only access to the filesystem,
-    // - write access to WRITABLE_ROOT_0 (but not its .git or .codex), WRITABLE_ROOT_1, and cwd as WRITABLE_ROOT_2.
+    // - write access to cwd as WRITABLE_ROOT_0, WRITABLE_ROOT_1 (but not
+    //   high-risk git paths or .codex), and WRITABLE_ROOT_2.
     let expected_policy = format!(
         r#"{MACOS_SEATBELT_BASE_POLICY}
 ; allow read-only file operations
 (allow file-read*)
 (allow file-write*
-(subpath (param "WRITABLE_ROOT_0")) (require-all (subpath (param "WRITABLE_ROOT_1")) (require-not (subpath (param "WRITABLE_ROOT_1_RO_0"))) (require-not (subpath (param "WRITABLE_ROOT_1_RO_1"))) ) (subpath (param "WRITABLE_ROOT_2"))
+(subpath (param "WRITABLE_ROOT_0")) (require-all (subpath (param "WRITABLE_ROOT_1")) (require-not (subpath (param "WRITABLE_ROOT_1_RO_0"))) (require-not (subpath (param "WRITABLE_ROOT_1_RO_1"))) (require-not (subpath (param "WRITABLE_ROOT_1_RO_2"))) ) (subpath (param "WRITABLE_ROOT_2"))
 )
 
 ; macOS permission profile extensions
@@ -670,10 +673,14 @@ fn create_seatbelt_args_with_read_only_git_and_codex_subpaths() {
         ),
         format!(
             "-DWRITABLE_ROOT_1_RO_0={}",
-            dot_git_canonical.to_string_lossy()
+            dot_git_config_canonical.to_string_lossy()
         ),
         format!(
             "-DWRITABLE_ROOT_1_RO_1={}",
+            dot_git_hooks_canonical.to_string_lossy()
+        ),
+        format!(
+            "-DWRITABLE_ROOT_1_RO_2={}",
             dot_codex_canonical.to_string_lossy()
         ),
         format!(
@@ -936,16 +943,19 @@ fn create_seatbelt_args_for_cwd_as_git_repo() {
     };
 
     // Build the expected policy text using a raw string for readability.
+    let dot_git_config_canonical = dot_git_canonical.join("config");
+    let dot_git_hooks_canonical = dot_git_canonical.join("hooks");
     // Note that the policy includes:
     // - the base policy,
     // - read-only access to the filesystem,
-    // - write access to WRITABLE_ROOT_0 (but not its .git or .codex), WRITABLE_ROOT_1, and cwd as WRITABLE_ROOT_2.
+    // - write access to WRITABLE_ROOT_0 (but not high-risk git paths or
+    //   .codex), WRITABLE_ROOT_1, and cwd as WRITABLE_ROOT_2.
     let expected_policy = format!(
         r#"{MACOS_SEATBELT_BASE_POLICY}
 ; allow read-only file operations
 (allow file-read*)
 (allow file-write*
-(require-all (subpath (param "WRITABLE_ROOT_0")) (require-not (subpath (param "WRITABLE_ROOT_0_RO_0"))) (require-not (subpath (param "WRITABLE_ROOT_0_RO_1"))) ) (subpath (param "WRITABLE_ROOT_1")){tempdir_policy_entry}
+(require-all (subpath (param "WRITABLE_ROOT_0")) (require-not (subpath (param "WRITABLE_ROOT_0_RO_0"))) (require-not (subpath (param "WRITABLE_ROOT_0_RO_1"))) (require-not (subpath (param "WRITABLE_ROOT_0_RO_2"))) ) (subpath (param "WRITABLE_ROOT_1")){tempdir_policy_entry}
 )
 
 ; macOS permission profile extensions
@@ -967,10 +977,14 @@ fn create_seatbelt_args_for_cwd_as_git_repo() {
         ),
         format!(
             "-DWRITABLE_ROOT_0_RO_0={}",
-            dot_git_canonical.to_string_lossy()
+            dot_git_config_canonical.to_string_lossy()
         ),
         format!(
             "-DWRITABLE_ROOT_0_RO_1={}",
+            dot_git_hooks_canonical.to_string_lossy()
+        ),
+        format!(
+            "-DWRITABLE_ROOT_0_RO_2={}",
             dot_codex_canonical.to_string_lossy()
         ),
         format!(
