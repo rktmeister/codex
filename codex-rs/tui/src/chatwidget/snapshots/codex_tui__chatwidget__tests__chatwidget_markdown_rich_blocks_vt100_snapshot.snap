@@ -1,0 +1,53 @@
+---
+source: tui/src/chatwidget/tests.rs
+expression: visual
+---
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+• ## Rich blocks
+
+  ☑ Basic formatting
+  ☑ Tables
+  ☐ Mermaid diagrams (render-dependent)
+
+  │ NOTE: GitHub-style callouts should render as a semantic block.
+  │
+  │ Streaming should preserve the block layout.
+
+  ┌────────────────────┬──────────┬───────┐
+  │ Metric             │ Baseline │   New │
+  ├────────────────────┼──────────┼───────┤
+  │ Latency (ms)       │     84.2 │  71.5 │
+  │ Throughput (tok/s) │    12600 │ 14900 │
+  └────────────────────┴──────────┴───────┘
+
+  ╭─[markdown]
+  │ ```python
+  │ def make_routes(
+  │     *,
+  │     mode: str,
+  │     world: int,
+  │ ) -> None:
+  │     pass
+  │ ```
+  ╰─
+
+  ╭─[diff]
+  │ - learning_rate = 0.01
+  │ + learning_rate = 0.001
+  ╰─

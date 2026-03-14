@@ -10378,9 +10378,7 @@ async fn chatwidget_exec_and_status_layout_vt100_snapshot() {
     assert_snapshot!(term.backend().vt100().screen().contents());
 }
 
-// E2E vt100 snapshot for complex markdown with indented and nested fenced code blocks
-#[tokio::test]
-async fn chatwidget_markdown_code_blocks_vt100_snapshot() {
+async fn stream_markdown_vt100_snapshot(source: &str) -> String {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
 
     // Simulate a final agent message via streaming deltas instead of a single message
@@ -10402,28 +10400,6 @@ async fn chatwidget_markdown_code_blocks_vt100_snapshot() {
     term.set_viewport_area(Rect::new(0, height - 1, width, 1));
 
     // Simulate streaming via AgentMessageDelta in 2-character chunks (no final AgentMessage).
-    let source: &str = r#"
-
-    -- Indented code block (4 spaces)
-    SELECT *
-    FROM "users"
-    WHERE "email" LIKE '%@example.com';
-
-````markdown
-```sh
-printf 'fenced within fenced\n'
-```
-````
-
-```jsonc
-{
-  // comment allowed in jsonc
-  "path": "C:\\Program Files\\App",
-  "regex": "^foo.*(bar)?$"
-}
-```
-"#;
-
     let mut it = source.chars();
     loop {
         let mut delta = String::new();
@@ -10470,7 +10446,74 @@ printf 'fenced within fenced\n'
             .expect("Failed to insert history lines in test");
     }
 
-    assert_snapshot!(term.backend().vt100().screen().contents());
+    term.backend().vt100().screen().contents()
+}
+
+// E2E vt100 snapshot for complex markdown with indented and nested fenced code blocks.
+#[tokio::test]
+async fn chatwidget_markdown_code_blocks_vt100_snapshot() {
+    let source = r#"
+
+    -- Indented code block (4 spaces)
+    SELECT *
+    FROM "users"
+    WHERE "email" LIKE '%@example.com';
+
+````markdown
+```sh
+printf 'fenced within fenced\n'
+```
+````
+
+```jsonc
+{
+  // comment allowed in jsonc
+  "path": "C:\\Program Files\\App",
+  "regex": "^foo.*(bar)?$"
+}
+```
+"#;
+    let visual = stream_markdown_vt100_snapshot(source).await;
+    assert_snapshot!(visual);
+}
+
+// E2E vt100 snapshot for richer markdown blocks rendered through the streaming path.
+#[tokio::test]
+async fn chatwidget_markdown_rich_blocks_vt100_snapshot() {
+    let source = r#"
+## Rich blocks
+- [x] Basic formatting
+- [x] Tables
+- [ ] Mermaid diagrams (render-dependent)
+
+> [!NOTE]
+> GitHub-style callouts should render as a semantic block.
+>
+> Streaming should preserve the block layout.
+
+| Metric | Baseline | New |
+|:-------|---------:|----:|
+| Latency (ms) | 84.2 | 71.5 |
+| Throughput (tok/s) | 12600 | 14900 |
+
+````markdown
+```python
+def make_routes(
+    *,
+    mode: str,
+    world: int,
+) -> None:
+    pass
+```
+````
+
+```diff
+- learning_rate = 0.01
++ learning_rate = 0.001
+```
+"#;
+    let visual = stream_markdown_vt100_snapshot(source).await;
+    assert_snapshot!(visual);
 }
 
 #[tokio::test]
