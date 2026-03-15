@@ -5965,6 +5965,45 @@ async fn slash_copy_code_popup_snapshot() {
 }
 
 #[tokio::test]
+async fn slash_copy_code_preview_updates_when_selection_changes() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+
+    chat.handle_codex_event(Event {
+        id: "turn-1".into(),
+        msg: EventMsg::TurnComplete(TurnCompleteEvent {
+            turn_id: "turn-1".to_string(),
+            last_agent_message: Some(
+                concat!(
+                    "```bash\n",
+                    "echo first\n",
+                    "```\n",
+                    "\n",
+                    "```rust\n",
+                    "fn render_preview() {\n",
+                    "    println!(\"hi\");\n",
+                    "}\n",
+                    "```\n"
+                )
+                .to_string(),
+            ),
+        }),
+    });
+
+    chat.dispatch_command(SlashCommand::CopyCode);
+    chat.handle_key_event(KeyEvent::from(KeyCode::Down));
+
+    let popup = render_bottom_popup(&chat, 88);
+    assert!(
+        popup.contains("[rust] 3 lines"),
+        "expected rust preview header after moving selection, got {popup:?}"
+    );
+    assert!(
+        popup.contains("println!(\"hi\");"),
+        "expected rust preview body after moving selection, got {popup:?}"
+    );
+}
+
+#[tokio::test]
 async fn slash_copy_code_enter_emits_copy_event_for_selected_block() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
 

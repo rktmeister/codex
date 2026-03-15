@@ -2,13 +2,15 @@
 source: tui/src/chatwidget/tests.rs
 expression: popup
 ---
-  Copy Code Block
-  Select a fenced block from the latest completed output
-
-› 1. [bash] git diff /tmp/base.rs /tmp/right.rs  1 line. Press Enter to copy the raw
-                                                 code body.
-  2. [rust] fn render_preview() {                3 lines
-  3. [text] plain text fallback                  1 line
+  Copy Code Block                                    [bash] 1 line
+  Select a fenced block from the latest completed    1 git diff /tmp/base.rs /tmp/
+                                                       right.rs
+› 1. [bash] git diff /tmp/base.rs… 1 line. Press
+                                   Enter to copy
+                                   the raw code
+                                   body.
+  2. [rust] fn render_preview() {  3 lines
+  3. [text] plain text fallback    1 line
 
   Note: copies the raw code body without surrounding fences or visual wrapping.
   Press enter to confirm or esc to go back
