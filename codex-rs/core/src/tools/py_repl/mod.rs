@@ -696,6 +696,10 @@ impl PyReplManager {
                 codex_linux_sandbox_exe: turn.codex_linux_sandbox_exe.as_ref(),
                 use_legacy_landlock: turn.features.use_legacy_landlock(),
                 windows_sandbox_level: turn.windows_sandbox_level,
+                windows_sandbox_private_desktop: turn
+                    .config
+                    .permissions
+                    .windows_sandbox_private_desktop,
             })
             .map_err(|err| format!("failed to configure sandbox for py_repl: {err}"))?;
 
