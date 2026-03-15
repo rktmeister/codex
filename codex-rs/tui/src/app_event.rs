@@ -151,6 +151,13 @@ pub(crate) enum AppEvent {
     /// Result of computing a `/diff` command.
     DiffResult(String),
 
+    /// Copy the provided text into the system clipboard and report the outcome in the transcript.
+    CopyTextToClipboard {
+        text: String,
+        success_message: String,
+        hint: Option<String>,
+    },
+
     /// Open the app link view in the bottom pane.
     OpenAppLink {
         app_id: String,
