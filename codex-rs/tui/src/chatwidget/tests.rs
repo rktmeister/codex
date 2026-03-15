@@ -5886,6 +5886,123 @@ async fn slash_copy_reports_when_no_copyable_output_exists() {
 }
 
 #[tokio::test]
+async fn slash_copy_code_reports_when_no_copyable_output_exists() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
+
+    chat.dispatch_command(SlashCommand::CopyCode);
+
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(cells.len(), 1, "expected one info message");
+    let rendered = lines_to_single_string(&cells[0]);
+    assert!(
+        rendered.contains(
+            "`/copy-code` is unavailable before the first Codex output or right after a rollback."
+        ),
+        "expected no-output message, got {rendered:?}"
+    );
+}
+
+#[tokio::test]
+async fn slash_copy_code_reports_when_latest_output_has_no_fenced_blocks() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
+
+    chat.handle_codex_event(Event {
+        id: "turn-1".into(),
+        msg: EventMsg::TurnComplete(TurnCompleteEvent {
+            turn_id: "turn-1".to_string(),
+            last_agent_message: Some("Final reply without code.".to_string()),
+        }),
+    });
+
+    chat.dispatch_command(SlashCommand::CopyCode);
+
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(cells.len(), 1, "expected one info message");
+    let rendered = lines_to_single_string(&cells[0]);
+    assert!(
+        rendered.contains("Latest Codex output has no fenced code blocks to copy."),
+        "expected no-code-block message, got {rendered:?}"
+    );
+    assert!(
+        rendered.contains("Use `/copy` to copy the full response."),
+        "expected no-code-block hint, got {rendered:?}"
+    );
+}
+
+#[tokio::test]
+async fn slash_copy_code_popup_snapshot() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+
+    chat.handle_codex_event(Event {
+        id: "turn-1".into(),
+        msg: EventMsg::TurnComplete(TurnCompleteEvent {
+            turn_id: "turn-1".to_string(),
+            last_agent_message: Some(
+                concat!(
+                    "```bash\n",
+                    "git diff /tmp/base.rs /tmp/right.rs\n",
+                    "```\n",
+                    "\n",
+                    "```rust\n",
+                    "fn render_preview() {\n",
+                    "    println!(\"hi\");\n",
+                    "}\n",
+                    "```\n",
+                    "\n",
+                    "```text\n",
+                    "plain text fallback\n",
+                    "```\n"
+                )
+                .to_string(),
+            ),
+        }),
+    });
+
+    chat.dispatch_command(SlashCommand::CopyCode);
+
+    let popup = render_bottom_popup(&chat, 88);
+    assert_snapshot!("copy_code_popup", popup);
+}
+
+#[tokio::test]
+async fn slash_copy_code_enter_emits_copy_event_for_selected_block() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
+
+    chat.handle_codex_event(Event {
+        id: "turn-1".into(),
+        msg: EventMsg::TurnComplete(TurnCompleteEvent {
+            turn_id: "turn-1".to_string(),
+            last_agent_message: Some(
+                concat!(
+                    "```bash\n",
+                    "echo first\n",
+                    "```\n",
+                    "\n",
+                    "```js\n",
+                    "console.log('second');\n",
+                    "```\n"
+                )
+                .to_string(),
+            ),
+        }),
+    });
+
+    chat.dispatch_command(SlashCommand::CopyCode);
+    chat.handle_key_event(KeyEvent::from(KeyCode::Down));
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::CopyTextToClipboard {
+            text,
+            success_message,
+            hint: None,
+        }) if text == "console.log('second');\n"
+            && success_message == "Copied code block 2 to clipboard."
+    );
+}
+
+#[tokio::test]
 async fn slash_copy_state_is_preserved_during_running_task() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
 

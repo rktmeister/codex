@@ -14,6 +14,7 @@ use crate::bottom_pane::popup_consts::standard_popup_hint_line;
 use crate::chatwidget::ChatWidget;
 use crate::chatwidget::ExternalEditorState;
 use crate::chatwidget::ThreadInputState;
+use crate::clipboard_text;
 use crate::cwd_prompt::CwdPromptAction;
 use crate::diff_render::DiffSummary;
 use crate::exec_command::strip_bash_lc_and_escape;
@@ -2663,6 +2664,19 @@ impl App {
                 ));
                 tui.frame_requester().schedule_frame();
             }
+            AppEvent::CopyTextToClipboard {
+                text,
+                success_message,
+                hint,
+            } => match clipboard_text::copy_text_to_clipboard(&text) {
+                Ok(()) => {
+                    self.chat_widget.add_info_message(success_message, hint);
+                }
+                Err(err) => {
+                    self.chat_widget
+                        .add_error_message(format!("Failed to copy to clipboard: {err}"));
+                }
+            },
             AppEvent::OpenAppLink {
                 app_id,
                 title,

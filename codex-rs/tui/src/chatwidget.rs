@@ -245,6 +245,8 @@ use crate::bottom_pane::popup_consts::standard_popup_hint_line;
 use crate::clipboard_paste::paste_image_to_temp_png;
 use crate::clipboard_text;
 use crate::collaboration_modes;
+use crate::copy_code::build_copy_code_picker_params;
+use crate::copy_code::parse_fenced_code_blocks;
 use crate::diff_render::display_path_for;
 use crate::exec_cell::CommandOutput;
 use crate::exec_cell::ExecCell;
@@ -4599,6 +4601,9 @@ impl ChatWidget {
                     }
                 }
             }
+            SlashCommand::CopyCode => {
+                self.open_copy_code_popup();
+            }
             SlashCommand::Mention => {
                 self.insert_str("@");
             }
@@ -5788,6 +5793,33 @@ impl ChatWidget {
             terminal_width,
         );
         self.bottom_pane.show_selection_view(params);
+    }
+
+    fn open_copy_code_popup(&mut self) {
+        let Some(text) = self.last_copyable_output.as_deref() else {
+            self.add_info_message(
+                "`/copy-code` is unavailable before the first Codex output or right after a rollback."
+                    .to_string(),
+                None,
+            );
+            return;
+        };
+
+        let blocks = parse_fenced_code_blocks(text);
+        if blocks.is_empty() {
+            self.add_info_message(
+                "Latest Codex output has no fenced code blocks to copy.".to_string(),
+                Some("Use `/copy` to copy the full response.".to_string()),
+            );
+            return;
+        }
+
+        let copy_hint = self.agent_turn_running.then_some(
+            "Current turn is still running; copied from the latest completed output (not the in-progress response)."
+                .to_string(),
+        );
+        self.bottom_pane
+            .show_selection_view(build_copy_code_picker_params(blocks, copy_hint));
     }
 
     /// Parses configured status-line ids into known items and collects unknown ids.
