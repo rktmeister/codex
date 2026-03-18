@@ -117,7 +117,7 @@ impl IndentContext {
 }
 
 pub fn render_markdown_text(input: &str) -> Text<'static> {
-    render_markdown_text_with_width(input, None)
+    render_markdown_text_with_width(input, /*width*/ None)
 }
 
 /// Render markdown using the current process working directory for local file-link display.
@@ -281,8 +281,8 @@ where
                 self.push_line(Line::from("———"));
                 self.needs_newline = true;
             }
-            Event::Html(html) => self.html(html, false),
-            Event::InlineHtml(html) => self.html(html, true),
+            Event::Html(html) => self.html(html, /*inline*/ false),
+            Event::InlineHtml(html) => self.html(html, /*inline*/ true),
             Event::FootnoteReference(name) => self.footnote_reference(name),
             Event::TaskListMarker(checked) => self.task_list_marker(checked),
         }
@@ -407,8 +407,8 @@ where
         }
         self.indent_stack.push(IndentContext::new(
             vec![Span::from("> ")],
-            None,
-            false,
+            /*marker*/ None,
+            /*is_list*/ false,
             Some(self.styles.blockquote),
         ));
     }
@@ -604,8 +604,12 @@ where
             let indent_len = if is_ordered { width + 2 } else { width + 1 };
             vec![Span::from(" ".repeat(indent_len))]
         };
-        self.indent_stack
-            .push(IndentContext::new(indent_prefix, marker, true, None));
+        self.indent_stack.push(IndentContext::new(
+            indent_prefix,
+            marker,
+            /*is_list*/ true,
+            None,
+        ));
         self.needs_newline = false;
     }
 
@@ -629,8 +633,8 @@ where
 
         self.indent_stack.push(IndentContext::new(
             vec![indent.unwrap_or_default()],
-            None,
-            false,
+            /*marker*/ None,
+            /*is_list*/ false,
             None,
         ));
         self.in_code_block = true;
@@ -977,7 +981,7 @@ where
         let was_pending = self.pending_marker_line;
 
         self.current_initial_indent = self.prefix_spans(was_pending);
-        self.current_subsequent_indent = self.prefix_spans(false);
+        self.current_subsequent_indent = self.prefix_spans(/*pending_marker_line*/ false);
         self.current_line_style = style;
         self.current_line_content = Some(line);
         self.current_line_in_code_block = self.in_code_block;

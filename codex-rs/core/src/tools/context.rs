@@ -231,7 +231,7 @@ impl ToolOutput for AbortedToolOutput {
                 vec![FunctionCallOutputContentItem::InputText {
                     text: self.message.clone(),
                 }],
-                None,
+                /*success*/ None,
             ),
         }
     }
