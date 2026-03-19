@@ -32,6 +32,7 @@ use crate::mcp::RequestId;
 use crate::mcp::Resource as McpResource;
 use crate::mcp::ResourceTemplate as McpResourceTemplate;
 use crate::mcp::Tool as McpTool;
+use crate::memory_citation::MemoryCitation;
 use crate::message_history::HistoryEntry;
 use crate::models::BaseInstructions;
 use crate::models::ContentItem;
@@ -1445,6 +1446,7 @@ pub enum EventMsg {
 #[serde(rename_all = "snake_case")]
 pub enum HookEventName {
     SessionStart,
+    UserPromptSubmit,
     Stop,
 }
 
@@ -2099,6 +2101,8 @@ pub struct AgentMessageEvent {
     pub message: String,
     #[serde(default)]
     pub phase: Option<MessagePhase>,
+    #[serde(default)]
+    pub memory_citation: Option<MemoryCitation>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]

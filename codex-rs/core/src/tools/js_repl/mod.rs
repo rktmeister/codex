@@ -1608,8 +1608,8 @@ impl JsReplManager {
         let tracker = Arc::clone(&exec.tracker);
 
         match router
-            .dispatch_tool_call(
-                session.clone(),
+            .dispatch_tool_call_with_code_mode_result(
+                session,
                 turn,
                 tracker,
                 call,
@@ -1617,7 +1617,8 @@ impl JsReplManager {
             )
             .await
         {
-            Ok(response) => {
+            Ok(result) => {
+                let response = result.into_response();
                 let summary = Self::summarize_tool_call_response(&response);
                 match serde_json::to_value(response) {
                     Ok(value) => {

@@ -72,15 +72,13 @@ use codex_protocol::protocol::ConversationAudioParams;
 use codex_protocol::protocol::RealtimeAudioFrame;
 use codex_protocol::protocol::Submission;
 use codex_protocol::protocol::W3cTraceContext;
+use core_test_support::tracing::install_test_tracing;
 use opentelemetry::trace::TraceContextExt;
 use opentelemetry::trace::TraceId;
-use opentelemetry::trace::TracerProvider as _;
-use opentelemetry_sdk::trace::SdkTracerProvider;
 use std::path::Path;
 use std::time::Duration;
 use tokio::time::sleep;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
-use tracing_subscriber::prelude::*;
 
 use codex_protocol::mcp::CallToolResult as McpCallToolResult;
 use pretty_assertions::assert_eq;
@@ -90,7 +88,6 @@ use serde::Deserialize;
 use serde_json::json;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::Once;
 use std::time::Duration as StdDuration;
 
 #[path = "codex_tests_guardian.rs"]
@@ -2031,18 +2028,6 @@ fn text_block(s: &str) -> serde_json::Value {
     })
 }
 
-fn init_test_tracing() {
-    static INIT: Once = Once::new();
-    INIT.call_once(|| {
-        let provider = SdkTracerProvider::builder().build();
-        let tracer = provider.tracer("codex-core-tests");
-        let subscriber =
-            tracing_subscriber::registry().with(tracing_opentelemetry::layer().with_tracer(tracer));
-        tracing::subscriber::set_global_default(subscriber)
-            .expect("global tracing subscriber should only be installed once");
-    });
-}
-
 async fn build_test_config(codex_home: &Path) -> Config {
     ConfigBuilder::default()
         .codex_home(codex_home.to_path_buf())
@@ -2187,7 +2172,7 @@ async fn new_default_turn_uses_config_aware_skills_for_role_overrides() {
     let parent_outcome = session
         .services
         .skills_manager
-        .skills_for_cwd(&parent_config.cwd, true)
+        .skills_for_cwd(&parent_config.cwd, &parent_config, true)
         .await;
     let parent_skill = parent_outcome
         .skills
@@ -2364,7 +2349,7 @@ async fn session_new_fails_when_zsh_fork_enabled_without_zsh_path() {
         Arc::clone(&config),
         auth_manager,
         models_manager,
-        ExecPolicyManager::default(),
+        Arc::new(ExecPolicyManager::default()),
         tx_event,
         agent_status_tx,
         InitialHistory::New,
@@ -2400,7 +2385,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         CollaborationModesConfig::default(),
     ));
     let agent_control = AgentControl::default();
-    let exec_policy = ExecPolicyManager::default();
+    let exec_policy = Arc::new(ExecPolicyManager::default());
     let (agent_status_tx, _agent_status_rx) = watch::channel(AgentStatus::PendingInit);
     let model = ModelsManager::get_model_offline_for_tests(config.model.as_deref());
     let model_info = ModelsManager::construct_model_info_offline_for_tests(model.as_str(), &config);
@@ -2733,7 +2718,7 @@ async fn submit_with_id_captures_current_span_trace_context() {
         session_loop_termination: completed_session_loop_termination(),
     };
 
-    init_test_tracing();
+    let _trace_test_context = install_test_tracing("codex-core-tests");
 
     let request_parent = W3cTraceContext {
         traceparent: Some("00-00000000000000000000000000000011-0000000000000022-01".into()),
@@ -2769,7 +2754,7 @@ async fn submit_with_id_captures_current_span_trace_context() {
 async fn new_default_turn_captures_current_span_trace_id() {
     let (session, _turn_context) = make_session_and_context().await;
 
-    init_test_tracing();
+    let _trace_test_context = install_test_tracing("codex-core-tests");
 
     let request_parent = W3cTraceContext {
         traceparent: Some("00-00000000000000000000000000000011-0000000000000022-01".into()),
@@ -2804,7 +2789,7 @@ async fn new_default_turn_captures_current_span_trace_id() {
 
 #[test]
 fn submission_dispatch_span_prefers_submission_trace_context() {
-    init_test_tracing();
+    let _trace_test_context = install_test_tracing("codex-core-tests");
 
     let ambient_parent = W3cTraceContext {
         traceparent: Some("00-00000000000000000000000000000033-0000000000000044-01".into()),
@@ -2837,7 +2822,7 @@ fn submission_dispatch_span_prefers_submission_trace_context() {
 
 #[test]
 fn submission_dispatch_span_uses_debug_for_realtime_audio() {
-    init_test_tracing();
+    let _trace_test_context = install_test_tracing("codex-core-tests");
 
     let dispatch_span = submission_dispatch_span(&Submission {
         id: "sub-1".into(),
@@ -2920,7 +2905,7 @@ async fn spawn_task_turn_span_inherits_dispatch_trace_context() {
         }
     }
 
-    init_test_tracing();
+    let _trace_test_context = install_test_tracing("codex-core-tests");
 
     let request_parent = W3cTraceContext {
         traceparent: Some("00-00000000000000000000000000000011-0000000000000022-01".into()),
@@ -3197,7 +3182,7 @@ pub(crate) async fn make_session_and_context_with_dynamic_tools_and_rx(
         CollaborationModesConfig::default(),
     ));
     let agent_control = AgentControl::default();
-    let exec_policy = ExecPolicyManager::default();
+    let exec_policy = Arc::new(ExecPolicyManager::default());
     let (agent_status_tx, _agent_status_rx) = watch::channel(AgentStatus::PendingInit);
     let model = ModelsManager::get_model_offline_for_tests(config.model.as_deref());
     let model_info = ModelsManager::construct_model_info_offline_for_tests(model.as_str(), &config);
@@ -4391,6 +4376,62 @@ async fn steer_input_returns_active_turn_id() {
     assert!(sess.has_pending_input().await);
 }
 
+#[tokio::test]
+async fn prepend_pending_input_keeps_older_tail_ahead_of_newer_input() {
+    let (sess, tc, _rx) = make_session_and_context_with_rx().await;
+    let input = vec![UserInput::Text {
+        text: "hello".to_string(),
+        text_elements: Vec::new(),
+    }];
+    sess.spawn_task(
+        Arc::clone(&tc),
+        input,
+        NeverEndingTask {
+            kind: TaskKind::Regular,
+            listen_to_cancellation_token: false,
+        },
+    )
+    .await;
+
+    let blocked = ResponseInputItem::Message {
+        role: "user".to_string(),
+        content: vec![ContentItem::InputText {
+            text: "blocked queued prompt".to_string(),
+        }],
+    };
+    let later = ResponseInputItem::Message {
+        role: "user".to_string(),
+        content: vec![ContentItem::InputText {
+            text: "later queued prompt".to_string(),
+        }],
+    };
+    let newer = ResponseInputItem::Message {
+        role: "user".to_string(),
+        content: vec![ContentItem::InputText {
+            text: "newer queued prompt".to_string(),
+        }],
+    };
+
+    sess.inject_response_items(vec![blocked.clone(), later.clone()])
+        .await
+        .expect("inject initial pending input into active turn");
+
+    let drained = sess.get_pending_input().await;
+    assert_eq!(drained, vec![blocked, later.clone()]);
+
+    sess.inject_response_items(vec![newer.clone()])
+        .await
+        .expect("inject newer pending input into active turn");
+
+    let mut drained_iter = drained.into_iter();
+    let _blocked = drained_iter.next().expect("blocked prompt should exist");
+    sess.prepend_pending_input(drained_iter.collect())
+        .await
+        .expect("requeue later pending input at the front of the queue");
+
+    assert_eq!(sess.get_pending_input().await, vec![later, newer]);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn abort_review_task_emits_exited_then_aborted_and_records_history() {
     let (sess, tc, rx) = make_session_and_context_with_rx().await;
@@ -4507,7 +4548,7 @@ async fn fatal_tool_error_stops_turn_and_reports_error() {
         .expect("tool call present");
     let tracker = Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new()));
     let err = router
-        .dispatch_tool_call(
+        .dispatch_tool_call_with_code_mode_result(
             Arc::clone(&session),
             Arc::clone(&turn_context),
             tracker,
@@ -4515,7 +4556,8 @@ async fn fatal_tool_error_stops_turn_and_reports_error() {
             ToolCallSource::Direct,
         )
         .await
-        .expect_err("expected fatal error");
+        .err()
+        .expect("expected fatal error");
 
     match err {
         FunctionCallError::Fatal(message) => {

@@ -7882,6 +7882,7 @@
       "HookEventName": {
         "enum": [
           "sessionStart",
+          "userPromptSubmit",
           "stop"
         ],
         "type": "string"
@@ -8599,6 +8600,54 @@
         ],
         "type": "string"
       },
+      "MemoryCitation": {
+        "properties": {
+          "entries": {
+            "items": {
+              "$ref": "#/definitions/v2/MemoryCitationEntry"
+            },
+            "type": "array"
+          },
+          "threadIds": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "entries",
+          "threadIds"
+        ],
+        "type": "object"
+      },
+      "MemoryCitationEntry": {
+        "properties": {
+          "lineEnd": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "lineStart": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "note": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "lineEnd",
+          "lineStart",
+          "note",
+          "path"
+        ],
+        "type": "object"
+      },
       "MergeStrategy": {
         "enum": [
           "replace",
@@ -9291,6 +9340,13 @@
       "PluginListResponse": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "properties": {
+          "featuredPluginIds": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "marketplaces": {
             "items": {
               "$ref": "#/definitions/v2/PluginMarketplaceEntry"
@@ -10310,6 +10366,12 @@
             "properties": {
               "call_id": {
                 "type": "string"
+              },
+              "name": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "output": {
                 "$ref": "#/definitions/v2/FunctionCallOutputBody"
@@ -11839,6 +11901,17 @@
             "properties": {
               "id": {
                 "type": "string"
+              },
+              "memoryCitation": {
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/v2/MemoryCitation"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
               },
               "phase": {
                 "anyOf": [
