@@ -152,20 +152,16 @@ pub async fn load_default_config_for_test(codex_home: &TempDir) -> Config {
 }
 
 #[cfg(target_os = "linux")]
-pub fn find_test_codex_linux_sandbox_exe() -> Result<PathBuf, CargoBinError> {
-    codex_utils_cargo_bin::cargo_bin("codex-linux-sandbox").or_else(|cargo_bin_err| {
-        find_program_on_path("codex-linux-sandbox")
-            .or_else(|| find_adjacent_test_binary("codex-linux-sandbox"))
-            .ok_or(cargo_bin_err)
-    })
+pub fn find_test_codex_exe() -> Result<PathBuf, CargoBinError> {
+    codex_utils_cargo_bin::cargo_bin("codex")
+        .or_else(|cargo_bin_err| find_adjacent_test_binary("codex").ok_or(cargo_bin_err))
 }
 
 #[cfg(target_os = "linux")]
-fn find_program_on_path(program: &str) -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path)
-        .map(|dir| dir.join(program))
-        .find(|candidate| candidate.is_file())
+pub fn find_test_codex_linux_sandbox_exe() -> Result<PathBuf, CargoBinError> {
+    codex_utils_cargo_bin::cargo_bin("codex-linux-sandbox").or_else(|cargo_bin_err| {
+        find_adjacent_test_binary("codex-linux-sandbox").ok_or(cargo_bin_err)
+    })
 }
 
 #[cfg(target_os = "linux")]
@@ -180,10 +176,10 @@ fn find_adjacent_test_binary(program: &str) -> Option<PathBuf> {
 #[cfg(target_os = "linux")]
 fn default_test_overrides() -> ConfigOverrides {
     ConfigOverrides {
-        // Filtered Cargo integration runs do not always export the standalone
-        // helper binary through CARGO_BIN_EXE, so fall back to the arg0 alias
-        // injected into PATH and then to the adjacent target/debug helper.
-        codex_linux_sandbox_exe: find_test_codex_linux_sandbox_exe().ok(),
+        // Sandbox apply_patch flows self-invoke the main `codex` binary with
+        // `--codex-run-as-apply-patch`, so test config must not fall back to
+        // the standalone helper or the arg0 alias on PATH.
+        codex_linux_sandbox_exe: find_test_codex_exe().ok(),
         ..ConfigOverrides::default()
     }
 }

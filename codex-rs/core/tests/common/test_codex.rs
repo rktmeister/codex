@@ -28,6 +28,7 @@ use serde_json::Value;
 use tempfile::TempDir;
 use wiremock::MockServer;
 
+use crate::find_test_codex_exe;
 use crate::load_default_config_for_test;
 use crate::responses::WebSocketTestServer;
 use crate::responses::output_value_to_text;
@@ -280,15 +281,7 @@ impl TestCodexBuilder {
         for hook in self.pre_build_hooks.drain(..) {
             hook(home.path());
         }
-        if let Ok(path) = codex_utils_cargo_bin::cargo_bin("codex") {
-            config.codex_linux_sandbox_exe = Some(path);
-        } else if let Ok(exe) = std::env::current_exe()
-            && let Some(path) = exe
-                .parent()
-                .and_then(|parent| parent.parent())
-                .map(|parent| parent.join("codex"))
-            && path.is_file()
-        {
+        if let Ok(path) = find_test_codex_exe() {
             config.codex_linux_sandbox_exe = Some(path);
         }
 

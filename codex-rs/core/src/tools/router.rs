@@ -223,10 +223,49 @@ impl ToolRouter {
         call: ToolCall,
         source: ToolCallSource,
     ) -> Result<ResponseInputItem, FunctionCallError> {
-        Ok(self
+        let response_call_id = call.call_id.clone();
+        let payload_outputs_custom = matches!(&call.payload, ToolPayload::Custom { .. });
+        let payload_outputs_tool_search = matches!(&call.payload, ToolPayload::ToolSearch { .. });
+
+        match self
             .dispatch_tool_call_with_code_mode_result(session, turn, tracker, call, source)
-            .await?
-            .into_response())
+            .await
+        {
+            Ok(result) => Ok(result.into_response()),
+            Err(FunctionCallError::Fatal(message)) => Err(FunctionCallError::Fatal(message)),
+            Err(err) => {
+                let message = err.to_string();
+                let result = if payload_outputs_tool_search {
+                    AnyToolResult {
+                        call_id: response_call_id,
+                        payload: ToolPayload::ToolSearch {
+                            arguments: SearchToolCallParams {
+                                query: String::new(),
+                                limit: None,
+                            },
+                        },
+                        result: Box::new(ToolSearchOutput { tools: Vec::new() }),
+                    }
+                } else if payload_outputs_custom {
+                    AnyToolResult {
+                        call_id: response_call_id,
+                        payload: ToolPayload::Custom {
+                            input: String::new(),
+                        },
+                        result: Box::new(FunctionToolOutput::from_text(message, Some(false))),
+                    }
+                } else {
+                    AnyToolResult {
+                        call_id: response_call_id,
+                        payload: ToolPayload::Function {
+                            arguments: "{}".to_string(),
+                        },
+                        result: Box::new(FunctionToolOutput::from_text(message, Some(false))),
+                    }
+                };
+                Ok(result.into_response())
+            }
+        }
     }
 
     #[instrument(level = "trace", skip_all, err)]
@@ -244,9 +283,6 @@ impl ToolRouter {
             call_id,
             payload,
         } = call;
-        let payload_outputs_custom = matches!(payload, ToolPayload::Custom { .. });
-        let payload_outputs_tool_search = matches!(payload, ToolPayload::ToolSearch { .. });
-        let failure_call_id = call_id.clone();
 
         if source == ToolCallSource::Direct {
             let direct_call_error = match (
@@ -280,13 +316,7 @@ impl ToolRouter {
             };
 
             if let Some(message) = direct_call_error {
-                let err = FunctionCallError::RespondToModel(message);
-                return Ok(Self::failure_result(
-                    failure_call_id,
-                    payload_outputs_custom,
-                    payload_outputs_tool_search,
-                    err,
-                ));
+                return Err(FunctionCallError::RespondToModel(message));
             }
         }
 
@@ -300,53 +330,7 @@ impl ToolRouter {
             payload,
         };
 
-        match self.registry.dispatch_any(invocation).await {
-            Ok(response) => Ok(response),
-            Err(FunctionCallError::Fatal(message)) => Err(FunctionCallError::Fatal(message)),
-            Err(err) => Ok(Self::failure_result(
-                failure_call_id,
-                payload_outputs_custom,
-                payload_outputs_tool_search,
-                err,
-            )),
-        }
-    }
-
-    fn failure_result(
-        call_id: String,
-        payload_outputs_custom: bool,
-        payload_outputs_tool_search: bool,
-        err: FunctionCallError,
-    ) -> AnyToolResult {
-        let message = err.to_string();
-        if payload_outputs_tool_search {
-            AnyToolResult {
-                call_id,
-                payload: ToolPayload::ToolSearch {
-                    arguments: SearchToolCallParams {
-                        query: String::new(),
-                        limit: None,
-                    },
-                },
-                result: Box::new(ToolSearchOutput { tools: Vec::new() }),
-            }
-        } else if payload_outputs_custom {
-            AnyToolResult {
-                call_id,
-                payload: ToolPayload::Custom {
-                    input: String::new(),
-                },
-                result: Box::new(FunctionToolOutput::from_text(message, Some(false))),
-            }
-        } else {
-            AnyToolResult {
-                call_id,
-                payload: ToolPayload::Function {
-                    arguments: "{}".to_string(),
-                },
-                result: Box::new(FunctionToolOutput::from_text(message, Some(false))),
-            }
-        }
+        self.registry.dispatch_any(invocation).await
     }
 }
 #[cfg(test)]
