@@ -1,8 +1,8 @@
 use super::*;
 use crate::config::ConfigBuilder;
-use codex_features::Feature;
 use crate::skills::loader::SkillRoot;
 use crate::skills::loader::load_skills_from_roots;
+use codex_features::Feature;
 use codex_protocol::protocol::SKILLS_INSTRUCTIONS_CLOSE_TAG;
 use codex_protocol::protocol::SKILLS_INSTRUCTIONS_OPEN_TAG;
 use codex_protocol::protocol::SkillScope;
