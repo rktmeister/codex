@@ -36,12 +36,13 @@ use crate::config::edit::ConfigEditsBuilder;
 use crate::config::types::McpServerConfig;
 use crate::config::types::PluginConfig;
 use crate::config_loader::ConfigLayerStack;
-use crate::features::Feature;
 use crate::skills::SkillMetadata;
 use crate::skills::loader::SkillRoot;
 use crate::skills::loader::load_skills_from_roots;
 use codex_app_server_protocol::ConfigValueWriteParams;
 use codex_app_server_protocol::MergeStrategy;
+use codex_features::Feature;
+use codex_protocol::protocol::Product;
 use codex_protocol::protocol::SkillScope;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use serde::Deserialize;
@@ -461,16 +462,32 @@ pub struct PluginsManager {
     store: PluginStore,
     featured_plugin_ids_cache: RwLock<Option<CachedFeaturedPluginIds>>,
     cached_enabled_outcome: RwLock<Option<PluginLoadOutcome>>,
+    restriction_product: Option<Product>,
     analytics_events_client: RwLock<Option<AnalyticsEventsClient>>,
 }
 
 impl PluginsManager {
     pub fn new(codex_home: PathBuf) -> Self {
+        Self::new_with_restriction_product(codex_home, Some(Product::Codex))
+    }
+
+    pub fn new_with_restriction_product(
+        codex_home: PathBuf,
+        restriction_product: Option<Product>,
+    ) -> Self {
+        // Product restrictions are enforced at marketplace admission time for a given CODEX_HOME:
+        // listing, install, and curated refresh all consult this restriction context before new
+        // plugins enter local config or cache. After admission, runtime plugin loading trusts the
+        // contents of that CODEX_HOME and does not re-filter configured plugins by product, so
+        // already-admitted plugins may continue exposing MCP servers/tools from shared local state.
+        //
+        // This assumes a single CODEX_HOME is only used by one product.
         Self {
             codex_home: codex_home.clone(),
             store: PluginStore::new(codex_home),
             featured_plugin_ids_cache: RwLock::new(None),
             cached_enabled_outcome: RwLock::new(None),
+            restriction_product,
             analytics_events_client: RwLock::new(None),
         }
     }
@@ -481,6 +498,16 @@ impl PluginsManager {
             Err(err) => err.into_inner(),
         };
         *stored_client = Some(analytics_events_client);
+    }
+
+    fn restriction_product_matches(&self, products: Option<&[Product]>) -> bool {
+        match products {
+            None => true,
+            Some([]) => false,
+            Some(products) => self
+                .restriction_product
+                .is_some_and(|product| product.matches_product_restriction(products)),
+        }
     }
 
     pub fn plugins_for_config(&self, config: &Config) -> PluginLoadOutcome {
@@ -600,7 +627,11 @@ impl PluginsManager {
         &self,
         request: PluginInstallRequest,
     ) -> Result<PluginInstallOutcome, PluginInstallError> {
-        let resolved = resolve_marketplace_plugin(&request.marketplace_path, &request.plugin_name)?;
+        let resolved = resolve_marketplace_plugin(
+            &request.marketplace_path,
+            &request.plugin_name,
+            self.restriction_product,
+        )?;
         self.install_resolved_plugin(resolved).await
     }
 
@@ -610,7 +641,11 @@ impl PluginsManager {
         auth: Option<&CodexAuth>,
         request: PluginInstallRequest,
     ) -> Result<PluginInstallOutcome, PluginInstallError> {
-        let resolved = resolve_marketplace_plugin(&request.marketplace_path, &request.plugin_name)?;
+        let resolved = resolve_marketplace_plugin(
+            &request.marketplace_path,
+            &request.plugin_name,
+            self.restriction_product,
+        )?;
         let plugin_id = resolved.plugin_id.as_key();
         // This only forwards the backend mutation before the local install flow. We rely on
         // `plugin/list(forceRemoteSync=true)` to sync local state rather than doing an extra
@@ -775,6 +810,7 @@ impl PluginsManager {
             AbsolutePathBuf,
             Option<bool>,
             Option<String>,
+            bool,
         )>::new();
         let mut local_plugin_names = HashSet::new();
         for plugin in curated_marketplace.plugins {
@@ -797,12 +833,15 @@ impl PluginsManager {
                 .get(&plugin_key)
                 .map(|plugin| plugin.enabled);
             let installed_version = self.store.active_plugin_version(&plugin_id);
+            let product_allowed =
+                self.restriction_product_matches(plugin.policy.products.as_deref());
             local_plugins.push((
                 plugin_name,
                 plugin_id,
                 source_path,
                 current_enabled,
                 installed_version,
+                product_allowed,
             ));
         }
 
@@ -841,11 +880,20 @@ impl PluginsManager {
         let remote_plugin_count = remote_installed_plugin_names.len();
         let local_plugin_count = local_plugins.len();
 
-        for (plugin_name, plugin_id, source_path, current_enabled, installed_version) in
-            local_plugins
+        for (
+            plugin_name,
+            plugin_id,
+            source_path,
+            current_enabled,
+            installed_version,
+            product_allowed,
+        ) in local_plugins
         {
             let plugin_key = plugin_id.as_key();
             let is_installed = installed_version.is_some();
+            if !product_allowed {
+                continue;
+            }
             if remote_installed_plugin_names.contains(&plugin_name) {
                 if !is_installed {
                     installs.push((
@@ -947,6 +995,9 @@ impl PluginsManager {
                         if !seen_plugin_keys.insert(plugin_key.clone()) {
                             return None;
                         }
+                        if !self.restriction_product_matches(plugin.policy.products.as_deref()) {
+                            return None;
+                        }
 
                         Some(ConfiguredMarketplacePlugin {
                             // Enabled state is keyed by `<plugin>@<marketplace>`, so duplicate
@@ -994,6 +1045,12 @@ impl PluginsManager {
                 marketplace_name,
             });
         };
+        if !self.restriction_product_matches(plugin.policy.products.as_deref()) {
+            return Err(MarketplaceError::PluginNotFound {
+                plugin_name: request.plugin_name.clone(),
+                marketplace_name,
+            });
+        }
 
         let plugin_id = PluginId::new(plugin.name.clone(), marketplace.name.clone()).map_err(
             |err| match err {
@@ -1017,7 +1074,10 @@ impl PluginsManager {
             path,
             scope: SkillScope::User,
         }))
-        .skills;
+        .skills
+        .into_iter()
+        .filter(|skill| skill.matches_product_restriction_for_product(self.restriction_product))
+        .collect();
         let apps = load_plugin_apps(source_path.as_path());
         let mcp_config_paths = plugin_mcp_config_paths(source_path.as_path(), manifest_paths);
         let mut mcp_server_names = Vec::new();
@@ -1602,6 +1662,22 @@ pub fn plugin_telemetry_metadata_from_root(
             app_connector_ids: load_plugin_apps(plugin_root),
         }),
     }
+}
+
+pub fn load_plugin_mcp_servers(plugin_root: &Path) -> HashMap<String, McpServerConfig> {
+    let Some(manifest) = load_plugin_manifest(plugin_root) else {
+        return HashMap::new();
+    };
+
+    let mut mcp_servers = HashMap::new();
+    for mcp_config_path in plugin_mcp_config_paths(plugin_root, &manifest.paths) {
+        let plugin_mcp = load_mcp_servers_from_file(plugin_root, &mcp_config_path);
+        for (name, config) in plugin_mcp.mcp_servers {
+            mcp_servers.entry(name).or_insert(config);
+        }
+    }
+
+    mcp_servers
 }
 
 pub fn installed_plugin_telemetry_metadata(

@@ -29,6 +29,7 @@ use uuid::Uuid;
 use crate::client_common::tools::ToolSpec;
 use crate::codex::Session;
 use crate::codex::TurnContext;
+use crate::exec::ExecCapturePolicy;
 use crate::exec::ExecExpiration;
 use crate::exec_env::create_env;
 use crate::function_tool::FunctionCallError;
@@ -662,6 +663,7 @@ impl PyReplManager {
             cwd: turn.cwd.clone(),
             env,
             expiration: ExecExpiration::DefaultTimeout,
+            capture_policy: ExecCapturePolicy::ShellTool,
             sandbox_permissions: SandboxPermissions::UseDefault,
             additional_permissions: None,
             justification: None,
@@ -1459,7 +1461,7 @@ pub(crate) fn resolve_python(config_path: Option<&Path>) -> Option<PathBuf> {
 mod tests {
     use super::*;
     use crate::codex::make_session_and_context;
-    use crate::features::Feature;
+    use codex_features::Feature;
     use codex_protocol::models::FunctionCallOutputContentItem;
     use codex_protocol::models::ImageDetail;
     use pretty_assertions::assert_eq;
