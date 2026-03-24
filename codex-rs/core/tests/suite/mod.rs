@@ -104,6 +104,7 @@ mod py_repl;
 mod quota_exceeded;
 mod read_file;
 mod realtime_conversation;
+mod remote_env;
 mod remote_models;
 mod request_compression;
 #[cfg(not(target_os = "windows"))]

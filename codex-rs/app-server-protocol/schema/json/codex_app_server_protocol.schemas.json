@@ -4278,6 +4278,26 @@
           "properties": {
             "method": {
               "enum": [
+                "thread/realtime/transcriptUpdated"
+              ],
+              "title": "Thread/realtime/transcriptUpdatedNotificationMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/ThreadRealtimeTranscriptUpdatedNotification"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "title": "Thread/realtime/transcriptUpdatedNotification",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
                 "thread/realtime/outputAudio/delta"
               ],
               "title": "Thread/realtime/outputAudio/deltaNotificationMethod",
@@ -4898,6 +4918,9 @@
         ],
         "title": "AgentMessageDeltaNotification",
         "type": "object"
+      },
+      "AgentPath": {
+        "type": "string"
       },
       "AnalyticsConfig": {
         "additionalProperties": true,
@@ -5634,6 +5657,28 @@
               "responseTooManyFailedAttempts"
             ],
             "title": "ResponseTooManyFailedAttemptsCodexErrorInfo",
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "Returned when `turn/start` or `turn/steer` is submitted while the current active turn cannot accept same-turn steering, for example `/review` or manual `/compact`.",
+            "properties": {
+              "activeTurnNotSteerable": {
+                "properties": {
+                  "turnKind": {
+                    "$ref": "#/definitions/v2/NonSteerableTurnKind"
+                  }
+                },
+                "required": [
+                  "turnKind"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "activeTurnNotSteerable"
+            ],
+            "title": "ActiveTurnNotSteerableCodexErrorInfo",
             "type": "object"
           }
         ]
@@ -7949,6 +7994,7 @@
       },
       "HookEventName": {
         "enum": [
+          "preToolUse",
           "sessionStart",
           "userPromptSubmit",
           "stop"
@@ -9091,6 +9137,13 @@
           }
         },
         "type": "object"
+      },
+      "NonSteerableTurnKind": {
+        "enum": [
+          "review",
+          "compact"
+        ],
+        "type": "string"
       },
       "OverriddenMetadata": {
         "properties": {
@@ -11300,6 +11353,9 @@
           "description": {
             "type": "string"
           },
+          "enabled": {
+            "type": "boolean"
+          },
           "interface": {
             "anyOf": [
               {
@@ -11325,6 +11381,7 @@
         },
         "required": [
           "description",
+          "enabled",
           "name",
           "path"
         ],
@@ -11381,13 +11438,27 @@
           "enabled": {
             "type": "boolean"
           },
+          "name": {
+            "description": "Name-based selector.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "path": {
-            "type": "string"
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/AbsolutePathBuf"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Path-based selector."
           }
         },
         "required": [
-          "enabled",
-          "path"
+          "enabled"
         ],
         "title": "SkillsConfigWriteParams",
         "type": "object"
@@ -11514,6 +11585,17 @@
                       "string",
                       "null"
                     ]
+                  },
+                  "agent_path": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/definitions/v2/AgentPath"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
                   },
                   "agent_role": {
                     "default": null,
@@ -12540,6 +12622,12 @@
                   "null"
                 ]
               },
+              "savedPath": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "status": {
                 "type": "string"
               },
@@ -13020,6 +13108,28 @@
           "version"
         ],
         "title": "ThreadRealtimeStartedNotification",
+        "type": "object"
+      },
+      "ThreadRealtimeTranscriptUpdatedNotification": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "description": "EXPERIMENTAL - flat transcript delta emitted whenever realtime transcript text changes.",
+        "properties": {
+          "role": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          },
+          "threadId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "role",
+          "text",
+          "threadId"
+        ],
+        "title": "ThreadRealtimeTranscriptUpdatedNotification",
         "type": "object"
       },
       "ThreadResumeParams": {

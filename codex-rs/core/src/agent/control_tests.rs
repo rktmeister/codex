@@ -11,11 +11,13 @@ use crate::contextual_user_message::SUBAGENT_NOTIFICATION_OPEN_TAG;
 use assert_matches::assert_matches;
 use chrono::Utc;
 use codex_features::Feature;
+use codex_protocol::AgentPath;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::ErrorEvent;
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::TurnAbortReason;
@@ -121,6 +123,29 @@ fn history_contains_text(history_items: &[ResponseItem], needle: &str) -> bool {
                 text.contains(needle)
             }
             ContentItem::InputImage { .. } => false,
+        })
+    })
+}
+
+fn history_contains_assistant_inter_agent_communication(
+    history_items: &[ResponseItem],
+    expected: &InterAgentCommunication,
+) -> bool {
+    history_items.iter().any(|item| {
+        let ResponseItem::Message { role, content, .. } = item else {
+            return false;
+        };
+        if role != "assistant" {
+            return false;
+        }
+        content.iter().any(|content_item| match content_item {
+            ContentItem::OutputText { text } => {
+                serde_json::from_str::<InterAgentCommunication>(text)
+                    .ok()
+                    .as_ref()
+                    == Some(expected)
+            }
+            ContentItem::InputText { .. } | ContentItem::InputImage { .. } => false,
         })
     })
 }
@@ -383,6 +408,61 @@ async fn send_input_submits_user_message() {
 }
 
 #[tokio::test]
+async fn append_message_records_assistant_message() {
+    let harness = AgentControlHarness::new().await;
+    let (thread_id, thread) = harness.start_thread().await;
+    let message =
+        "author: /root\nrecipient: /root/worker\nother_recipients: []\nContent: hello from tests";
+
+    let submission_id = harness
+        .control
+        .append_message(
+            thread_id,
+            ResponseItem::Message {
+                id: None,
+                role: "assistant".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: message.to_string(),
+                }],
+                end_turn: None,
+                phase: None,
+            },
+        )
+        .await
+        .expect("append_message should succeed");
+    assert!(!submission_id.is_empty());
+
+    timeout(Duration::from_secs(5), async {
+        loop {
+            let history_items = thread
+                .codex
+                .session
+                .clone_history()
+                .await
+                .raw_items()
+                .to_vec();
+            let recorded = history_items.iter().any(|item| {
+                matches!(
+                    item,
+                    ResponseItem::Message { role, content, .. }
+                        if role == "assistant"
+                            && content.iter().any(|content_item| matches!(
+                                content_item,
+                                ContentItem::InputText { text } if text == message
+                            ))
+                )
+            });
+            if recorded {
+                break;
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("assistant message should be recorded");
+}
+
+#[tokio::test]
 async fn spawn_agent_creates_thread_and_sends_prompt() {
     let harness = AgentControlHarness::new().await;
     let thread_id = harness
@@ -443,12 +523,13 @@ async fn spawn_agent_can_fork_parent_thread_history() {
 
     let child_thread_id = harness
         .control
-        .spawn_agent_with_options(
+        .spawn_agent_with_metadata(
             harness.config.clone(),
             text_input("child task"),
             Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                 parent_thread_id,
                 depth: 1,
+                agent_path: None,
                 agent_nickname: None,
                 agent_role: None,
             })),
@@ -457,7 +538,8 @@ async fn spawn_agent_can_fork_parent_thread_history() {
             },
         )
         .await
-        .expect("forked spawn should succeed");
+        .expect("forked spawn should succeed")
+        .thread_id;
 
     let child_thread = harness
         .manager
@@ -526,12 +608,13 @@ async fn spawn_agent_fork_injects_output_for_parent_spawn_call() {
 
     let child_thread_id = harness
         .control
-        .spawn_agent_with_options(
+        .spawn_agent_with_metadata(
             harness.config.clone(),
             text_input("child task"),
             Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                 parent_thread_id,
                 depth: 1,
+                agent_path: None,
                 agent_nickname: None,
                 agent_role: None,
             })),
@@ -540,7 +623,8 @@ async fn spawn_agent_fork_injects_output_for_parent_spawn_call() {
             },
         )
         .await
-        .expect("forked spawn should succeed");
+        .expect("forked spawn should succeed")
+        .thread_id;
 
     let child_thread = harness
         .manager
@@ -596,12 +680,13 @@ async fn spawn_agent_fork_flushes_parent_rollout_before_loading_history() {
 
     let child_thread_id = harness
         .control
-        .spawn_agent_with_options(
+        .spawn_agent_with_metadata(
             harness.config.clone(),
             text_input("child task"),
             Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                 parent_thread_id,
                 depth: 1,
+                agent_path: None,
                 agent_nickname: None,
                 agent_role: None,
             })),
@@ -610,7 +695,8 @@ async fn spawn_agent_fork_flushes_parent_rollout_before_loading_history() {
             },
         )
         .await
-        .expect("forked spawn should flush parent rollout before loading history");
+        .expect("forked spawn should flush parent rollout before loading history")
+        .thread_id;
 
     let child_thread = harness
         .manager
@@ -855,6 +941,7 @@ async fn spawn_child_completion_notifies_parent_history() {
             Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                 parent_thread_id,
                 depth: 1,
+                agent_path: None,
                 agent_nickname: None,
                 agent_role: Some("explorer".to_string()),
             })),
@@ -876,6 +963,223 @@ async fn spawn_child_completion_notifies_parent_history() {
 }
 
 #[tokio::test]
+async fn multi_agent_v2_completion_sends_inter_agent_message_to_direct_parent() {
+    let harness = AgentControlHarness::new().await;
+    let (root_thread_id, _) = harness.start_thread().await;
+    let mut config = harness.config.clone();
+    let _ = config.features.enable(Feature::MultiAgentV2);
+    let worker_path = AgentPath::root().join("worker_a").expect("worker path");
+    let worker_thread_id = harness
+        .control
+        .spawn_agent(
+            config.clone(),
+            text_input("hello worker"),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: root_thread_id,
+                depth: 1,
+                agent_path: Some(worker_path.clone()),
+                agent_nickname: None,
+                agent_role: Some("explorer".to_string()),
+            })),
+        )
+        .await
+        .expect("worker spawn should succeed");
+    let tester_path = worker_path.join("tester").expect("tester path");
+    let tester_thread_id = harness
+        .control
+        .spawn_agent(
+            config,
+            text_input("hello tester"),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: worker_thread_id,
+                depth: 2,
+                agent_path: Some(tester_path.clone()),
+                agent_nickname: None,
+                agent_role: Some("explorer".to_string()),
+            })),
+        )
+        .await
+        .expect("tester spawn should succeed");
+
+    let tester_thread = harness
+        .manager
+        .get_thread(tester_thread_id)
+        .await
+        .expect("tester thread should exist");
+    let tester_turn = tester_thread.codex.session.new_default_turn().await;
+    tester_thread
+        .codex
+        .session
+        .send_event(
+            tester_turn.as_ref(),
+            EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: tester_turn.sub_id.clone(),
+                last_agent_message: Some("done".to_string()),
+            }),
+        )
+        .await;
+
+    timeout(Duration::from_secs(2), async {
+        loop {
+            let delivered = harness
+                .manager
+                .captured_ops()
+                .into_iter()
+                .any(|(thread_id, op)| {
+                    thread_id == worker_thread_id
+                        && matches!(
+                            op,
+                            Op::InterAgentCommunication { communication }
+                                if communication.author == tester_path
+                                    && communication.recipient == worker_path
+                                    && communication.other_recipients.is_empty()
+                                    && communication.content == "done"
+                        )
+                });
+            if delivered {
+                break;
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("completion watcher should send inter-agent communication");
+
+    let worker_thread = harness
+        .manager
+        .get_thread(worker_thread_id)
+        .await
+        .expect("worker thread should exist");
+    let expected_message = InterAgentCommunication::new(
+        tester_path.clone(),
+        worker_path.clone(),
+        Vec::new(),
+        "done".to_string(),
+    );
+    timeout(Duration::from_secs(2), async {
+        loop {
+            let history_items = worker_thread
+                .codex
+                .session
+                .clone_history()
+                .await
+                .raw_items()
+                .to_vec();
+            if history_contains_assistant_inter_agent_communication(
+                &history_items,
+                &expected_message,
+            ) && !has_subagent_notification(&history_items)
+            {
+                break;
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("worker should record assistant inter-agent message");
+}
+
+#[tokio::test]
+async fn multi_agent_v2_completion_ignores_dead_direct_parent() {
+    let harness = AgentControlHarness::new().await;
+    let (root_thread_id, root_thread) = harness.start_thread().await;
+    let mut config = harness.config.clone();
+    let _ = config.features.enable(Feature::MultiAgentV2);
+    let worker_path = AgentPath::root().join("worker_a").expect("worker path");
+    let worker_thread_id = harness
+        .control
+        .spawn_agent(
+            config.clone(),
+            text_input("hello worker"),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: root_thread_id,
+                depth: 1,
+                agent_path: Some(worker_path.clone()),
+                agent_nickname: None,
+                agent_role: Some("explorer".to_string()),
+            })),
+        )
+        .await
+        .expect("worker spawn should succeed");
+    let tester_path = worker_path.join("tester").expect("tester path");
+    let tester_thread_id = harness
+        .control
+        .spawn_agent(
+            config,
+            text_input("hello tester"),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: worker_thread_id,
+                depth: 2,
+                agent_path: Some(tester_path.clone()),
+                agent_nickname: None,
+                agent_role: Some("explorer".to_string()),
+            })),
+        )
+        .await
+        .expect("tester spawn should succeed");
+    harness
+        .control
+        .shutdown_live_agent(worker_thread_id)
+        .await
+        .expect("worker shutdown should succeed");
+
+    let tester_thread = harness
+        .manager
+        .get_thread(tester_thread_id)
+        .await
+        .expect("tester thread should exist");
+    let tester_turn = tester_thread.codex.session.new_default_turn().await;
+    tester_thread
+        .codex
+        .session
+        .send_event(
+            tester_turn.as_ref(),
+            EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: tester_turn.sub_id.clone(),
+                last_agent_message: Some("done".to_string()),
+            }),
+        )
+        .await;
+
+    sleep(Duration::from_millis(100)).await;
+
+    assert!(
+        !harness
+            .manager
+            .captured_ops()
+            .into_iter()
+            .any(|(thread_id, op)| {
+                thread_id == worker_thread_id
+                    && matches!(
+                        op,
+                        Op::InterAgentCommunication { communication }
+                            if communication.author == tester_path
+                                && communication.recipient == worker_path
+                                && communication.content == "done"
+                    )
+            })
+    );
+
+    let root_history_items = root_thread
+        .codex
+        .session
+        .clone_history()
+        .await
+        .raw_items()
+        .to_vec();
+    assert!(!history_contains_assistant_inter_agent_communication(
+        &root_history_items,
+        &InterAgentCommunication::new(
+            tester_path,
+            AgentPath::root(),
+            Vec::new(),
+            "done".to_string(),
+        )
+    ));
+    assert!(!has_subagent_notification(&root_history_items));
+}
+
+#[tokio::test]
 async fn completion_watcher_notifies_parent_when_child_is_missing() {
     let harness = AgentControlHarness::new().await;
     let (parent_thread_id, parent_thread) = harness.start_thread().await;
@@ -886,9 +1190,12 @@ async fn completion_watcher_notifies_parent_when_child_is_missing() {
         Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
             parent_thread_id,
             depth: 1,
+            agent_path: None,
             agent_nickname: None,
             agent_role: Some("explorer".to_string()),
         })),
+        child_thread_id.to_string(),
+        None,
     );
 
     assert_eq!(wait_for_subagent_notification(&parent_thread).await, true);
@@ -903,7 +1210,7 @@ async fn completion_watcher_notifies_parent_when_child_is_missing() {
     assert_eq!(
         history_contains_text(
             &history_items,
-            &format!("\"agent_id\":\"{child_thread_id}\"")
+            &format!("\"agent_path\":\"{child_thread_id}\"")
         ),
         true
     );
@@ -926,6 +1233,7 @@ async fn spawn_thread_subagent_gets_random_nickname_in_session_source() {
             Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                 parent_thread_id,
                 depth: 1,
+                agent_path: None,
                 agent_nickname: None,
                 agent_role: Some("explorer".to_string()),
             })),
@@ -945,6 +1253,7 @@ async fn spawn_thread_subagent_gets_random_nickname_in_session_source() {
         depth,
         agent_nickname,
         agent_role,
+        ..
     }) = snapshot.session_source
     else {
         panic!("expected thread-spawn sub-agent source");
@@ -976,6 +1285,7 @@ async fn spawn_thread_subagent_uses_role_specific_nickname_candidates() {
             Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                 parent_thread_id,
                 depth: 1,
+                agent_path: None,
                 agent_nickname: None,
                 agent_role: Some("researcher".to_string()),
             })),
@@ -1018,6 +1328,8 @@ async fn resume_thread_subagent_restores_stored_nickname_and_role() {
         control,
     };
     let (parent_thread_id, _parent_thread) = harness.start_thread().await;
+    let agent_path = AgentPath::from_string("/root/explorer".to_string())
+        .expect("test agent path should be valid");
 
     let child_thread_id = harness
         .control
@@ -1027,6 +1339,7 @@ async fn resume_thread_subagent_restores_stored_nickname_and_role() {
             Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                 parent_thread_id,
                 depth: 1,
+                agent_path: Some(agent_path.clone()),
                 agent_nickname: None,
                 agent_role: Some("explorer".to_string()),
             })),
@@ -1095,6 +1408,7 @@ async fn resume_thread_subagent_restores_stored_nickname_and_role() {
             SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                 parent_thread_id,
                 depth: 1,
+                agent_path: Some(agent_path.clone()),
                 agent_nickname: None,
                 agent_role: None,
             }),
@@ -1113,14 +1427,17 @@ async fn resume_thread_subagent_restores_stored_nickname_and_role() {
     let SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
         parent_thread_id: resumed_parent_thread_id,
         depth: resumed_depth,
+        agent_path: resumed_agent_path,
         agent_nickname: resumed_nickname,
         agent_role: resumed_role,
+        ..
     }) = resumed_snapshot.session_source
     else {
         panic!("expected thread-spawn sub-agent source");
     };
     assert_eq!(resumed_parent_thread_id, parent_thread_id);
     assert_eq!(resumed_depth, 1);
+    assert_eq!(resumed_agent_path, Some(agent_path));
     assert_eq!(resumed_nickname, Some(original_nickname));
     assert_eq!(resumed_role, Some("explorer".to_string()));
 
@@ -1206,6 +1523,7 @@ async fn shutdown_agent_tree_closes_live_descendants() {
             Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                 parent_thread_id,
                 depth: 1,
+                agent_path: None,
                 agent_nickname: None,
                 agent_role: Some("explorer".to_string()),
             })),
@@ -1220,6 +1538,7 @@ async fn shutdown_agent_tree_closes_live_descendants() {
             Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                 parent_thread_id: child_thread_id,
                 depth: 2,
+                agent_path: None,
                 agent_nickname: None,
                 agent_role: Some("worker".to_string()),
             })),
@@ -1289,6 +1608,7 @@ async fn shutdown_agent_tree_closes_descendants_when_started_at_child() {
             Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                 parent_thread_id,
                 depth: 1,
+                agent_path: None,
                 agent_nickname: None,
                 agent_role: Some("explorer".to_string()),
             })),
@@ -1303,6 +1623,7 @@ async fn shutdown_agent_tree_closes_descendants_when_started_at_child() {
             Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                 parent_thread_id: child_thread_id,
                 depth: 2,
+                agent_path: None,
                 agent_nickname: None,
                 agent_role: Some("worker".to_string()),
             })),
@@ -1378,6 +1699,7 @@ async fn resume_agent_from_rollout_does_not_reopen_closed_descendants() {
             Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                 parent_thread_id,
                 depth: 1,
+                agent_path: None,
                 agent_nickname: None,
                 agent_role: Some("explorer".to_string()),
             })),
@@ -1392,6 +1714,7 @@ async fn resume_agent_from_rollout_does_not_reopen_closed_descendants() {
             Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                 parent_thread_id: child_thread_id,
                 depth: 2,
+                agent_path: None,
                 agent_nickname: None,
                 agent_role: Some("worker".to_string()),
             })),
@@ -1471,6 +1794,7 @@ async fn resume_closed_child_reopens_open_descendants() {
             Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                 parent_thread_id,
                 depth: 1,
+                agent_path: None,
                 agent_nickname: None,
                 agent_role: Some("explorer".to_string()),
             })),
@@ -1485,6 +1809,7 @@ async fn resume_closed_child_reopens_open_descendants() {
             Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                 parent_thread_id: child_thread_id,
                 depth: 2,
+                agent_path: None,
                 agent_nickname: None,
                 agent_role: Some("worker".to_string()),
             })),
@@ -1524,6 +1849,7 @@ async fn resume_closed_child_reopens_open_descendants() {
             SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                 parent_thread_id,
                 depth: 1,
+                agent_path: None,
                 agent_nickname: None,
                 agent_role: None,
             }),
@@ -1565,6 +1891,7 @@ async fn resume_agent_from_rollout_reopens_open_descendants_after_manager_shutdo
             Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                 parent_thread_id,
                 depth: 1,
+                agent_path: None,
                 agent_nickname: None,
                 agent_role: Some("explorer".to_string()),
             })),
@@ -1579,6 +1906,7 @@ async fn resume_agent_from_rollout_reopens_open_descendants_after_manager_shutdo
             Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                 parent_thread_id: child_thread_id,
                 depth: 2,
+                agent_path: None,
                 agent_nickname: None,
                 agent_role: Some("worker".to_string()),
             })),
@@ -1654,6 +1982,7 @@ async fn resume_agent_from_rollout_uses_edge_data_when_descendant_metadata_sourc
             Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                 parent_thread_id,
                 depth: 1,
+                agent_path: None,
                 agent_nickname: None,
                 agent_role: Some("explorer".to_string()),
             })),
@@ -1668,6 +1997,7 @@ async fn resume_agent_from_rollout_uses_edge_data_when_descendant_metadata_sourc
             Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                 parent_thread_id: child_thread_id,
                 depth: 2,
+                agent_path: None,
                 agent_nickname: None,
                 agent_role: Some("worker".to_string()),
             })),
@@ -1705,6 +2035,7 @@ async fn resume_agent_from_rollout_uses_edge_data_when_descendant_metadata_sourc
         serde_json::to_string(&SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
             parent_thread_id: ThreadId::new(),
             depth: 99,
+            agent_path: None,
             agent_nickname: None,
             agent_role: Some("worker".to_string()),
         }))
@@ -1782,6 +2113,7 @@ async fn resume_agent_from_rollout_skips_descendants_when_parent_resume_fails() 
             Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                 parent_thread_id,
                 depth: 1,
+                agent_path: None,
                 agent_nickname: None,
                 agent_role: Some("explorer".to_string()),
             })),
@@ -1796,6 +2128,7 @@ async fn resume_agent_from_rollout_skips_descendants_when_parent_resume_fails() 
             Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                 parent_thread_id: child_thread_id,
                 depth: 2,
+                agent_path: None,
                 agent_nickname: None,
                 agent_role: Some("worker".to_string()),
             })),
