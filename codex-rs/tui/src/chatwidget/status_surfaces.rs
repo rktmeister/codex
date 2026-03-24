@@ -140,7 +140,7 @@ impl ChatWidget {
         let cwd = self.status_line_cwd().to_path_buf();
         self.sync_status_line_branch_state(&cwd);
         if selections.uses_git_branch() && !self.status_line_branch_lookup_complete {
-            self.request_status_line_branch(cwd);
+            self.request_status_line_branch(cwd.clone());
         }
         if selections.uses_branch_diff() && !self.status_line_branch_diff_lookup_complete {
             self.request_status_line_branch_diff(cwd);

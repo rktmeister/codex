@@ -1318,11 +1318,6 @@ impl ChatWidget {
         self.bottom_pane.set_active_agent_label(active_agent_label);
     }
 
-    /// Compatibility wrapper around the shared status-surface refresh path.
-    pub(crate) fn refresh_status_line(&mut self) {
-        self.refresh_status_surfaces();
-    }
-
     /// Records that status-line setup was canceled.
     ///
     /// Cancellation is intentionally side-effect free for config state; the existing configuration
@@ -5981,7 +5976,7 @@ impl ChatWidget {
         let view = StatusLineSetupView::new(
             Some(configured_status_line_items.as_slice()),
             StatusLinePreviewData::from_iter(StatusLineItem::iter().filter_map(|item| {
-                self.status_line_value_for_item(item)
+                self.status_line_value_for_item(&item)
                     .map(|value| (item, value))
             })),
             self.app_event_tx.clone(),

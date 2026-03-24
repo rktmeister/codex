@@ -1856,7 +1856,7 @@ async fn turn_started_uses_runtime_context_window_before_first_token_count() {
     });
 
     assert_eq!(
-        chat.status_line_value_for_item(crate::bottom_pane::StatusLineItem::ContextWindowSize),
+        chat.status_line_value_for_item(&crate::bottom_pane::StatusLineItem::ContextWindowSize),
         Some("950K window".to_string())
     );
     assert_eq!(chat.bottom_pane.context_window_percent(), Some(100));
@@ -11993,7 +11993,7 @@ async fn status_line_project_root_uses_worktree_label_for_gwt_layout() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
     chat.current_cwd = Some(repo_nested.clone());
     assert_eq!(
-        chat.status_line_value_for_item(crate::bottom_pane::StatusLineItem::ProjectRoot),
+        chat.status_line_value_for_item(&crate::bottom_pane::StatusLineItem::ProjectRoot),
         Some("codex".to_string())
     );
 
@@ -12014,13 +12014,13 @@ async fn status_line_project_root_uses_worktree_label_for_gwt_layout() {
     std::fs::create_dir_all(&worktree_nested).expect("create worktree nested dir");
     chat.current_cwd = Some(worktree_nested);
     assert_eq!(
-        chat.status_line_value_for_item(crate::bottom_pane::StatusLineItem::ProjectRoot),
+        chat.status_line_value_for_item(&crate::bottom_pane::StatusLineItem::ProjectRoot),
         Some("codex@feature/x".to_string())
     );
 
     chat.show_welcome_banner = false;
     chat.config.tui_status_line = Some(vec!["project-root".to_string()]);
-    chat.refresh_status_line();
+    chat.refresh_status_surfaces();
 
     let width = 80;
     let height = chat.desired_height(width);
@@ -12057,11 +12057,11 @@ async fn status_line_fast_mode_renders_on_and_off() {
     chat.config.tui_status_line = Some(vec!["fast-mode".to_string()]);
 
     chat.refresh_status_surfaces();
-    assert_eq!(status_line_text(&chat), Some("Fast off".to_string()));
+    assert_eq!(status_line_text(&chat), Some("fast off".to_string()));
 
     chat.set_service_tier(Some(ServiceTier::Fast));
     chat.refresh_status_surfaces();
-    assert_eq!(status_line_text(&chat), Some("Fast on".to_string()));
+    assert_eq!(status_line_text(&chat), Some("fast on".to_string()));
 }
 
 #[tokio::test]

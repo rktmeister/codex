@@ -4222,7 +4222,7 @@ impl App {
             }
             AppEvent::StatusLineBranchDiffUpdated { cwd, diff } => {
                 self.chat_widget.set_status_line_branch_diff(cwd, diff);
-                self.refresh_status_line();
+                self.refresh_status_surfaces();
             }
             AppEvent::StatusLineSetupCancelled => {
                 self.chat_widget.cancel_status_line_setup();
