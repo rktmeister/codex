@@ -157,7 +157,7 @@ impl ChatWidget {
 
         let mut parts = Vec::new();
         for item in &selections.status_line_items {
-            if let Some(value) = self.status_line_value_for_item(item) {
+            if let Some(value) = self.status_line_value_for_item(*item) {
                 parts.push((*item, value));
             }
         }
@@ -501,7 +501,7 @@ impl ChatWidget {
     /// Returning `None` means "omit this item for now", not "configuration error". Callers rely on
     /// this to keep partially available status lines readable while waiting for session, token, or
     /// git metadata.
-    pub(super) fn status_line_value_for_item(&mut self, item: &StatusLineItem) -> Option<String> {
+    pub(super) fn status_line_value_for_item(&mut self, item: StatusLineItem) -> Option<String> {
         match item {
             StatusLineItem::ModelName => Some(self.model_display_name().to_string()),
             StatusLineItem::ModelWithReasoning => {

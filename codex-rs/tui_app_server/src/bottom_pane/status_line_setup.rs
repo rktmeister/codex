@@ -45,7 +45,7 @@ use crate::render::renderable::Renderable;
 /// - Git-related items only show when in a git repository
 /// - Context/limit items only show when data is available from the API
 /// - Session ID only shows after a session has started
-#[derive(EnumIter, EnumString, Display, Debug, Clone, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(EnumIter, EnumString, Display, Debug, Clone, Copy, Eq, PartialEq, Ord, PartialOrd)]
 #[strum(serialize_all = "kebab_case")]
 pub(crate) enum StatusLineItem {
     /// The current model name.

@@ -146,6 +146,8 @@ pub enum Feature {
     SpawnCsv,
     /// Enable apps.
     Apps,
+    /// Enable the tool_search tool for apps.
+    ToolSearch,
     /// Enable discoverable tool suggestions for apps.
     ToolSuggest,
     /// Enable plugins.
@@ -738,24 +740,26 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::Apps,
         key: "apps",
-        stage: Stage::Experimental {
-            name: "Apps",
-            menu_description: "Use a connected ChatGPT App using \"$\". Install Apps via /apps command. Restart Codex after enabling.",
-            announcement: "NEW: Use ChatGPT Apps (Connectors) in Codex via $ mentions. Enable in /experimental and restart Codex!",
-        },
+        stage: Stage::Stable,
+        default_enabled: true,
+    },
+    FeatureSpec {
+        id: Feature::ToolSearch,
+        key: "tool_search",
+        stage: Stage::UnderDevelopment,
         default_enabled: false,
     },
     FeatureSpec {
         id: Feature::ToolSuggest,
         key: "tool_suggest",
-        stage: Stage::UnderDevelopment,
-        default_enabled: false,
+        stage: Stage::Stable,
+        default_enabled: true,
     },
     FeatureSpec {
         id: Feature::Plugins,
         key: "plugins",
-        stage: Stage::UnderDevelopment,
-        default_enabled: false,
+        stage: Stage::Stable,
+        default_enabled: true,
     },
     FeatureSpec {
         id: Feature::ImageGeneration,
@@ -806,8 +810,8 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::ToolCallMcpElicitation,
         key: "tool_call_mcp_elicitation",
-        stage: Stage::UnderDevelopment,
-        default_enabled: false,
+        stage: Stage::Stable,
+        default_enabled: true,
     },
     FeatureSpec {
         id: Feature::Personality,

@@ -34,13 +34,14 @@ use crate::exec::ExecExpiration;
 use crate::exec_env::create_env;
 use crate::function_tool::FunctionCallError;
 use crate::original_image_detail::normalize_output_image_detail;
-use crate::sandboxing::CommandSpec;
-use crate::sandboxing::SandboxManager;
-use crate::sandboxing::SandboxPermissions;
+use crate::sandboxing::ExecOptions;
 use crate::tools::ToolRouter;
 use crate::tools::context::SharedTurnDiffTracker;
 use crate::tools::repl_image::validate_repl_image_data_url;
-use crate::tools::sandboxing::SandboxablePreference;
+use codex_sandboxing::SandboxCommand;
+use codex_sandboxing::SandboxManager;
+use codex_sandboxing::SandboxTransformRequest;
+use codex_sandboxing::SandboxablePreference;
 
 pub(crate) const PY_REPL_PRAGMA_PREFIX: &str = "# codex-py-repl:";
 const KERNEL_SOURCE: &str = include_str!("kernel.py");
@@ -657,16 +658,16 @@ impl PyReplManager {
         }
         env.insert("PYTHONDONTWRITEBYTECODE".to_string(), "1".to_string());
 
-        let spec = CommandSpec {
+        let command = SandboxCommand {
             program: self.python_path.to_string_lossy().to_string(),
             args: vec!["-u".to_string(), kernel_path.to_string_lossy().to_string()],
             cwd: turn.cwd.clone(),
             env,
+            additional_permissions: None,
+        };
+        let options = ExecOptions {
             expiration: ExecExpiration::DefaultTimeout,
             capture_policy: ExecCapturePolicy::ShellTool,
-            sandbox_permissions: SandboxPermissions::UseDefault,
-            additional_permissions: None,
-            justification: None,
         };
 
         let sandbox = SandboxManager::new();
@@ -684,8 +685,8 @@ impl PyReplManager {
             has_managed_network_requirements,
         );
         let exec_env = sandbox
-            .transform(crate::sandboxing::SandboxTransformRequest {
-                spec,
+            .transform(SandboxTransformRequest {
+                command,
                 policy: &turn.sandbox_policy,
                 file_system_policy: &turn.file_system_sandbox_policy,
                 network_policy: turn.network_sandbox_policy,
@@ -702,6 +703,9 @@ impl PyReplManager {
                     .config
                     .permissions
                     .windows_sandbox_private_desktop,
+            })
+            .map(|request| {
+                crate::sandboxing::ExecRequest::from_sandbox_exec_request(request, options)
             })
             .map_err(|err| format!("failed to configure sandbox for py_repl: {err}"))?;
 
