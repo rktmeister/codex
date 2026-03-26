@@ -661,7 +661,7 @@ impl PyReplManager {
         let command = SandboxCommand {
             program: self.python_path.to_string_lossy().to_string(),
             args: vec!["-u".to_string(), kernel_path.to_string_lossy().to_string()],
-            cwd: turn.cwd.clone(),
+            cwd: turn.cwd.clone().to_path_buf(),
             env,
             additional_permissions: None,
         };

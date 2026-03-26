@@ -1385,6 +1385,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e9b18233253483ce2f65329a24072ec414db782531bdbb7d0bbc4bd2ce6b7e21"
 
 [[package]]
+name = "codex-analytics"
+version = "0.0.0"
+dependencies = [
+ "codex-git-utils",
+ "codex-login",
+ "codex-plugin",
+ "codex-protocol",
+ "pretty_assertions",
+ "serde",
+ "serde_json",
+ "sha1",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "codex-ansi-escape"
 version = "0.0.0"
 dependencies = [
@@ -1457,8 +1473,11 @@ dependencies = [
  "codex-utils-cli",
  "codex-utils-json-to-toml",
  "codex-utils-pty",
+ "constant_time_eq",
  "core_test_support",
  "futures",
+ "hmac",
+ "jsonwebtoken",
  "opentelemetry",
  "opentelemetry_sdk",
  "owo-colors",
@@ -1468,6 +1487,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serial_test",
+ "sha2",
  "shlex",
  "tempfile",
  "time",
@@ -1830,6 +1850,7 @@ dependencies = [
  "futures",
  "multimap",
  "pretty_assertions",
+ "schemars 0.8.22",
  "serde",
  "serde_json",
  "serde_path_to_error",
@@ -1869,6 +1890,7 @@ dependencies = [
  "chardetng",
  "chrono",
  "clap",
+ "codex-analytics",
  "codex-api",
  "codex-app-server-protocol",
  "codex-apply-patch",
@@ -1878,14 +1900,17 @@ dependencies = [
  "codex-code-mode",
  "codex-config",
  "codex-connectors",
+ "codex-core-skills",
  "codex-exec-server",
  "codex-execpolicy",
  "codex-features",
  "codex-git-utils",
  "codex-hooks",
+ "codex-instructions",
  "codex-login",
  "codex-network-proxy",
  "codex-otel",
+ "codex-plugin",
  "codex-protocol",
  "codex-rmcp-client",
  "codex-rollout",
@@ -1893,7 +1918,6 @@ dependencies = [
  "codex-secrets",
  "codex-shell-command",
  "codex-shell-escalation",
- "codex-skills",
  "codex-state",
  "codex-terminal-detection",
  "codex-test-macros",
@@ -1904,6 +1928,7 @@ dependencies = [
  "codex-utils-image",
  "codex-utils-output-truncation",
  "codex-utils-path",
+ "codex-utils-plugins",
  "codex-utils-pty",
  "codex-utils-readiness",
  "codex-utils-stream-parser",
@@ -1942,7 +1967,6 @@ dependencies = [
  "seccompiler",
  "serde",
  "serde_json",
- "serde_yaml",
  "serial_test",
  "sha1",
  "shlex",
@@ -1969,6 +1993,35 @@ dependencies = [
  "wiremock",
  "zip",
  "zstd",
+]
+
+[[package]]
+name = "codex-core-skills"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "codex-analytics",
+ "codex-app-server-protocol",
+ "codex-config",
+ "codex-instructions",
+ "codex-login",
+ "codex-otel",
+ "codex-protocol",
+ "codex-skills",
+ "codex-utils-absolute-path",
+ "codex-utils-plugins",
+ "dirs",
+ "dunce",
+ "pretty_assertions",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "shlex",
+ "tempfile",
+ "tokio",
+ "toml 0.9.11+spec-1.1.0",
+ "tracing",
+ "zip",
 ]
 
 [[package]]
@@ -2175,6 +2228,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "codex-instructions"
+version = "0.0.0"
+dependencies = [
+ "codex-protocol",
+ "pretty_assertions",
+ "serde",
+]
+
+[[package]]
 name = "codex-keyring-store"
 version = "0.0.0"
 dependencies = [
@@ -2261,6 +2323,7 @@ dependencies = [
  "anyhow",
  "codex-arg0",
  "codex-core",
+ "codex-exec-server",
  "codex-features",
  "codex-protocol",
  "codex-shell-command",
@@ -2381,6 +2444,15 @@ dependencies = [
  "url",
  "wiremock",
  "zip",
+]
+
+[[package]]
+name = "codex-plugin"
+version = "0.0.0"
+dependencies = [
+ "codex-utils-absolute-path",
+ "codex-utils-plugins",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -2653,6 +2725,7 @@ dependencies = [
  "codex-client",
  "codex-cloud-requirements",
  "codex-core",
+ "codex-exec-server",
  "codex-features",
  "codex-feedback",
  "codex-file-search",
@@ -2938,6 +3011,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "codex-utils-plugins"
+version = "0.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "codex-utils-pty"
 version = "0.0.0"
 dependencies = [
@@ -3004,6 +3086,13 @@ version = "0.0.0"
 dependencies = [
  "pretty_assertions",
  "regex-lite",
+]
+
+[[package]]
+name = "codex-utils-template"
+version = "0.0.0"
+dependencies = [
+ "pretty_assertions",
 ]
 
 [[package]]
@@ -5701,6 +5790,21 @@ checksum = "8c942ebf8e95485ca0d52d97da7c5a2c387d0e7f0ba4c35e93bfcaee045955b3"
 dependencies = [
  "once_cell",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "jsonwebtoken"
+version = "9.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5a87cc7a48537badeae96744432de36f4be2b4a34a05a5ef32e9dd8a1c169dde"
+dependencies = [
+ "base64 0.22.1",
+ "js-sys",
+ "pem",
+ "ring",
+ "serde",
+ "serde_json",
+ "simple_asn1",
 ]
 
 [[package]]
@@ -9192,6 +9296,18 @@ name = "similar"
 version = "2.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bbbb5d9659141646ae647b42fe094daf6c6192d1620870b449d9557f748b2daa"
+
+[[package]]
+name = "simple_asn1"
+version = "0.6.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0d585997b0ac10be3c5ee635f1bab02d512760d14b7c468801ac8a01d9ae5f1d"
+dependencies = [
+ "num-bigint",
+ "num-traits",
+ "thiserror 2.0.18",
+ "time",
+]
 
 [[package]]
 name = "siphasher"

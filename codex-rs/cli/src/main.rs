@@ -208,6 +208,10 @@ struct ResumeCommand {
     #[arg(long = "all", default_value_t = false)]
     all: bool,
 
+    /// Include non-interactive sessions in the resume picker and --last selection.
+    #[arg(long = "include-non-interactive", default_value_t = false)]
+    include_non_interactive: bool,
+
     #[clap(flatten)]
     remote: InteractiveRemoteOptions,
 
@@ -349,6 +353,9 @@ struct AppServerCommand {
     /// See https://developers.openai.com/codex/config-advanced/#metrics for more details.
     #[arg(long = "analytics-default-enabled")]
     analytics_default_enabled: bool,
+
+    #[command(flatten)]
+    auth: codex_app_server::AppServerWebsocketAuthArgs,
 }
 
 #[derive(Debug, clap::Subcommand)]
@@ -639,49 +646,59 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
             prepend_config_flags(&mut mcp_cli.config_overrides, root_config_overrides.clone());
             mcp_cli.run().await?;
         }
-        Some(Subcommand::AppServer(app_server_cli)) => match app_server_cli.subcommand {
-            None => {
-                reject_remote_mode_for_subcommand(root_remote.as_deref(), "app-server")?;
-                let transport = app_server_cli.listen;
-                codex_app_server::run_main_with_transport(
-                    arg0_paths.clone(),
-                    root_config_overrides,
-                    codex_core::config_loader::LoaderOverrides::default(),
-                    app_server_cli.analytics_default_enabled,
-                    transport,
-                    codex_protocol::protocol::SessionSource::VSCode,
-                )
-                .await?;
+        Some(Subcommand::AppServer(app_server_cli)) => {
+            let AppServerCommand {
+                subcommand,
+                listen,
+                analytics_default_enabled,
+                auth,
+            } = app_server_cli;
+            match subcommand {
+                None => {
+                    reject_remote_mode_for_subcommand(root_remote.as_deref(), "app-server")?;
+                    let transport = listen;
+                    let auth = auth.try_into_settings()?;
+                    codex_app_server::run_main_with_transport(
+                        arg0_paths.clone(),
+                        root_config_overrides,
+                        codex_core::config_loader::LoaderOverrides::default(),
+                        analytics_default_enabled,
+                        transport,
+                        codex_protocol::protocol::SessionSource::VSCode,
+                        auth,
+                    )
+                    .await?;
+                }
+                Some(AppServerSubcommand::GenerateTs(gen_cli)) => {
+                    reject_remote_mode_for_subcommand(
+                        root_remote.as_deref(),
+                        "app-server generate-ts",
+                    )?;
+                    let options = codex_app_server_protocol::GenerateTsOptions {
+                        experimental_api: gen_cli.experimental,
+                        ..Default::default()
+                    };
+                    codex_app_server_protocol::generate_ts_with_options(
+                        &gen_cli.out_dir,
+                        gen_cli.prettier.as_deref(),
+                        options,
+                    )?;
+                }
+                Some(AppServerSubcommand::GenerateJsonSchema(gen_cli)) => {
+                    reject_remote_mode_for_subcommand(
+                        root_remote.as_deref(),
+                        "app-server generate-json-schema",
+                    )?;
+                    codex_app_server_protocol::generate_json_with_experimental(
+                        &gen_cli.out_dir,
+                        gen_cli.experimental,
+                    )?;
+                }
+                Some(AppServerSubcommand::GenerateInternalJsonSchema(gen_cli)) => {
+                    codex_app_server_protocol::generate_internal_json_schema(&gen_cli.out_dir)?;
+                }
             }
-            Some(AppServerSubcommand::GenerateTs(gen_cli)) => {
-                reject_remote_mode_for_subcommand(
-                    root_remote.as_deref(),
-                    "app-server generate-ts",
-                )?;
-                let options = codex_app_server_protocol::GenerateTsOptions {
-                    experimental_api: gen_cli.experimental,
-                    ..Default::default()
-                };
-                codex_app_server_protocol::generate_ts_with_options(
-                    &gen_cli.out_dir,
-                    gen_cli.prettier.as_deref(),
-                    options,
-                )?;
-            }
-            Some(AppServerSubcommand::GenerateJsonSchema(gen_cli)) => {
-                reject_remote_mode_for_subcommand(
-                    root_remote.as_deref(),
-                    "app-server generate-json-schema",
-                )?;
-                codex_app_server_protocol::generate_json_with_experimental(
-                    &gen_cli.out_dir,
-                    gen_cli.experimental,
-                )?;
-            }
-            Some(AppServerSubcommand::GenerateInternalJsonSchema(gen_cli)) => {
-                codex_app_server_protocol::generate_internal_json_schema(&gen_cli.out_dir)?;
-            }
-        },
+        }
         #[cfg(target_os = "macos")]
         Some(Subcommand::App(app_cli)) => {
             reject_remote_mode_for_subcommand(root_remote.as_deref(), "app")?;
@@ -691,6 +708,7 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
             session_id,
             last,
             all,
+            include_non_interactive,
             remote,
             config_overrides,
         })) => {
@@ -700,6 +718,7 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
                 session_id,
                 last,
                 all,
+                include_non_interactive,
                 config_overrides,
             );
             let exit_info = run_interactive_tui(
@@ -1169,6 +1188,7 @@ fn finalize_resume_interactive(
     session_id: Option<String>,
     last: bool,
     show_all: bool,
+    include_non_interactive: bool,
     resume_cli: TuiCli,
 ) -> TuiCli {
     // Start with the parsed interactive CLI so resume shares the same
@@ -1178,6 +1198,7 @@ fn finalize_resume_interactive(
     interactive.resume_last = last;
     interactive.resume_session_id = resume_session_id;
     interactive.resume_show_all = show_all;
+    interactive.resume_include_non_interactive = include_non_interactive;
 
     // Merge resume-scoped flags and overrides with highest precedence.
     merge_interactive_cli_flags(&mut interactive, resume_cli);
@@ -1290,6 +1311,7 @@ mod tests {
             session_id,
             last,
             all,
+            include_non_interactive,
             remote: _,
             config_overrides: resume_cli,
         }) = subcommand.expect("resume present")
@@ -1303,6 +1325,7 @@ mod tests {
             session_id,
             last,
             all,
+            include_non_interactive,
             resume_cli,
         )
     }
@@ -1499,6 +1522,15 @@ mod tests {
     }
 
     #[test]
+    fn resume_include_non_interactive_flag_sets_source_filter_override() {
+        let interactive =
+            finalize_resume_from_args(["codex", "resume", "--include-non-interactive"].as_ref());
+
+        assert!(interactive.resume_picker);
+        assert!(interactive.resume_include_non_interactive);
+    }
+
+    #[test]
     fn resume_merges_option_flags_and_full_auto() {
         let interactive = finalize_resume_from_args(
             [
@@ -1679,6 +1711,71 @@ mod tests {
     fn app_server_listen_invalid_url_fails_to_parse() {
         let parse_result =
             MultitoolCli::try_parse_from(["codex", "app-server", "--listen", "http://foo"]);
+        assert!(parse_result.is_err());
+    }
+
+    #[test]
+    fn app_server_capability_token_flags_parse() {
+        let app_server = app_server_from_args(
+            [
+                "codex",
+                "app-server",
+                "--ws-auth",
+                "capability-token",
+                "--ws-token-file",
+                "/tmp/codex-token",
+            ]
+            .as_ref(),
+        );
+        assert_eq!(
+            app_server.auth.ws_auth,
+            Some(codex_app_server::WebsocketAuthCliMode::CapabilityToken)
+        );
+        assert_eq!(
+            app_server.auth.ws_token_file,
+            Some(PathBuf::from("/tmp/codex-token"))
+        );
+    }
+
+    #[test]
+    fn app_server_signed_bearer_flags_parse() {
+        let app_server = app_server_from_args(
+            [
+                "codex",
+                "app-server",
+                "--ws-auth",
+                "signed-bearer-token",
+                "--ws-shared-secret-file",
+                "/tmp/codex-secret",
+                "--ws-issuer",
+                "issuer",
+                "--ws-audience",
+                "audience",
+                "--ws-max-clock-skew-seconds",
+                "9",
+            ]
+            .as_ref(),
+        );
+        assert_eq!(
+            app_server.auth.ws_auth,
+            Some(codex_app_server::WebsocketAuthCliMode::SignedBearerToken)
+        );
+        assert_eq!(
+            app_server.auth.ws_shared_secret_file,
+            Some(PathBuf::from("/tmp/codex-secret"))
+        );
+        assert_eq!(app_server.auth.ws_issuer.as_deref(), Some("issuer"));
+        assert_eq!(app_server.auth.ws_audience.as_deref(), Some("audience"));
+        assert_eq!(app_server.auth.ws_max_clock_skew_seconds, Some(9));
+    }
+
+    #[test]
+    fn app_server_rejects_removed_insecure_non_loopback_flag() {
+        let parse_result = MultitoolCli::try_parse_from([
+            "codex",
+            "app-server",
+            "--allow-unauthenticated-non-loopback-ws",
+        ]);
         assert!(parse_result.is_err());
     }
 

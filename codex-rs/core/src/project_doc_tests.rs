@@ -6,6 +6,8 @@ use codex_features::Feature;
 use codex_protocol::protocol::SKILLS_INSTRUCTIONS_CLOSE_TAG;
 use codex_protocol::protocol::SKILLS_INSTRUCTIONS_OPEN_TAG;
 use codex_protocol::protocol::SkillScope;
+use core_test_support::PathBufExt;
+use core_test_support::TempDirExt;
 use std::fs;
 use std::path::PathBuf;
 use tempfile::TempDir;
@@ -23,7 +25,7 @@ async fn make_config(root: &TempDir, limit: usize, instructions: Option<&str>) -
         .await
         .expect("defaults for test should always succeed");
 
-    config.cwd = root.path().to_path_buf();
+    config.cwd = root.abs();
     config.project_doc_max_bytes = limit;
 
     config.user_instructions = instructions.map(ToOwned::to_owned);
@@ -67,7 +69,7 @@ async fn make_config_with_project_root_markers(
         .await
         .expect("defaults for test should always succeed");
 
-    config.cwd = root.path().to_path_buf();
+    config.cwd = root.abs();
     config.project_doc_max_bytes = limit;
     config.user_instructions = instructions.map(ToOwned::to_owned);
     config
@@ -148,7 +150,7 @@ async fn finds_doc_in_repo_root() {
 
     // Build config pointing at the nested dir.
     let mut cfg = make_config(&repo, 4096, None).await;
-    cfg.cwd = nested;
+    cfg.cwd = nested.abs();
 
     let res = get_user_instructions(&cfg, None, None)
         .await
@@ -318,7 +320,7 @@ async fn concatenates_root_and_cwd_docs() {
     fs::write(nested.join("AGENTS.md"), "crate doc").unwrap();
 
     let mut cfg = make_config(&repo, 4096, None).await;
-    cfg.cwd = nested;
+    cfg.cwd = nested.abs();
 
     let res = get_user_instructions(&cfg, None, None)
         .await
@@ -337,13 +339,13 @@ async fn project_root_markers_are_honored_for_agents_discovery() {
     fs::write(nested.join("AGENTS.md"), "child doc").unwrap();
 
     let mut cfg = make_config_with_project_root_markers(&root, 4096, None, &[".codex-root"]).await;
-    cfg.cwd = nested;
+    cfg.cwd = nested.abs();
 
     let discovery = discover_project_doc_paths(&cfg).expect("discover paths");
     let expected_parent =
         dunce::canonicalize(root.path().join("AGENTS.md")).expect("canonical parent doc path");
     let expected_child =
-        dunce::canonicalize(cfg.cwd.join("AGENTS.md")).expect("canonical child doc path");
+        dunce::canonicalize(cfg.cwd.as_path().join("AGENTS.md")).expect("canonical child doc path");
     assert_eq!(discovery.len(), 2);
     assert_eq!(discovery[0], expected_parent);
     assert_eq!(discovery[1], expected_child);

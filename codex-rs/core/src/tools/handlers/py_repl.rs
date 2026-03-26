@@ -61,7 +61,7 @@ async fn emit_py_repl_exec_begin(
 ) {
     let emitter = ToolEmitter::shell(
         vec!["py_repl".to_string()],
-        turn.cwd.clone(),
+        turn.cwd.clone().to_path_buf(),
         ExecCommandSource::Agent,
         false,
     );
@@ -80,7 +80,7 @@ async fn emit_py_repl_exec_end(
     let exec_output = build_py_repl_exec_output(output, error, duration);
     let emitter = ToolEmitter::shell(
         vec!["py_repl".to_string()],
-        turn.cwd.clone(),
+        turn.cwd.clone().to_path_buf(),
         ExecCommandSource::Agent,
         false,
     );
