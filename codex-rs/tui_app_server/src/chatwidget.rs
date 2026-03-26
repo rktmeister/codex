@@ -101,6 +101,7 @@ use codex_git_utils::CommitLogEntry;
 use codex_git_utils::current_branch_name;
 use codex_git_utils::get_git_repo_root;
 use codex_git_utils::local_git_branches;
+use codex_git_utils::project_root_display_name_for_cwd;
 use codex_git_utils::recent_commits;
 use codex_otel::RuntimeMetricsSummary;
 use codex_otel::SessionTelemetry;
@@ -305,8 +306,9 @@ use crate::bottom_pane::SelectionViewParams;
 use crate::bottom_pane::custom_prompt_view::CustomPromptView;
 use crate::bottom_pane::popup_consts::standard_popup_hint_line;
 use crate::clipboard_paste::paste_image_to_temp_png;
-use crate::clipboard_text;
 use crate::collaboration_modes;
+use crate::copy_code::build_copy_code_picker_params;
+use crate::copy_code::parse_fenced_code_blocks;
 use crate::diff_render::display_path_for;
 use crate::exec_cell::CommandOutput;
 use crate::exec_cell::ExecCell;
@@ -5001,23 +5003,18 @@ impl ChatWidget {
                     return;
                 };
 
-                let copy_result = clipboard_text::copy_text_to_clipboard(text);
-
-                match copy_result {
-                    Ok(()) => {
-                        let hint = self.agent_turn_running.then_some(
-                            "Current turn is still running; copied the latest completed output (not the in-progress response)."
-                                .to_string(),
-                        );
-                        self.add_info_message(
-                            "Copied latest Codex output to clipboard.".to_string(),
-                            hint,
-                        );
-                    }
-                    Err(err) => {
-                        self.add_error_message(format!("Failed to copy to clipboard: {err}"))
-                    }
-                }
+                let hint = self.agent_turn_running.then_some(
+                    "Current turn is still running; copied the latest completed output (not the in-progress response)."
+                        .to_string(),
+                );
+                self.app_event_tx.send(AppEvent::CopyTextToClipboard {
+                    text: text.to_string(),
+                    success_message: "Copied latest Codex output to clipboard.".to_string(),
+                    hint,
+                });
+            }
+            SlashCommand::CopyCode => {
+                self.open_copy_code_popup();
             }
             SlashCommand::Mention => {
                 self.insert_str("@");
@@ -7110,6 +7107,33 @@ impl ChatWidget {
         self.bottom_pane.show_selection_view(params);
     }
 
+    fn open_copy_code_popup(&mut self) {
+        let Some(text) = self.last_copyable_output.as_deref() else {
+            self.add_info_message(
+                "`/copy-code` is unavailable before the first Codex output or right after a rollback."
+                    .to_string(),
+                None,
+            );
+            return;
+        };
+
+        let blocks = parse_fenced_code_blocks(text);
+        if blocks.is_empty() {
+            self.add_info_message(
+                "Latest Codex output has no fenced code blocks to copy.".to_string(),
+                Some("Use `/copy` to copy the full response.".to_string()),
+            );
+            return;
+        }
+
+        let copy_hint = self.agent_turn_running.then_some(
+            "Current turn is still running; copied from the latest completed output (not the in-progress response)."
+                .to_string(),
+        );
+        self.bottom_pane
+            .show_selection_view(build_copy_code_picker_params(blocks, copy_hint));
+    }
+
     /// Parses configured status-line ids into known items and collects unknown ids.
     ///
     /// Unknown ids are deduplicated in insertion order for warning messages.
@@ -7167,10 +7191,11 @@ impl ChatWidget {
     }
 
     fn status_line_project_root_name(&self) -> Option<String> {
+        let cwd = self.status_line_cwd();
         self.status_line_project_root().map(|root| {
-            root.file_name()
-                .map(|name| name.to_string_lossy().to_string())
-                .unwrap_or_else(|| format_directory_display(&root, /*max_width*/ None))
+            project_root_display_name_for_cwd(cwd, &root, |path| {
+                format_directory_display(path, /*max_width*/ None)
+            })
         })
     }
 

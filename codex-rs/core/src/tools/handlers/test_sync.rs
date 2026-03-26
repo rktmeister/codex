@@ -1,11 +1,14 @@
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use serde::Deserialize;
+use tokio::fs;
+use tokio::io::AsyncWriteExt;
 use tokio::sync::Barrier;
 use tokio::time::sleep;
 
@@ -37,6 +40,14 @@ struct BarrierArgs {
 }
 
 #[derive(Debug, Deserialize)]
+struct FileBarrierArgs {
+    path: PathBuf,
+    participants: usize,
+    #[serde(default = "default_timeout_ms")]
+    timeout_ms: u64,
+}
+
+#[derive(Debug, Deserialize)]
 struct TestSyncArgs {
     #[serde(default)]
     sleep_before_ms: Option<u64>,
@@ -44,6 +55,8 @@ struct TestSyncArgs {
     sleep_after_ms: Option<u64>,
     #[serde(default)]
     barrier: Option<BarrierArgs>,
+    #[serde(default)]
+    file_barrier: Option<FileBarrierArgs>,
 }
 
 fn default_timeout_ms() -> u64 {
@@ -84,6 +97,10 @@ impl ToolHandler for TestSyncHandler {
 
         if let Some(barrier) = args.barrier {
             wait_on_barrier(barrier).await?;
+        }
+
+        if let Some(file_barrier) = args.file_barrier {
+            wait_on_file_barrier(file_barrier).await?;
         }
 
         if let Some(delay) = args.sleep_after_ms
@@ -151,4 +168,64 @@ async fn wait_on_barrier(args: BarrierArgs) -> Result<(), FunctionCallError> {
     }
 
     Ok(())
+}
+
+async fn wait_on_file_barrier(args: FileBarrierArgs) -> Result<(), FunctionCallError> {
+    if args.participants == 0 {
+        return Err(FunctionCallError::RespondToModel(
+            "file barrier participants must be greater than zero".to_string(),
+        ));
+    }
+
+    if args.timeout_ms == 0 {
+        return Err(FunctionCallError::RespondToModel(
+            "file barrier timeout must be greater than zero".to_string(),
+        ));
+    }
+
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&args.path)
+        .await
+        .map_err(|err| {
+            FunctionCallError::RespondToModel(format!(
+                "failed to open file barrier {}: {err}",
+                args.path.display()
+            ))
+        })?;
+    file.write_all(b"ready\n").await.map_err(|err| {
+        FunctionCallError::RespondToModel(format!(
+            "failed to write file barrier {}: {err}",
+            args.path.display()
+        ))
+    })?;
+
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(args.timeout_ms);
+    loop {
+        let participants = fs::read_to_string(&args.path).await.map_err(|err| {
+            FunctionCallError::RespondToModel(format!(
+                "failed to read file barrier {}: {err}",
+                args.path.display()
+            ))
+        })?;
+        let count = participants
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .count();
+
+        if count >= args.participants {
+            return Ok(());
+        }
+
+        if tokio::time::Instant::now() >= deadline {
+            return Err(FunctionCallError::RespondToModel(format!(
+                "file barrier {} timed out waiting for {} participants",
+                args.path.display(),
+                args.participants
+            )));
+        }
+
+        sleep(Duration::from_millis(10)).await;
+    }
 }

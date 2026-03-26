@@ -1,97 +1,38 @@
 use async_trait::async_trait;
 use serde_json::Value as JsonValue;
 use std::sync::Arc;
-use std::time::Duration;
-use std::time::Instant;
 
-use crate::exec::ExecToolCallOutput;
-use crate::exec::StreamOutput;
 use crate::function_tool::FunctionCallError;
-use crate::protocol::ExecCommandSource;
 use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
-use crate::tools::events::ToolEmitter;
-use crate::tools::events::ToolEventCtx;
-use crate::tools::events::ToolEventFailure;
-use crate::tools::events::ToolEventStage;
-use crate::tools::handlers::parse_arguments;
+use crate::tools::handlers::repl::ReplExecutionResult;
+use crate::tools::handlers::repl::parse_repl_payload;
+use crate::tools::handlers::repl::run_repl_tool_execution;
 use crate::tools::js_repl::JS_REPL_PRAGMA_PREFIX;
 use crate::tools::js_repl::JsReplArgs;
 use crate::tools::registry::ToolHandler;
 use crate::tools::registry::ToolKind;
 use codex_features::Feature;
-use codex_protocol::models::FunctionCallOutputContentItem;
 
 pub struct JsReplHandler;
 pub struct JsReplResetHandler;
 
-fn join_outputs(stdout: &str, stderr: &str) -> String {
-    if stdout.is_empty() {
-        stderr.to_string()
-    } else if stderr.is_empty() {
-        stdout.to_string()
-    } else {
-        format!("{stdout}\n{stderr}")
-    }
-}
-
-fn build_js_repl_exec_output(
-    output: &str,
-    error: Option<&str>,
-    duration: Duration,
-) -> ExecToolCallOutput {
-    let stdout = output.to_string();
-    let stderr = error.unwrap_or("").to_string();
-    let aggregated_output = join_outputs(&stdout, &stderr);
-    ExecToolCallOutput {
-        exit_code: if error.is_some() { 1 } else { 0 },
-        stdout: StreamOutput::new(stdout),
-        stderr: StreamOutput::new(stderr),
-        aggregated_output: StreamOutput::new(aggregated_output),
-        duration,
-        timed_out: false,
-    }
-}
-
-async fn emit_js_repl_exec_begin(
-    session: &crate::codex::Session,
-    turn: &crate::codex::TurnContext,
-    call_id: &str,
-) {
-    let emitter = ToolEmitter::shell(
-        vec!["js_repl".to_string()],
-        turn.cwd.to_path_buf(),
-        ExecCommandSource::Agent,
-        /*freeform*/ false,
-    );
-    let ctx = ToolEventCtx::new(session, turn, call_id, /*turn_diff_tracker*/ None);
-    emitter.emit(ctx, ToolEventStage::Begin).await;
-}
-
+#[cfg(test)]
 async fn emit_js_repl_exec_end(
     session: &crate::codex::Session,
     turn: &crate::codex::TurnContext,
     call_id: &str,
     output: &str,
     error: Option<&str>,
-    duration: Duration,
+    duration: std::time::Duration,
 ) {
-    let exec_output = build_js_repl_exec_output(output, error, duration);
-    let emitter = ToolEmitter::shell(
-        vec!["js_repl".to_string()],
-        turn.cwd.to_path_buf(),
-        ExecCommandSource::Agent,
-        /*freeform*/ false,
-    );
-    let ctx = ToolEventCtx::new(session, turn, call_id, /*turn_diff_tracker*/ None);
-    let stage = if error.is_some() {
-        ToolEventStage::Failure(ToolEventFailure::Output(exec_output))
-    } else {
-        ToolEventStage::Success(exec_output)
-    };
-    emitter.emit(ctx, stage).await;
+    crate::tools::handlers::repl::emit_repl_exec_end(
+        session, turn, call_id, "js_repl", output, error, duration,
+    )
+    .await;
 }
+
 #[async_trait]
 impl ToolHandler for JsReplHandler {
     type Output = FunctionToolOutput;
@@ -123,62 +64,26 @@ impl ToolHandler for JsReplHandler {
             ));
         }
 
-        let args = match payload {
-            ToolPayload::Function { arguments } => parse_arguments(&arguments)?,
-            ToolPayload::Custom { input } => parse_freeform_args(&input)?,
-            _ => {
-                return Err(FunctionCallError::RespondToModel(
-                    "js_repl expects custom or function payload".to_string(),
-                ));
-            }
-        };
+        let args = parse_repl_payload(payload, "js_repl", parse_freeform_args)?;
         let manager = turn.js_repl.manager().await?;
-        let started_at = Instant::now();
-        emit_js_repl_exec_begin(session.as_ref(), turn.as_ref(), &call_id).await;
-        let result = manager
-            .execute(Arc::clone(&session), Arc::clone(&turn), tracker, args)
-            .await;
-        let result = match result {
-            Ok(result) => result,
-            Err(err) => {
-                let message = err.to_string();
-                emit_js_repl_exec_end(
-                    session.as_ref(),
-                    turn.as_ref(),
-                    &call_id,
-                    "",
-                    Some(&message),
-                    started_at.elapsed(),
-                )
-                .await;
-                return Err(err);
-            }
-        };
-
-        let content = result.output;
-        let mut items = Vec::with_capacity(result.content_items.len() + 1);
-        if !content.is_empty() {
-            items.push(FunctionCallOutputContentItem::InputText {
-                text: content.clone(),
-            });
-        }
-        items.extend(result.content_items);
-
-        emit_js_repl_exec_end(
-            session.as_ref(),
-            turn.as_ref(),
+        let exec_session = Arc::clone(&session);
+        let exec_turn = Arc::clone(&turn);
+        run_repl_tool_execution(
+            session,
+            Arc::clone(&turn),
             &call_id,
-            &content,
-            /*error*/ None,
-            started_at.elapsed(),
+            "js_repl",
+            async move {
+                let result = manager
+                    .execute(exec_session, exec_turn, tracker, args)
+                    .await?;
+                Ok(ReplExecutionResult {
+                    output: result.output,
+                    content_items: result.content_items,
+                })
+            },
         )
-        .await;
-
-        if items.is_empty() {
-            Ok(FunctionToolOutput::from_text(content, Some(true)))
-        } else {
-            Ok(FunctionToolOutput::from_content(items, Some(true)))
-        }
+        .await
     }
 }
 

@@ -2,6 +2,7 @@
 #![allow(clippy::unwrap_used)]
 
 use std::fs;
+use std::path::Path;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -78,6 +79,13 @@ fn assert_parallel_duration(actual: Duration) {
     );
 }
 
+fn shell_file_barrier_command(path: &Path, participants: usize, sleep_after_secs: f32) -> String {
+    let path = path.display();
+    format!(
+        "printf \"%s\\n\" ready >> \"{path}\"; while [ \"$(wc -l < \"{path}\")\" -lt {participants} ]; do sleep 0.01; done; sleep {sleep_after_secs}"
+    )
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn read_file_tools_run_in_parallel() -> anyhow::Result<()> {
     skip_if_no_network!(Ok(()));
@@ -147,12 +155,13 @@ async fn shell_tools_run_in_parallel() -> anyhow::Result<()> {
     let server = start_mock_server().await;
     let mut builder = test_codex().with_model("gpt-5.1");
     let test = builder.build(&server).await?;
+    let barrier_file = tempfile::NamedTempFile::new()?;
 
     let shell_args = json!({
-        "command": "sleep 0.25",
+        "command": shell_file_barrier_command(barrier_file.path(), 2, 0.25),
         // Avoid user-specific shell startup cost (e.g. zsh profile scripts) in timing assertions.
         "login": false,
-        "timeout_ms": 1_000,
+        "timeout_ms": 5_000,
     });
     let args_one = serde_json::to_string(&shell_args)?;
     let args_two = serde_json::to_string(&shell_args)?;
@@ -170,7 +179,15 @@ async fn shell_tools_run_in_parallel() -> anyhow::Result<()> {
     mount_sse_sequence(&server, vec![first_response, second_response]).await;
 
     let duration = run_turn_and_measure(&test, "run shell_command twice").await?;
-    assert_parallel_duration(duration);
+    let participants = fs::read_to_string(barrier_file.path())?
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .count();
+    assert!(
+        duration < Duration::from_secs(3),
+        "expected concurrent shell tools to clear the file barrier before timing out; got duration={duration:?}, participants={participants}"
+    );
+    assert_eq!(participants, 2);
 
     Ok(())
 }
@@ -181,16 +198,22 @@ async fn mixed_parallel_tools_run_in_parallel() -> anyhow::Result<()> {
 
     let server = start_mock_server().await;
     let test = build_codex_with_test_tool(&server).await?;
+    let barrier_file = tempfile::NamedTempFile::new()?;
 
     let sync_args = json!({
+        "file_barrier": {
+            "path": barrier_file.path(),
+            "participants": 2,
+            "timeout_ms": 5_000,
+        },
         "sleep_after_ms": 300
     })
     .to_string();
     let shell_args = serde_json::to_string(&json!({
-        "command": "sleep 0.25",
+        "command": shell_file_barrier_command(barrier_file.path(), 2, 0.25),
         // Avoid user-specific shell startup cost in timing assertions.
         "login": false,
-        "timeout_ms": 1_000,
+        "timeout_ms": 5_000,
     }))?;
 
     let first_response = sse(vec![
@@ -206,7 +229,15 @@ async fn mixed_parallel_tools_run_in_parallel() -> anyhow::Result<()> {
     mount_sse_sequence(&server, vec![first_response, second_response]).await;
 
     let duration = run_turn_and_measure(&test, "mix tools").await?;
-    assert_parallel_duration(duration);
+    let participants = fs::read_to_string(barrier_file.path())?
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .count();
+    assert!(
+        duration < Duration::from_secs(3),
+        "expected mixed tools to clear the file barrier before timing out; got duration={duration:?}, participants={participants}"
+    );
+    assert_eq!(participants, 2);
 
     Ok(())
 }
@@ -299,7 +330,7 @@ async fn shell_tools_start_before_response_completed_when_stream_delayed() -> an
     let second_response_id = "resp-2";
 
     let command = format!(
-        "perl -MTime::HiRes -e 'print int(Time::HiRes::time()*1000), \"\\n\"' >> \"{}\"",
+        "bash -lc 'printf \"%(%s)T000\\n\" -1' >> \"{}\"",
         output_path.display()
     );
     // Use a non-login shell to avoid slow, user-specific shell init (e.g. zsh profiles)

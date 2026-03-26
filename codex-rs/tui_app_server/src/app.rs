@@ -20,6 +20,7 @@ use crate::chatwidget::ChatWidget;
 use crate::chatwidget::ExternalEditorState;
 use crate::chatwidget::ReplayKind;
 use crate::chatwidget::ThreadInputState;
+use crate::clipboard_text;
 use crate::cwd_prompt::CwdPromptAction;
 use crate::diff_render::DiffSummary;
 use crate::exec_command::strip_bash_lc_and_escape;
@@ -3779,6 +3780,19 @@ impl App {
                     }
                 }
             }
+            AppEvent::CopyTextToClipboard {
+                text,
+                success_message,
+                hint,
+            } => match clipboard_text::copy_text_to_clipboard(&text) {
+                Ok(()) => {
+                    self.chat_widget.add_info_message(success_message, hint);
+                }
+                Err(err) => {
+                    self.chat_widget
+                        .add_error_message(format!("Failed to copy to clipboard: {err}"));
+                }
+            },
             AppEvent::ApplyThreadRollback { num_turns } => {
                 if self.apply_non_pending_thread_rollback(num_turns) {
                     tui.frame_requester().schedule_frame();

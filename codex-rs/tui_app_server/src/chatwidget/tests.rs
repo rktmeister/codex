@@ -6993,6 +6993,123 @@ async fn slash_copy_reports_when_no_copyable_output_exists() {
 }
 
 #[tokio::test]
+async fn slash_copy_code_reports_when_no_copyable_output_exists() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
+
+    chat.dispatch_command(SlashCommand::CopyCode);
+
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(cells.len(), 1, "expected one info message");
+    let rendered = lines_to_single_string(&cells[0]);
+    assert!(
+        rendered.contains(
+            "`/copy-code` is unavailable before the first Codex output or right after a rollback."
+        ),
+        "expected no-output message, got {rendered:?}"
+    );
+}
+
+#[tokio::test]
+async fn slash_copy_code_reports_when_latest_output_has_no_fenced_blocks() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
+
+    chat.handle_codex_event(Event {
+        id: "turn-1".into(),
+        msg: EventMsg::TurnComplete(TurnCompleteEvent {
+            turn_id: "turn-1".to_string(),
+            last_agent_message: Some("Final reply without code.".to_string()),
+        }),
+    });
+
+    chat.dispatch_command(SlashCommand::CopyCode);
+
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(cells.len(), 1, "expected one info message");
+    let rendered = lines_to_single_string(&cells[0]);
+    assert!(
+        rendered.contains("Latest Codex output has no fenced code blocks to copy."),
+        "expected no-code-block message, got {rendered:?}"
+    );
+    assert!(
+        rendered.contains("Use `/copy` to copy the full response."),
+        "expected no-code-block hint, got {rendered:?}"
+    );
+}
+
+#[tokio::test]
+async fn slash_copy_code_popup_snapshot() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+
+    chat.handle_codex_event(Event {
+        id: "turn-1".into(),
+        msg: EventMsg::TurnComplete(TurnCompleteEvent {
+            turn_id: "turn-1".to_string(),
+            last_agent_message: Some(
+                concat!(
+                    "```bash\n",
+                    "git diff /tmp/base.rs /tmp/right.rs\n",
+                    "```\n",
+                    "\n",
+                    "```rust\n",
+                    "fn render_preview() {\n",
+                    "    println!(\"hi\");\n",
+                    "}\n",
+                    "```\n",
+                    "\n",
+                    "```text\n",
+                    "plain text fallback\n",
+                    "```\n"
+                )
+                .to_string(),
+            ),
+        }),
+    });
+
+    chat.dispatch_command(SlashCommand::CopyCode);
+
+    let popup = render_bottom_popup(&chat, 88);
+    assert_snapshot!("copy_code_popup", popup);
+}
+
+#[tokio::test]
+async fn slash_copy_code_enter_emits_copy_event_for_selected_block() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
+
+    chat.handle_codex_event(Event {
+        id: "turn-1".into(),
+        msg: EventMsg::TurnComplete(TurnCompleteEvent {
+            turn_id: "turn-1".to_string(),
+            last_agent_message: Some(
+                concat!(
+                    "```bash\n",
+                    "echo first\n",
+                    "```\n",
+                    "\n",
+                    "```js\n",
+                    "console.log('second');\n",
+                    "```\n"
+                )
+                .to_string(),
+            ),
+        }),
+    });
+
+    chat.dispatch_command(SlashCommand::CopyCode);
+    chat.handle_key_event(KeyEvent::from(KeyCode::Down));
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::CopyTextToClipboard {
+            text,
+            success_message,
+            hint: None,
+        }) if text == "console.log('second');\n"
+            && success_message == "Copied code block 2 to clipboard."
+    );
+}
+
+#[tokio::test]
 async fn slash_copy_state_is_preserved_during_running_task() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
 
@@ -12337,6 +12454,84 @@ async fn status_line_fast_mode_footer_snapshot() {
         .draw(|f| chat.render(f.area(), f.buffer_mut()))
         .expect("draw fast-mode footer");
     assert_snapshot!("status_line_fast_mode_footer", terminal.backend());
+}
+
+#[tokio::test]
+async fn status_line_project_root_uses_worktree_label_for_gwt_layout() {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    let temp_dir = tempdir().expect("tempdir");
+    let repo_path = temp_dir.path().join("codex");
+    std::fs::create_dir_all(&repo_path).expect("create repo dir");
+
+    let run_git = |cwd: &std::path::Path, args: &[&str]| {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .output()
+            .expect("run git");
+        assert!(
+            output.status.success(),
+            "git {:?} failed\nstdout:{}\nstderr:{}",
+            args,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+
+    run_git(&repo_path, &["init"]);
+    run_git(&repo_path, &["config", "user.email", "test@example.com"]);
+    run_git(&repo_path, &["config", "user.name", "Test User"]);
+    std::fs::write(repo_path.join("README.md"), "hello\n").expect("write seed file");
+    run_git(&repo_path, &["add", "README.md"]);
+    run_git(&repo_path, &["commit", "-m", "initial"]);
+
+    let repo_nested = repo_path.join("src");
+    std::fs::create_dir_all(&repo_nested).expect("create repo nested dir");
+
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+    chat.current_cwd = Some(repo_nested.clone());
+    assert_eq!(
+        chat.status_line_value_for_item(StatusLineItem::ProjectRoot),
+        Some("codex".to_string())
+    );
+
+    let worktree_root = repo_path.join(".worktrees").join("feature").join("x");
+    std::fs::create_dir_all(
+        worktree_root
+            .parent()
+            .expect("worktree root should have a parent"),
+    )
+    .expect("create worktree parent");
+    let worktree_root_str = worktree_root.to_str().expect("utf-8 worktree path");
+    run_git(
+        &repo_path,
+        &["worktree", "add", "-b", "feature/x", worktree_root_str],
+    );
+
+    let worktree_nested = worktree_root.join("nested");
+    std::fs::create_dir_all(&worktree_nested).expect("create worktree nested dir");
+    chat.current_cwd = Some(worktree_nested);
+    assert_eq!(
+        chat.status_line_value_for_item(StatusLineItem::ProjectRoot),
+        Some("codex@feature/x".to_string())
+    );
+
+    chat.show_welcome_banner = false;
+    chat.config.tui_status_line = Some(vec!["project-root".to_string()]);
+    chat.refresh_status_line();
+
+    let width = 80;
+    let height = chat.desired_height(width);
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("create terminal");
+    terminal
+        .draw(|f| chat.render(f.area(), f.buffer_mut()))
+        .expect("draw project-root footer");
+    assert_snapshot!(
+        "status_line_project_root_worktree_footer",
+        terminal.backend()
+    );
 }
 
 #[tokio::test]

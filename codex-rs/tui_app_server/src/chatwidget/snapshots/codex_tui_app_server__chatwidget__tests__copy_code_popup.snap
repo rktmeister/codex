@@ -1,0 +1,16 @@
+---
+source: tui_app_server/src/chatwidget/tests.rs
+expression: popup
+---
+  Copy Code Block                              [bash] 1 line
+  Select a fenced block from the latest comp   1 git diff /tmp/base.rs /tmp/right.rs
+
+› 1. [bash] git diff /tmp/ba… 1 line. Press
+                              Enter to copy
+                              the raw code
+                              body.
+  2. [rust] fn render_previe… 3 lines
+  3. [text] plain text fallb… 1 line
+
+  Note: copies the raw code body without surrounding fences or visual wrapping.
+  Press enter to confirm or esc to go back

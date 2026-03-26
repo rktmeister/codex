@@ -42,6 +42,8 @@ pub struct ToolRouter {
     model_visible_specs: Vec<ToolSpec>,
 }
 
+const SHELL_TOOL_ALIASES: &[&str] = &["shell", "container.exec", "local_shell", "shell_command"];
+
 pub(crate) struct ToolRouterParams<'a> {
     pub(crate) mcp_tools: Option<HashMap<String, Tool>>,
     pub(crate) app_tools: Option<HashMap<String, ToolInfo>>,
@@ -109,10 +111,25 @@ impl ToolRouter {
     }
 
     pub fn tool_supports_parallel(&self, tool_name: &str) -> bool {
-        self.specs
+        let supports_parallel = self
+            .specs
             .iter()
-            .filter(|config| config.supports_parallel_tool_calls)
-            .any(|config| config.spec.name() == tool_name)
+            .find(|config| config.spec.name() == tool_name)
+            .map(|config| config.supports_parallel_tool_calls);
+        if let Some(supports_parallel) = supports_parallel {
+            return supports_parallel;
+        }
+
+        if SHELL_TOOL_ALIASES.contains(&tool_name) {
+            return self
+                .specs
+                .iter()
+                .find(|config| matches!(config.spec.name(), "shell_command" | "exec_command"))
+                .map(|config| config.supports_parallel_tool_calls)
+                .unwrap_or(false);
+        }
+
+        false
     }
 
     #[instrument(level = "trace", skip_all, err)]

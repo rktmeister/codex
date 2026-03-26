@@ -378,38 +378,9 @@ impl ChatWidget {
 
     fn status_line_project_root_name_for_cwd(&self, cwd: &Path) -> Option<String> {
         let root = self.status_line_project_root_for_cwd(cwd)?;
-        let root_name = root
-            .file_name()
-            .map(|name| name.to_string_lossy().to_string())
-            .unwrap_or_else(|| format_directory_display(&root, /*max_width*/ None));
-
-        let Some(main_root) = resolve_root_git_project_for_trust(cwd) else {
-            return Some(root_name);
-        };
-        if main_root == root {
-            return Some(root_name);
-        }
-
-        let main_name = main_root
-            .file_name()
-            .map(|name| name.to_string_lossy().to_string())
-            .unwrap_or_else(|| format_directory_display(&main_root, /*max_width*/ None));
-        let worktree_name = if let Ok(relative) = root.strip_prefix(main_root.join(".worktrees")) {
-            let relative = relative
-                .components()
-                .map(|component| component.as_os_str().to_string_lossy())
-                .collect::<Vec<_>>()
-                .join("/");
-            if relative.is_empty() {
-                root_name
-            } else {
-                relative
-            }
-        } else {
-            root_name
-        };
-
-        Some(format!("{main_name}@{worktree_name}"))
+        Some(project_root_display_name_for_cwd(cwd, &root, |path| {
+            format_directory_display(path, /*max_width*/ None)
+        }))
     }
 
     /// Returns a cached project-root display name for the active cwd.

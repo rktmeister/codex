@@ -1803,6 +1803,33 @@ fn create_test_sync_tool() -> ToolSpec {
             },
         ),
     ]);
+    let file_barrier_properties = BTreeMap::from([
+        (
+            "path".to_string(),
+            JsonSchema::String {
+                description: Some(
+                    "Filesystem path used by concurrent calls to signal readiness".to_string(),
+                ),
+            },
+        ),
+        (
+            "participants".to_string(),
+            JsonSchema::Number {
+                description: Some(
+                    "Number of tool calls that must signal before the file barrier opens"
+                        .to_string(),
+                ),
+            },
+        ),
+        (
+            "timeout_ms".to_string(),
+            JsonSchema::Number {
+                description: Some(
+                    "Maximum time in milliseconds to wait for the file barrier".to_string(),
+                ),
+            },
+        ),
+    ]);
 
     let properties = BTreeMap::from([
         (
@@ -1826,6 +1853,14 @@ fn create_test_sync_tool() -> ToolSpec {
             JsonSchema::Object {
                 properties: barrier_properties,
                 required: Some(vec!["id".to_string(), "participants".to_string()]),
+                additional_properties: Some(false.into()),
+            },
+        ),
+        (
+            "file_barrier".to_string(),
+            JsonSchema::Object {
+                properties: file_barrier_properties,
+                required: Some(vec!["path".to_string(), "participants".to_string()]),
                 additional_properties: Some(false.into()),
             },
         ),

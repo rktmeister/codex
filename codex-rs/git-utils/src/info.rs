@@ -696,6 +696,51 @@ pub fn resolve_root_git_project_for_trust(cwd: &Path) -> Option<PathBuf> {
     Some(canonicalize_or_raw(main_repo_root.to_path_buf()))
 }
 
+/// Format a project-root label for UI surfaces, including linked-worktree names.
+///
+/// When `cwd` lives inside a linked worktree rooted under `<main>/.worktrees/...`,
+/// the returned label uses the stable `<main>@<worktree>` shape so clients can
+/// distinguish the checkout from the main repository. Callers supply
+/// `format_path` for rare fallback cases where a path has no terminal filename.
+pub fn project_root_display_name_for_cwd<F>(cwd: &Path, root: &Path, format_path: F) -> String
+where
+    F: Fn(&Path) -> String,
+{
+    let root_name = root
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_else(|| format_path(root));
+
+    let Some(main_root) = resolve_root_git_project_for_trust(cwd) else {
+        return root_name;
+    };
+    if main_root == root {
+        return root_name;
+    }
+
+    let main_name = main_root
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_else(|| format_path(&main_root));
+    let worktrees_root = main_root.join(".worktrees");
+    let worktree_name = if let Ok(relative) = root.strip_prefix(&worktrees_root) {
+        let relative = relative
+            .components()
+            .map(|component| component.as_os_str().to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("/");
+        if relative.is_empty() {
+            root_name
+        } else {
+            relative
+        }
+    } else {
+        root_name
+    };
+
+    format!("{main_name}@{worktree_name}")
+}
+
 fn find_ancestor_git_entry(base_dir: &Path) -> Option<(PathBuf, PathBuf)> {
     let mut dir = base_dir.to_path_buf();
 
@@ -757,4 +802,89 @@ pub async fn current_branch_name(cwd: &Path) -> Option<String> {
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|name| !name.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::project_root_display_name_for_cwd;
+    use pretty_assertions::assert_eq;
+    use std::path::Path;
+    use std::process::Command;
+    use tempfile::tempdir;
+
+    fn run_git(cwd: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .output()
+            .expect("run git");
+        assert!(
+            output.status.success(),
+            "git {:?} failed\nstdout:{}\nstderr:{}",
+            args,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn project_root_display_name_returns_repo_name_for_main_checkout() {
+        let temp_dir = tempdir().expect("tempdir");
+        let repo_root = temp_dir.path().join("codex");
+        std::fs::create_dir_all(&repo_root).expect("create repo dir");
+
+        run_git(&repo_root, &["init"]);
+        run_git(&repo_root, &["config", "user.email", "test@example.com"]);
+        run_git(&repo_root, &["config", "user.name", "Test User"]);
+        std::fs::write(repo_root.join("README.md"), "hello\n").expect("write seed file");
+        run_git(&repo_root, &["add", "README.md"]);
+        run_git(&repo_root, &["commit", "-m", "initial"]);
+
+        let nested = repo_root.join("src");
+        std::fs::create_dir_all(&nested).expect("create nested dir");
+
+        assert_eq!(
+            project_root_display_name_for_cwd(&nested, &repo_root, |path| path
+                .display()
+                .to_string()),
+            "codex"
+        );
+    }
+
+    #[test]
+    fn project_root_display_name_uses_worktree_suffix_for_linked_checkout() {
+        let temp_dir = tempdir().expect("tempdir");
+        let repo_root = temp_dir.path().join("codex");
+        std::fs::create_dir_all(&repo_root).expect("create repo dir");
+
+        run_git(&repo_root, &["init"]);
+        run_git(&repo_root, &["config", "user.email", "test@example.com"]);
+        run_git(&repo_root, &["config", "user.name", "Test User"]);
+        std::fs::write(repo_root.join("README.md"), "hello\n").expect("write seed file");
+        run_git(&repo_root, &["add", "README.md"]);
+        run_git(&repo_root, &["commit", "-m", "initial"]);
+
+        let worktree_root = repo_root.join(".worktrees").join("feature").join("x");
+        std::fs::create_dir_all(
+            worktree_root
+                .parent()
+                .expect("worktree root should have a parent"),
+        )
+        .expect("create worktree parent");
+        let worktree_root_str = worktree_root.to_str().expect("utf-8 worktree path");
+        run_git(
+            &repo_root,
+            &["worktree", "add", "-b", "feature/x", worktree_root_str],
+        );
+
+        let nested = worktree_root.join("nested");
+        std::fs::create_dir_all(&nested).expect("create nested dir");
+
+        assert_eq!(
+            project_root_display_name_for_cwd(&nested, &worktree_root, |path| path
+                .display()
+                .to_string()),
+            "codex@feature/x"
+        );
+    }
 }

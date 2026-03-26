@@ -11,6 +11,7 @@ pub(crate) mod multi_agents_common;
 pub(crate) mod multi_agents_v2;
 mod plan;
 mod py_repl;
+mod repl;
 mod request_permissions;
 mod request_user_input;
 mod shell;
