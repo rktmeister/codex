@@ -23,6 +23,7 @@ use crate::chatwidget::ThreadInputState;
 use crate::clipboard_text;
 use crate::cwd_prompt::CwdPromptAction;
 use crate::diff_render::DiffSummary;
+use crate::exec_command::split_command_string;
 use crate::exec_command::strip_bash_lc_and_escape;
 use crate::external_editor;
 use crate::file_search::FileSearchManager;
@@ -948,6 +949,8 @@ pub(crate) struct App {
     pub(crate) commit_anim_running: Arc<AtomicBool>,
     // Shared across ChatWidget instances so invalid status-line config warnings only emit once.
     status_line_invalid_items_warned: Arc<AtomicBool>,
+    // Shared across ChatWidget instances so invalid terminal-title config warnings only emit once.
+    terminal_title_invalid_items_warned: Arc<AtomicBool>,
 
     // Esc-backtracking state grouped
     pub(crate) backtrack: crate::app_backtrack::BacktrackState,
@@ -959,6 +962,7 @@ pub(crate) struct App {
     pub(crate) feedback: codex_feedback::CodexFeedback,
     feedback_audience: FeedbackAudience,
     remote_app_server_url: Option<String>,
+    remote_app_server_auth_token: Option<String>,
     /// Set when the user confirms an update; propagated on exit.
     pub(crate) pending_update_action: Option<UpdateAction>,
 
@@ -1052,6 +1056,7 @@ impl App {
             model: Some(self.chat_widget.current_model().to_string()),
             startup_tooltip_override: None,
             status_line_invalid_items_warned: self.status_line_invalid_items_warned.clone(),
+            terminal_title_invalid_items_warned: self.terminal_title_invalid_items_warned.clone(),
             session_telemetry: self.session_telemetry.clone(),
         }
     }
@@ -1702,7 +1707,11 @@ impl App {
                         .approval_id
                         .clone()
                         .unwrap_or_else(|| params.item_id.clone()),
-                    command: params.command.clone().into_iter().collect(),
+                    command: params
+                        .command
+                        .as_deref()
+                        .map(split_command_string)
+                        .unwrap_or_default(),
                     reason: params.reason.clone(),
                     available_decisions: params
                         .available_decisions
@@ -2723,6 +2732,14 @@ impl App {
     /// This helper copies every known nickname/role from `AgentNavigationState` into the
     /// replacement widget so that replayed collab items render agent names immediately.
     fn replace_chat_widget(&mut self, mut chat_widget: ChatWidget) {
+        // Transfer the last-written terminal title to the replacement widget
+        // so it knows what OSC title is currently displayed. Without this, the
+        // new widget would redundantly clear and rewrite the same title, causing
+        // a visible flicker in some terminals.
+        let previous_terminal_title = self.chat_widget.last_terminal_title.take();
+        if chat_widget.last_terminal_title.is_none() {
+            chat_widget.last_terminal_title = previous_terminal_title;
+        }
         for (thread_id, entry) in self.agent_navigation.ordered_threads() {
             chat_widget.set_collab_agent_metadata(
                 thread_id,
@@ -3120,6 +3137,7 @@ impl App {
         is_first_run: bool,
         should_prompt_windows_sandbox_nux_at_startup: bool,
         remote_app_server_url: Option<String>,
+        remote_app_server_auth_token: Option<String>,
     ) -> Result<AppExitInfo> {
         use tokio_stream::StreamExt;
         let (app_event_tx, mut app_event_rx) = unbounded_channel();
@@ -3189,6 +3207,7 @@ impl App {
         }
 
         let status_line_invalid_items_warned = Arc::new(AtomicBool::new(false));
+        let terminal_title_invalid_items_warned = Arc::new(AtomicBool::new(false));
 
         let enhanced_keys_supported = tui.enhanced_keys_supported();
         let wait_for_initial_session_configured =
@@ -3220,6 +3239,8 @@ impl App {
                     model: Some(model.clone()),
                     startup_tooltip_override,
                     status_line_invalid_items_warned: status_line_invalid_items_warned.clone(),
+                    terminal_title_invalid_items_warned: terminal_title_invalid_items_warned
+                        .clone(),
                     session_telemetry: session_telemetry.clone(),
                 };
                 (ChatWidget::new_with_app_event(init), Some(started))
@@ -3253,6 +3274,8 @@ impl App {
                     model: config.model.clone(),
                     startup_tooltip_override: None,
                     status_line_invalid_items_warned: status_line_invalid_items_warned.clone(),
+                    terminal_title_invalid_items_warned: terminal_title_invalid_items_warned
+                        .clone(),
                     session_telemetry: session_telemetry.clone(),
                 };
                 (ChatWidget::new_with_app_event(init), Some(resumed))
@@ -3291,6 +3314,8 @@ impl App {
                     model: config.model.clone(),
                     startup_tooltip_override: None,
                     status_line_invalid_items_warned: status_line_invalid_items_warned.clone(),
+                    terminal_title_invalid_items_warned: terminal_title_invalid_items_warned
+                        .clone(),
                     session_telemetry: session_telemetry.clone(),
                 };
                 (ChatWidget::new_with_app_event(init), Some(forked))
@@ -3326,11 +3351,13 @@ impl App {
             has_emitted_history_lines: false,
             commit_anim_running: Arc::new(AtomicBool::new(false)),
             status_line_invalid_items_warned: status_line_invalid_items_warned.clone(),
+            terminal_title_invalid_items_warned: terminal_title_invalid_items_warned.clone(),
             backtrack: BacktrackState::default(),
             backtrack_render_pending: false,
             feedback: feedback.clone(),
             feedback_audience,
             remote_app_server_url,
+            remote_app_server_auth_token,
             pending_update_action: None,
             pending_shutdown_exit_thread_id: None,
             windows_sandbox: WindowsSandboxState::default(),
@@ -3579,7 +3606,10 @@ impl App {
                 let picker_app_server = match crate::start_app_server_for_picker(
                     &self.config,
                     &match self.remote_app_server_url.clone() {
-                        Some(websocket_url) => crate::AppServerTarget::Remote(websocket_url),
+                        Some(websocket_url) => crate::AppServerTarget::Remote {
+                            websocket_url,
+                            auth_token: self.remote_app_server_auth_token.clone(),
+                        },
                         None => crate::AppServerTarget::Embedded,
                     },
                 )
@@ -5010,6 +5040,33 @@ impl App {
             AppEvent::StatusLineSetupCancelled => {
                 self.chat_widget.cancel_status_line_setup();
             }
+            AppEvent::TerminalTitleSetup { items } => {
+                let ids = items.iter().map(ToString::to_string).collect::<Vec<_>>();
+                let edit = codex_core::config::edit::terminal_title_items_edit(&ids);
+                let apply_result = ConfigEditsBuilder::new(&self.config.codex_home)
+                    .with_edits([edit])
+                    .apply()
+                    .await;
+                match apply_result {
+                    Ok(()) => {
+                        self.config.tui_terminal_title = Some(ids.clone());
+                        self.chat_widget.setup_terminal_title(items);
+                    }
+                    Err(err) => {
+                        tracing::error!(error = %err, "failed to persist terminal title items; keeping previous selection");
+                        self.chat_widget.revert_terminal_title_setup_preview();
+                        self.chat_widget.add_error_message(format!(
+                            "Failed to save terminal title items: {err}"
+                        ));
+                    }
+                }
+            }
+            AppEvent::TerminalTitleSetupPreview { items } => {
+                self.chat_widget.preview_terminal_title(items);
+            }
+            AppEvent::TerminalTitleSetupCancelled => {
+                self.chat_widget.cancel_terminal_title_setup();
+            }
             AppEvent::SyntaxThemeSelected { name } => {
                 let edit = codex_core::config::edit::syntax_theme_edit(&name);
                 let apply_result = ConfigEditsBuilder::new(&self.config.codex_home)
@@ -5652,6 +5709,14 @@ fn mcp_inventory_maps_from_statuses(statuses: Vec<McpServerStatus>) -> McpInvent
     (tools, resources, resource_templates, auth_statuses)
 }
 
+impl Drop for App {
+    fn drop(&mut self) {
+        if let Err(err) = self.chat_widget.clear_managed_terminal_title() {
+            tracing::debug!(error = %err, "failed to clear terminal title on app drop");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5981,6 +6046,7 @@ mod tests {
             model: Some(model),
             startup_tooltip_override: None,
             status_line_invalid_items_warned: app.status_line_invalid_items_warned.clone(),
+            terminal_title_invalid_items_warned: app.terminal_title_invalid_items_warned.clone(),
             session_telemetry: app.session_telemetry.clone(),
         });
 
@@ -7516,7 +7582,6 @@ guardian_approval = true
                 enabled: Some(true),
             }),
             file_system: None,
-            macos: None,
         });
         params.proposed_network_policy_amendments = Some(vec![AppServerNetworkPolicyAmendment {
             host: "example.com".to_string(),
@@ -7549,7 +7614,6 @@ guardian_approval = true
                     enabled: Some(true),
                 }),
                 file_system: None,
-                macos: None,
             })
         );
         assert_eq!(
@@ -7564,6 +7628,36 @@ guardian_approval = true
                     },
                 },
                 codex_protocol::protocol::ReviewDecision::Abort,
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn inactive_thread_exec_approval_splits_shell_wrapped_command() {
+        let app = make_test_app().await;
+        let thread_id = ThreadId::new();
+        let script = r#"python3 -c 'print("Hello, world!")'"#;
+        let mut request = exec_approval_request(thread_id, "turn-approval", "call-approval", None);
+        let ServerRequest::CommandExecutionRequestApproval { params, .. } = &mut request else {
+            panic!("expected exec approval request");
+        };
+        params.command = Some(
+            shlex::try_join(["/bin/zsh", "-lc", script]).expect("round-trippable shell wrapper"),
+        );
+
+        let Some(ThreadInteractiveRequest::Approval(ApprovalRequest::Exec { command, .. })) = app
+            .interactive_request_for_thread_request(thread_id, &request)
+            .await
+        else {
+            panic!("expected exec approval request");
+        };
+
+        assert_eq!(
+            command,
+            vec![
+                "/bin/zsh".to_string(),
+                "-lc".to_string(),
+                script.to_string(),
             ]
         );
     }
@@ -8095,11 +8189,13 @@ guardian_approval = true
             enhanced_keys_supported: false,
             commit_anim_running: Arc::new(AtomicBool::new(false)),
             status_line_invalid_items_warned: Arc::new(AtomicBool::new(false)),
+            terminal_title_invalid_items_warned: Arc::new(AtomicBool::new(false)),
             backtrack: BacktrackState::default(),
             backtrack_render_pending: false,
             feedback: codex_feedback::CodexFeedback::new(),
             feedback_audience: FeedbackAudience::External,
             remote_app_server_url: None,
+            remote_app_server_auth_token: None,
             pending_update_action: None,
             pending_shutdown_exit_thread_id: None,
             windows_sandbox: WindowsSandboxState::default(),
@@ -8147,11 +8243,13 @@ guardian_approval = true
                 enhanced_keys_supported: false,
                 commit_anim_running: Arc::new(AtomicBool::new(false)),
                 status_line_invalid_items_warned: Arc::new(AtomicBool::new(false)),
+                terminal_title_invalid_items_warned: Arc::new(AtomicBool::new(false)),
                 backtrack: BacktrackState::default(),
                 backtrack_render_pending: false,
                 feedback: codex_feedback::CodexFeedback::new(),
                 feedback_audience: FeedbackAudience::External,
                 remote_app_server_url: None,
+                remote_app_server_auth_token: None,
                 pending_update_action: None,
                 pending_shutdown_exit_thread_id: None,
                 windows_sandbox: WindowsSandboxState::default(),
@@ -8285,7 +8383,6 @@ guardian_approval = true
                 cwd: Some(PathBuf::from("/tmp/project")),
                 command_actions: None,
                 additional_permissions: None,
-                skill_metadata: None,
                 proposed_execpolicy_amendment: None,
                 proposed_network_policy_amendments: None,
                 available_decisions: None,
@@ -9277,6 +9374,7 @@ guardian_approval = true
             model: Some(app.chat_widget.current_model().to_string()),
             startup_tooltip_override: None,
             status_line_invalid_items_warned: app.status_line_invalid_items_warned.clone(),
+            terminal_title_invalid_items_warned: app.terminal_title_invalid_items_warned.clone(),
             session_telemetry: app.session_telemetry.clone(),
         });
         app.replace_chat_widget(replacement);

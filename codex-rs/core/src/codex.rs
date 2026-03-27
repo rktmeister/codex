@@ -75,7 +75,6 @@ use codex_otel::current_span_w3c_trace_context;
 use codex_otel::set_parent_from_w3c_trace_context;
 use codex_protocol::ThreadId;
 use codex_protocol::approvals::ElicitationRequestEvent;
-use codex_protocol::approvals::ExecApprovalRequestSkillMetadata;
 use codex_protocol::approvals::ExecPolicyAmendment;
 use codex_protocol::approvals::NetworkPolicyAmendment;
 use codex_protocol::approvals::NetworkPolicyRuleAction;
@@ -896,6 +895,7 @@ pub(crate) struct TurnContext {
     pub(crate) features: ManagedFeatures,
     pub(crate) ghost_snapshot: GhostSnapshotConfig,
     pub(crate) final_output_json_schema: Option<Value>,
+    pub(crate) codex_self_exe: Option<PathBuf>,
     pub(crate) codex_linux_sandbox_exe: Option<PathBuf>,
     pub(crate) tool_call_gate: Arc<ReadinessFlag>,
     pub(crate) truncation_policy: TruncationPolicy,
@@ -1004,6 +1004,7 @@ impl TurnContext {
             features,
             ghost_snapshot: self.ghost_snapshot.clone(),
             final_output_json_schema: self.final_output_json_schema.clone(),
+            codex_self_exe: self.codex_self_exe.clone(),
             codex_linux_sandbox_exe: self.codex_linux_sandbox_exe.clone(),
             tool_call_gate: Arc::new(ReadinessFlag::new()),
             truncation_policy,
@@ -1059,8 +1060,16 @@ impl TurnContext {
             .network
             .as_ref()?;
         Some(TurnContextNetworkItem {
-            allowed_domains: network.allowed_domains.clone().unwrap_or_default(),
-            denied_domains: network.denied_domains.clone().unwrap_or_default(),
+            allowed_domains: network
+                .domains
+                .as_ref()
+                .and_then(codex_config::NetworkDomainPermissionsToml::allowed_domains)
+                .unwrap_or_default(),
+            denied_domains: network
+                .domains
+                .as_ref()
+                .and_then(codex_config::NetworkDomainPermissionsToml::denied_domains)
+                .unwrap_or_default(),
         })
     }
 }
@@ -1463,6 +1472,7 @@ impl Session {
             features: per_turn_config.features.clone(),
             ghost_snapshot: per_turn_config.ghost_snapshot.clone(),
             final_output_json_schema: None,
+            codex_self_exe: per_turn_config.codex_self_exe.clone(),
             codex_linux_sandbox_exe: per_turn_config.codex_linux_sandbox_exe.clone(),
             tool_call_gate: Arc::new(ReadinessFlag::new()),
             truncation_policy: model_info.truncation_policy.into(),
@@ -1900,7 +1910,6 @@ impl Session {
             session_telemetry,
             models_manager: Arc::clone(&models_manager),
             tool_approvals: Mutex::new(ApprovalStore::default()),
-            execve_session_approvals: RwLock::new(HashMap::new()),
             skills_manager,
             plugins_manager: Arc::clone(&plugins_manager),
             mcp_manager: Arc::clone(&mcp_manager),
@@ -2934,7 +2943,6 @@ impl Session {
         network_approval_context: Option<NetworkApprovalContext>,
         proposed_execpolicy_amendment: Option<ExecPolicyAmendment>,
         additional_permissions: Option<PermissionProfile>,
-        skill_metadata: Option<ExecApprovalRequestSkillMetadata>,
         available_decisions: Option<Vec<ReviewDecision>>,
     ) -> ReviewDecision {
         //  command-level approvals use `call_id`.
@@ -2988,7 +2996,6 @@ impl Session {
             proposed_execpolicy_amendment,
             proposed_network_policy_amendments,
             additional_permissions,
-            skill_metadata,
             available_decisions: Some(available_decisions),
             parsed_cmd,
         });
@@ -5516,6 +5523,7 @@ async fn spawn_review_thread(
         shell_environment_policy: parent_turn_context.shell_environment_policy.clone(),
         cwd: parent_turn_context.cwd.clone(),
         final_output_json_schema: None,
+        codex_self_exe: parent_turn_context.codex_self_exe.clone(),
         codex_linux_sandbox_exe: parent_turn_context.codex_linux_sandbox_exe.clone(),
         tool_call_gate: Arc::new(ReadinessFlag::new()),
         js_repl: Arc::clone(&sess.js_repl),

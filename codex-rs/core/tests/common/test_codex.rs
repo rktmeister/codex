@@ -41,6 +41,7 @@ use crate::PathBufExt;
 use crate::PathExt;
 use crate::RemoteEnvConfig;
 use crate::TempDirExt;
+use crate::find_codex_linux_sandbox_exe;
 use crate::find_test_codex_exe;
 use crate::get_remote_test_env;
 use crate::load_default_config_for_test;
@@ -568,8 +569,26 @@ impl TestCodexBuilder {
         for hook in self.pre_build_hooks.drain(..) {
             hook(home.path());
         }
-        if let Ok(path) = find_test_codex_exe() {
+        if let Ok(path) = find_codex_linux_sandbox_exe() {
             config.codex_linux_sandbox_exe = Some(path);
+        }
+
+        if let Ok(path) = find_test_codex_exe() {
+            config.codex_self_exe = Some(path);
+        } else if let Ok(path) = codex_utils_cargo_bin::cargo_bin("codex-exec") {
+            // `codex-exec` also supports `--codex-run-as-apply-patch`, so use it
+            // when the multitool binary is not available in test builds.
+            config.codex_self_exe = Some(path);
+        } else if let Ok(exe) = std::env::current_exe()
+            && let Some(bin_dir) = exe.parent().and_then(|parent| parent.parent())
+        {
+            let codex = bin_dir.join("codex");
+            let codex_exec = bin_dir.join("codex-exec");
+            if codex.is_file() {
+                config.codex_self_exe = Some(codex);
+            } else if codex_exec.is_file() {
+                config.codex_self_exe = Some(codex_exec);
+            }
         }
 
         let mut mutators = vec![];
@@ -779,7 +798,9 @@ impl TestCodexHarness {
     }
 
     pub async fn submit(&self, prompt: &str) -> Result<()> {
-        self.test.submit_turn(prompt).await
+        // Box the submit-and-wait path so callers do not inline the full turn
+        // future into their own async state.
+        Box::pin(self.test.submit_turn(prompt)).await
     }
 
     pub async fn submit_with_policy(
@@ -831,13 +852,17 @@ impl TestCodexHarness {
         call_id: &str,
         output_type: ApplyPatchModelOutput,
     ) -> String {
+        // Box the awaited output helpers so callers do not inline request
+        // capture and response parsing into their own async state.
         match output_type {
-            ApplyPatchModelOutput::Freeform => self.custom_tool_call_output(call_id).await,
+            ApplyPatchModelOutput::Freeform => {
+                Box::pin(self.custom_tool_call_output(call_id)).await
+            }
             ApplyPatchModelOutput::Function
             | ApplyPatchModelOutput::Shell
             | ApplyPatchModelOutput::ShellViaHeredoc
             | ApplyPatchModelOutput::ShellCommandViaHeredoc => {
-                self.function_call_stdout(call_id).await
+                Box::pin(self.function_call_stdout(call_id)).await
             }
         }
     }

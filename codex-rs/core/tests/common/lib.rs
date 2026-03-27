@@ -29,6 +29,9 @@ pub mod zsh_fork;
 
 static TEST_ARG0_PATH_ENTRY: OnceLock<Option<Arg0PathEntryGuard>> = OnceLock::new();
 
+#[cfg(target_os = "linux")]
+const CODEX_LINUX_SANDBOX_PROGRAM: &str = "codex-linux-sandbox";
+
 #[ctor]
 fn enable_deterministic_unified_exec_process_ids_for_tests() {
     codex_core::test_support::set_thread_manager_test_mode(/*enabled*/ true);
@@ -216,10 +219,9 @@ fn find_adjacent_test_binary(program: &str) -> Option<PathBuf> {
 #[cfg(target_os = "linux")]
 fn default_test_overrides() -> ConfigOverrides {
     ConfigOverrides {
-        // Sandbox apply_patch flows self-invoke the main `codex` binary with
-        // `--codex-run-as-apply-patch`, so test config must not fall back to
-        // the standalone helper or the arg0 alias on PATH.
-        codex_linux_sandbox_exe: find_test_codex_exe().ok(),
+        codex_linux_sandbox_exe: Some(
+            find_codex_linux_sandbox_exe().expect("should find binary for codex-linux-sandbox"),
+        ),
         ..ConfigOverrides::default()
     }
 }
@@ -231,6 +233,20 @@ fn default_test_overrides() -> ConfigOverrides {
 
 #[cfg(target_os = "linux")]
 pub fn find_codex_linux_sandbox_exe() -> Result<PathBuf, CargoBinError> {
+    if let Some(path) = TEST_ARG0_PATH_ENTRY
+        .get()
+        .and_then(Option::as_ref)
+        .and_then(|path_entry| path_entry.paths().codex_linux_sandbox_exe.clone())
+    {
+        return Ok(path);
+    }
+
+    if let Ok(path) = std::env::current_exe()
+        && path.file_name().and_then(|name| name.to_str()) == Some(CODEX_LINUX_SANDBOX_PROGRAM)
+    {
+        return Ok(path);
+    }
+
     find_test_codex_linux_sandbox_exe()
 }
 

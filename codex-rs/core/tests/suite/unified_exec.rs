@@ -947,13 +947,16 @@ async fn unified_exec_terminal_interaction_captures_delayed_output() -> Result<(
 
     let open_call_id = "uexec-delayed-open";
     let open_args = json!({
-        "cmd": "sleep 3 && echo MARKER1 && sleep 3 && echo MARKER2",
+        "shell": "bash",
+        "cmd": "read -n 1 _ && read -n 1 _ && echo MARKER1 && read -n 1 _ && echo MARKER2",
         "yield_time_ms": 10,
         "tty": true,
     });
 
-    // Poll stdin three times: first for no output, second after the first marker,
-    // and a final long poll to capture the second marker.
+    // Poll stdin three times against a command that only advances when each
+    // byte arrives. This keeps the test deterministic even under full-suite
+    // load where wall-clock sleeps can make the third poll race with process
+    // exit.
     let first_poll_call_id = "uexec-delayed-poll-1";
     let first_poll_args = json!({
         "chars": "x",
@@ -965,14 +968,14 @@ async fn unified_exec_terminal_interaction_captures_delayed_output() -> Result<(
     let second_poll_args = json!({
         "chars": "x",
         "session_id": 1000,
-        "yield_time_ms": 4000,
+        "yield_time_ms": 500,
     });
 
     let third_poll_call_id = "uexec-delayed-poll-3";
     let third_poll_args = json!({
         "chars": "x",
         "session_id": 1000,
-        "yield_time_ms": 6000,
+        "yield_time_ms": 500,
     });
 
     let responses = vec![
@@ -1209,13 +1212,23 @@ async fn unified_exec_emits_one_begin_and_one_end_event() -> Result<()> {
 
     let mut begin_events = Vec::new();
     let mut end_events = Vec::new();
+    let mut task_completed = false;
     loop {
         let event_msg = wait_for_event(&codex, |_| true).await;
         match event_msg {
-            EventMsg::ExecCommandBegin(event) => begin_events.push(event),
-            EventMsg::ExecCommandEnd(event) => end_events.push(event),
-            EventMsg::TurnComplete(_) => break,
+            EventMsg::ExecCommandBegin(event) if event.call_id == open_call_id => {
+                begin_events.push(event);
+            }
+            EventMsg::ExecCommandEnd(event) if event.call_id == open_call_id => {
+                end_events.push(event);
+            }
+            EventMsg::TurnComplete(_) => {
+                task_completed = true;
+            }
             _ => {}
+        }
+        if task_completed && !end_events.is_empty() {
+            break;
         }
     }
 

@@ -659,7 +659,7 @@ impl PyReplManager {
         env.insert("PYTHONDONTWRITEBYTECODE".to_string(), "1".to_string());
 
         let command = SandboxCommand {
-            program: self.python_path.to_string_lossy().to_string(),
+            program: self.python_path.clone().into_os_string(),
             args: vec!["-u".to_string(), kernel_path.to_string_lossy().to_string()],
             cwd: turn.cwd.clone().to_path_buf(),
             env,
