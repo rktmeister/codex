@@ -6,7 +6,6 @@ use std::time::Instant;
 
 use crate::exec::ExecToolCallOutput;
 use crate::exec::StreamOutput;
-use crate::features::Feature;
 use crate::function_tool::FunctionCallError;
 use crate::protocol::ExecCommandSource;
 use crate::tools::context::FunctionToolOutput;
@@ -21,6 +20,7 @@ use crate::tools::py_repl::PY_REPL_PRAGMA_PREFIX;
 use crate::tools::py_repl::PyReplArgs;
 use crate::tools::registry::ToolHandler;
 use crate::tools::registry::ToolKind;
+use codex_features::Feature;
 use codex_protocol::models::FunctionCallOutputContentItem;
 
 pub struct PyReplHandler;
@@ -61,7 +61,7 @@ async fn emit_py_repl_exec_begin(
 ) {
     let emitter = ToolEmitter::shell(
         vec!["py_repl".to_string()],
-        turn.cwd.clone(),
+        turn.cwd.to_path_buf(),
         ExecCommandSource::Agent,
         false,
     );
@@ -80,7 +80,7 @@ async fn emit_py_repl_exec_end(
     let exec_output = build_py_repl_exec_output(output, error, duration);
     let emitter = ToolEmitter::shell(
         vec!["py_repl".to_string()],
-        turn.cwd.clone(),
+        turn.cwd.to_path_buf(),
         ExecCommandSource::Agent,
         false,
     );
@@ -366,7 +366,7 @@ mod tests {
         assert_eq!(event.call_id, "call-1");
         assert_eq!(event.turn_id, turn.sub_id);
         assert_eq!(event.command, vec!["py_repl".to_string()]);
-        assert_eq!(event.cwd, turn.cwd);
+        assert_eq!(event.cwd, turn.cwd.to_path_buf());
         assert_eq!(event.source, ExecCommandSource::Agent);
         assert_eq!(event.interaction_input, None);
         assert_eq!(event.stdout, "hello");

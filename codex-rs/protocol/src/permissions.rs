@@ -282,6 +282,7 @@ impl FileSystemSandboxPolicy {
             if let Ok(cwd_root) = AbsolutePathBuf::from_absolute_path(cwd) {
                 for protected_path in default_read_only_subpaths_for_writable_root(
                     &cwd_root, /*protect_missing_dot_codex*/ true,
+                    /*is_git_admin_root*/ false,
                 ) {
                     append_default_read_only_path_if_no_explicit_rule(
                         &mut file_system_policy.entries,
@@ -293,6 +294,7 @@ impl FileSystemSandboxPolicy {
                 for protected_path in default_read_only_subpaths_for_writable_root(
                     writable_root,
                     /*protect_missing_dot_codex*/ false,
+                    /*is_git_admin_root*/ false,
                 ) {
                     append_default_read_only_path_if_no_explicit_rule(
                         &mut file_system_policy.entries,
@@ -461,99 +463,130 @@ impl FileSystemSandboxPolicy {
             .map(|entry| entry.path.clone())
             .collect();
 
-        dedup_absolute_paths(
+        let mut roots = dedup_absolute_paths(
             writable_entries.clone(),
             /*normalize_effective_paths*/ true,
-        )
-        .into_iter()
-        .map(|root| {
-            // Filesystem-root policies stay in their effective canonical form
-            // so root-wide aliases do not create duplicate top-level masks.
-            // Example: keep `/var/...` normalized under `/` instead of
-            // materializing both `/var/...` and `/private/var/...`.
-            let preserve_raw_carveout_paths = root.as_path().parent().is_some();
-            let raw_writable_roots: Vec<&AbsolutePathBuf> = writable_entries
-                .iter()
-                .filter(|path| normalize_effective_absolute_path((*path).clone()) == root)
-                .collect();
-            let protect_missing_dot_codex = AbsolutePathBuf::from_absolute_path(cwd)
-                .ok()
-                .is_some_and(|cwd| normalize_effective_absolute_path(cwd) == root);
-            let mut read_only_subpaths: Vec<AbsolutePathBuf> =
-                default_read_only_subpaths_for_writable_root(&root, protect_missing_dot_codex)
+        );
+        let mut git_admin_roots = Vec::new();
+        for writable_root in &roots {
+            #[allow(clippy::expect_used)]
+            let top_level_git = writable_root
+                .join(".git")
+                .expect(".git is a valid relative path");
+            if is_git_pointer_file(&top_level_git)
+                && let Some(gitdir) = resolve_gitdir_from_file(&top_level_git)
+                && gitdir.as_path().is_dir()
+            {
+                let gitdir = normalize_effective_absolute_path(gitdir);
+                git_admin_roots.push(gitdir.clone());
+                if let Some(commondir) = resolve_commondir_from_gitdir(&gitdir)
+                    && commondir.as_path().is_dir()
+                {
+                    git_admin_roots.push(normalize_effective_absolute_path(commondir));
+                }
+            }
+        }
+        roots.extend(git_admin_roots.iter().cloned());
+        let roots = dedup_absolute_paths(roots, /*normalize_effective_paths*/ true);
+        let git_admin_root_set: HashSet<PathBuf> = git_admin_roots
+            .into_iter()
+            .map(codex_utils_absolute_path::AbsolutePathBuf::into_path_buf)
+            .collect();
+        roots
+            .into_iter()
+            .map(|root| {
+                // Filesystem-root policies stay in their effective canonical form
+                // so root-wide aliases do not create duplicate top-level masks.
+                // Example: keep `/var/...` normalized under `/` instead of
+                // materializing both `/var/...` and `/private/var/...`.
+                let preserve_raw_carveout_paths = root.as_path().parent().is_some();
+                let raw_writable_roots: Vec<&AbsolutePathBuf> = writable_entries
+                    .iter()
+                    .filter(|path| normalize_effective_absolute_path((*path).clone()) == root)
+                    .collect();
+                let protect_missing_dot_codex = AbsolutePathBuf::from_absolute_path(cwd)
+                    .ok()
+                    .is_some_and(|cwd| normalize_effective_absolute_path(cwd) == root);
+                let mut read_only_subpaths: Vec<AbsolutePathBuf> =
+                    default_read_only_subpaths_for_writable_root(
+                        &root,
+                        protect_missing_dot_codex,
+                        git_admin_root_set.contains(root.as_path()),
+                    )
                     .into_iter()
                     .filter(|path| !has_explicit_resolved_path_entry(&resolved_entries, path))
                     .collect();
-            // Narrower explicit non-write entries carve out broader writable roots.
-            // More specific write entries still remain writable because they appear
-            // as separate WritableRoot values and are checked independently.
-            // Preserve symlink path components that live under the writable root
-            // so downstream sandboxes can still mask the symlink inode itself.
-            // Example: if `<root>/.codex -> <root>/decoy`, bwrap must still see
-            // `<root>/.codex`, not only the resolved `<root>/decoy`.
-            read_only_subpaths.extend(
-                resolved_entries
-                    .iter()
-                    .filter(|entry| !entry.access.can_write())
-                    .filter(|entry| !self.can_write_path_with_cwd(entry.path.as_path(), cwd))
-                    .filter_map(|entry| {
-                        let effective_path = normalize_effective_absolute_path(entry.path.clone());
-                        // Preserve the literal in-root path whenever the
-                        // carveout itself lives under this writable root, even
-                        // if following symlinks would resolve back to the root
-                        // or escape outside it. Downstream sandboxes need that
-                        // raw path so they can mask the symlink inode itself.
-                        // Examples:
-                        // - `<root>/linked-private -> <root>/decoy-private`
-                        // - `<root>/linked-private -> /tmp/outside-private`
-                        // - `<root>/alias-root -> <root>`
-                        let raw_carveout_path = if preserve_raw_carveout_paths {
-                            if entry.path == root {
-                                None
-                            } else if entry.path.as_path().starts_with(root.as_path()) {
-                                Some(entry.path.clone())
+                // Narrower explicit non-write entries carve out broader writable roots.
+                // More specific write entries still remain writable because they appear
+                // as separate WritableRoot values and are checked independently.
+                // Preserve symlink path components that live under the writable root
+                // so downstream sandboxes can still mask the symlink inode itself.
+                // Example: if `<root>/.codex -> <root>/decoy`, bwrap must still see
+                // `<root>/.codex`, not only the resolved `<root>/decoy`.
+                read_only_subpaths.extend(
+                    resolved_entries
+                        .iter()
+                        .filter(|entry| !entry.access.can_write())
+                        .filter(|entry| !self.can_write_path_with_cwd(entry.path.as_path(), cwd))
+                        .filter_map(|entry| {
+                            let effective_path =
+                                normalize_effective_absolute_path(entry.path.clone());
+                            // Preserve the literal in-root path whenever the
+                            // carveout itself lives under this writable root, even
+                            // if following symlinks would resolve back to the root
+                            // or escape outside it. Downstream sandboxes need that
+                            // raw path so they can mask the symlink inode itself.
+                            // Examples:
+                            // - `<root>/linked-private -> <root>/decoy-private`
+                            // - `<root>/linked-private -> /tmp/outside-private`
+                            // - `<root>/alias-root -> <root>`
+                            let raw_carveout_path = if preserve_raw_carveout_paths {
+                                if entry.path == root {
+                                    None
+                                } else if entry.path.as_path().starts_with(root.as_path()) {
+                                    Some(entry.path.clone())
+                                } else {
+                                    raw_writable_roots.iter().find_map(|raw_root| {
+                                        let suffix = entry
+                                            .path
+                                            .as_path()
+                                            .strip_prefix(raw_root.as_path())
+                                            .ok()?;
+                                        if suffix.as_os_str().is_empty() {
+                                            return None;
+                                        }
+                                        root.join(suffix).ok()
+                                    })
+                                }
                             } else {
-                                raw_writable_roots.iter().find_map(|raw_root| {
-                                    let suffix = entry
-                                        .path
-                                        .as_path()
-                                        .strip_prefix(raw_root.as_path())
-                                        .ok()?;
-                                    if suffix.as_os_str().is_empty() {
-                                        return None;
-                                    }
-                                    root.join(suffix).ok()
-                                })
+                                None
+                            };
+
+                            if let Some(raw_carveout_path) = raw_carveout_path {
+                                return Some(raw_carveout_path);
                             }
-                        } else {
-                            None
-                        };
 
-                        if let Some(raw_carveout_path) = raw_carveout_path {
-                            return Some(raw_carveout_path);
-                        }
+                            if effective_path == root
+                                || !effective_path.as_path().starts_with(root.as_path())
+                            {
+                                return None;
+                            }
 
-                        if effective_path == root
-                            || !effective_path.as_path().starts_with(root.as_path())
-                        {
-                            return None;
-                        }
-
-                        Some(effective_path)
-                    }),
-            );
-            WritableRoot {
-                root,
-                // Preserve literal in-root protected paths like `.git` and
-                // `.codex` so downstream sandboxes can still detect and mask
-                // the symlink itself instead of only its resolved target.
-                read_only_subpaths: dedup_absolute_paths(
-                    read_only_subpaths,
-                    /*normalize_effective_paths*/ false,
-                ),
-            }
-        })
-        .collect()
+                            Some(effective_path)
+                        }),
+                );
+                WritableRoot {
+                    root,
+                    // Preserve literal in-root protected paths like `.git` and
+                    // `.codex` so downstream sandboxes can still detect and mask
+                    // the symlink itself instead of only its resolved target.
+                    read_only_subpaths: dedup_absolute_paths(
+                        read_only_subpaths,
+                        /*normalize_effective_paths*/ false,
+                    ),
+                }
+            })
+            .collect()
     }
 
     /// Returns explicit unreadable roots resolved against the provided cwd.
@@ -1098,6 +1131,7 @@ fn normalize_effective_absolute_path(path: AbsolutePathBuf) -> AbsolutePathBuf {
 fn default_read_only_subpaths_for_writable_root(
     writable_root: &AbsolutePathBuf,
     protect_missing_dot_codex: bool,
+    is_git_admin_root: bool,
 ) -> Vec<AbsolutePathBuf> {
     let mut subpaths: Vec<AbsolutePathBuf> = Vec::new();
     #[allow(clippy::expect_used)]
@@ -1105,24 +1139,30 @@ fn default_read_only_subpaths_for_writable_root(
         .join(".git")
         .expect(".git is a valid relative path");
     // This applies to typical repos (directory .git), worktrees/submodules
-    // (file .git with gitdir pointer), and bare repos when the gitdir is the
-    // writable root itself.
+    // (file .git with gitdir pointer), and linked-worktree git admin roots
+    // discovered separately below.
     let top_level_git_is_file = top_level_git.as_path().is_file();
     let top_level_git_is_dir = top_level_git.as_path().is_dir();
-    if top_level_git_is_dir || top_level_git_is_file {
-        if top_level_git_is_file
-            && is_git_pointer_file(&top_level_git)
+    if top_level_git_is_dir {
+        protect_high_risk_git_subpaths(&mut subpaths, &top_level_git);
+    } else if top_level_git_is_file {
+        push_read_only_subpath(&mut subpaths, top_level_git.clone());
+        if is_git_pointer_file(&top_level_git)
             && let Some(gitdir) = resolve_gitdir_from_file(&top_level_git)
+            && gitdir.as_path().is_dir()
         {
-            subpaths.push(gitdir);
+            protect_high_risk_git_subpaths(&mut subpaths, &gitdir);
         }
-        subpaths.push(top_level_git);
+    }
+
+    if is_git_admin_root {
+        protect_high_risk_git_subpaths(&mut subpaths, writable_root);
     }
 
     #[allow(clippy::expect_used)]
     let top_level_agents = writable_root.join(".agents").expect("valid relative path");
     if top_level_agents.as_path().is_dir() {
-        subpaths.push(top_level_agents);
+        push_read_only_subpath(&mut subpaths, top_level_agents);
     }
 
     // Keep top-level project metadata under .codex read-only to the agent by
@@ -1132,9 +1172,8 @@ fn default_read_only_subpaths_for_writable_root(
     #[allow(clippy::expect_used)]
     let top_level_codex = writable_root.join(".codex").expect("valid relative path");
     if protect_missing_dot_codex || top_level_codex.as_path().is_dir() {
-        subpaths.push(top_level_codex);
+        push_read_only_subpath(&mut subpaths, top_level_codex);
     }
-
     dedup_absolute_paths(subpaths, /*normalize_effective_paths*/ false)
 }
 
@@ -1184,6 +1223,23 @@ fn has_explicit_resolved_path_entry(
 
 fn is_git_pointer_file(path: &AbsolutePathBuf) -> bool {
     path.as_path().is_file() && path.as_path().file_name() == Some(OsStr::new(".git"))
+}
+
+fn push_read_only_subpath(subpaths: &mut Vec<AbsolutePathBuf>, subpath: AbsolutePathBuf) {
+    if !subpaths
+        .iter()
+        .any(|existing| existing.as_path() == subpath.as_path())
+    {
+        subpaths.push(subpath);
+    }
+}
+
+fn protect_high_risk_git_subpaths(subpaths: &mut Vec<AbsolutePathBuf>, git_dir: &AbsolutePathBuf) {
+    for relative_path in ["config", "hooks"] {
+        if let Ok(path) = git_dir.join(relative_path) {
+            push_read_only_subpath(subpaths, path);
+        }
+    }
 }
 
 fn resolve_gitdir_from_file(dot_git: &AbsolutePathBuf) -> Option<AbsolutePathBuf> {
@@ -1247,6 +1303,62 @@ fn resolve_gitdir_from_file(dot_git: &AbsolutePathBuf) -> Option<AbsolutePathBuf
     Some(gitdir_path)
 }
 
+fn resolve_commondir_from_gitdir(gitdir: &AbsolutePathBuf) -> Option<AbsolutePathBuf> {
+    let commondir_file = match gitdir.join("commondir") {
+        Ok(path) => path,
+        Err(err) => {
+            error!(
+                "Failed to construct commondir path under {path}: {err}",
+                path = gitdir.as_path().display()
+            );
+            return None;
+        }
+    };
+    if !commondir_file.as_path().is_file() {
+        return None;
+    }
+
+    let contents = match std::fs::read_to_string(commondir_file.as_path()) {
+        Ok(contents) => contents,
+        Err(err) => {
+            error!(
+                "Failed to read {path} for commondir pointer: {err}",
+                path = commondir_file.as_path().display()
+            );
+            return None;
+        }
+    };
+
+    let commondir_raw = contents.trim();
+    if commondir_raw.is_empty() {
+        error!(
+            "Expected {path} to contain a commondir pointer, but it was empty.",
+            path = commondir_file.as_path().display()
+        );
+        return None;
+    }
+
+    let commondir_path =
+        match AbsolutePathBuf::resolve_path_against_base(commondir_raw, gitdir.as_path()) {
+            Ok(path) => path,
+            Err(err) => {
+                error!(
+                    "Failed to resolve commondir path {commondir_raw} from {path}: {err}",
+                    path = commondir_file.as_path().display()
+                );
+                return None;
+            }
+        };
+    if !commondir_path.as_path().exists() {
+        error!(
+            "Resolved commondir path {path} does not exist.",
+            path = commondir_path.as_path().display()
+        );
+        return None;
+    }
+    Some(commondir_path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1262,6 +1374,136 @@ mod tests {
     #[cfg(unix)]
     fn symlink_dir(original: &Path, link: &Path) -> std::io::Result<()> {
         std::os::unix::fs::symlink(original, link)
+    }
+
+    #[test]
+    fn get_writable_roots_only_protects_high_risk_git_subpaths_for_git_dir() {
+        let tmp = TempDir::new().expect("tempdir");
+        let repo_root = tmp.path().join("repo");
+        std::fs::create_dir_all(repo_root.join(".git").join("hooks")).expect("create git hooks");
+
+        let policy = FileSystemSandboxPolicy::restricted(vec![FileSystemSandboxEntry {
+            path: FileSystemPath::Path {
+                path: repo_root
+                    .clone()
+                    .try_into()
+                    .expect("repo root should be an absolute path"),
+            },
+            access: FileSystemAccessMode::Write,
+        }]);
+
+        let writable_roots = policy.get_writable_roots_with_cwd(Path::new("/"));
+        assert_eq!(writable_roots.len(), 1);
+        let read_only_subpaths: Vec<&Path> = writable_roots[0]
+            .read_only_subpaths
+            .iter()
+            .map(codex_utils_absolute_path::AbsolutePathBuf::as_path)
+            .collect();
+
+        assert!(
+            read_only_subpaths
+                .iter()
+                .any(|subpath| *subpath == repo_root.join(".git").join("config"))
+        );
+        assert!(
+            read_only_subpaths
+                .iter()
+                .any(|subpath| *subpath == repo_root.join(".git").join("hooks"))
+        );
+        assert!(
+            !read_only_subpaths
+                .iter()
+                .any(|subpath| *subpath == repo_root.join(".git"))
+        );
+    }
+
+    #[test]
+    fn get_writable_roots_adds_gitdir_and_commondir_for_worktrees() {
+        let tmp = TempDir::new().expect("tempdir");
+        let worktree_root = tmp.path().join("worktree");
+        let gitdir = tmp.path().join("gitdir");
+        let commondir = tmp.path().join("main-git");
+        std::fs::create_dir_all(&worktree_root).expect("create worktree root");
+        std::fs::create_dir_all(&gitdir).expect("create gitdir");
+        std::fs::create_dir_all(&commondir).expect("create commondir");
+        std::fs::write(
+            gitdir.join("commondir"),
+            format!("{}\n", commondir.display()),
+        )
+        .expect("write commondir pointer");
+        std::fs::write(
+            worktree_root.join(".git"),
+            format!("gitdir: {}\n", gitdir.display()),
+        )
+        .expect("write .git pointer");
+
+        let policy = FileSystemSandboxPolicy::restricted(vec![FileSystemSandboxEntry {
+            path: FileSystemPath::Path {
+                path: worktree_root
+                    .clone()
+                    .try_into()
+                    .expect("worktree root should be an absolute path"),
+            },
+            access: FileSystemAccessMode::Write,
+        }]);
+
+        let writable_roots = policy.get_writable_roots_with_cwd(Path::new("/"));
+        assert!(
+            writable_roots
+                .iter()
+                .any(|root| root.root.as_path() == worktree_root)
+        );
+        assert!(
+            writable_roots
+                .iter()
+                .any(|root| root.root.as_path() == gitdir)
+        );
+        assert!(
+            writable_roots
+                .iter()
+                .any(|root| root.root.as_path() == commondir)
+        );
+
+        let read_only_subpaths: Vec<&Path> = writable_roots
+            .iter()
+            .flat_map(|root| {
+                root.read_only_subpaths
+                    .iter()
+                    .map(codex_utils_absolute_path::AbsolutePathBuf::as_path)
+            })
+            .collect();
+
+        assert!(
+            read_only_subpaths
+                .iter()
+                .any(|subpath| *subpath == worktree_root.join(".git"))
+        );
+        assert!(
+            read_only_subpaths
+                .iter()
+                .any(|subpath| *subpath == gitdir.join("config"))
+        );
+        assert!(
+            read_only_subpaths
+                .iter()
+                .any(|subpath| *subpath == gitdir.join("hooks"))
+        );
+        assert!(!read_only_subpaths.iter().any(|subpath| *subpath == gitdir));
+        assert!(
+            read_only_subpaths
+                .iter()
+                .any(|subpath| *subpath == commondir.join("config"))
+        );
+        assert!(
+            read_only_subpaths
+                .iter()
+                .any(|subpath| *subpath == commondir.join("hooks"))
+        );
+        assert!(
+            !read_only_subpaths
+                .iter()
+                .any(|subpath| *subpath == commondir)
+        );
     }
 
     #[test]
@@ -1433,6 +1675,35 @@ mod tests {
         assert!(
             !file_system_policy
                 .can_write_path_with_cwd(Path::new(".codex/config.toml"), relative_cwd,)
+        );
+    }
+
+    #[test]
+    fn legacy_workspace_write_nested_readable_root_stays_writable() {
+        let cwd = TempDir::new().expect("tempdir");
+        let docs =
+            AbsolutePathBuf::resolve_path_against_base("docs", cwd.path()).expect("resolve docs");
+        let policy = SandboxPolicy::WorkspaceWrite {
+            writable_roots: vec![],
+            read_only_access: ReadOnlyAccess::Restricted {
+                include_platform_defaults: true,
+                readable_roots: vec![docs.clone()],
+            },
+            network_access: false,
+            exclude_tmpdir_env_var: true,
+            exclude_slash_tmp: true,
+        };
+
+        let file_system_policy =
+            FileSystemSandboxPolicy::from_legacy_sandbox_policy(&policy, cwd.path());
+        let writable_roots = file_system_policy.get_writable_roots_with_cwd(cwd.path());
+        assert_eq!(writable_roots.len(), 1);
+        assert_eq!(writable_roots[0].root.as_path(), cwd.path());
+        assert!(
+            !writable_roots[0]
+                .read_only_subpaths
+                .iter()
+                .any(|path| path.as_path() == docs.as_path())
         );
     }
 

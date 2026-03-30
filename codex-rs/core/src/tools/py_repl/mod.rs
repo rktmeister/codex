@@ -29,17 +29,20 @@ use uuid::Uuid;
 use crate::client_common::tools::ToolSpec;
 use crate::codex::Session;
 use crate::codex::TurnContext;
+use crate::exec::ExecCapturePolicy;
 use crate::exec::ExecExpiration;
 use crate::exec_env::create_env;
 use crate::function_tool::FunctionCallError;
 use crate::original_image_detail::normalize_output_image_detail;
-use crate::sandboxing::CommandSpec;
-use crate::sandboxing::SandboxManager;
-use crate::sandboxing::SandboxPermissions;
+use crate::sandboxing::ExecOptions;
 use crate::tools::ToolRouter;
 use crate::tools::context::SharedTurnDiffTracker;
 use crate::tools::repl_image::validate_repl_image_data_url;
-use crate::tools::sandboxing::SandboxablePreference;
+use crate::tools::router::ToolRouterParams;
+use codex_sandboxing::SandboxCommand;
+use codex_sandboxing::SandboxManager;
+use codex_sandboxing::SandboxTransformRequest;
+use codex_sandboxing::SandboxablePreference;
 
 pub(crate) const PY_REPL_PRAGMA_PREFIX: &str = "# codex-py-repl:";
 const KERNEL_SOURCE: &str = include_str!("kernel.py");
@@ -656,15 +659,16 @@ impl PyReplManager {
         }
         env.insert("PYTHONDONTWRITEBYTECODE".to_string(), "1".to_string());
 
-        let spec = CommandSpec {
-            program: self.python_path.to_string_lossy().to_string(),
+        let command = SandboxCommand {
+            program: self.python_path.clone().into_os_string(),
             args: vec!["-u".to_string(), kernel_path.to_string_lossy().to_string()],
-            cwd: turn.cwd.clone(),
+            cwd: turn.cwd.clone().to_path_buf(),
             env,
-            expiration: ExecExpiration::DefaultTimeout,
-            sandbox_permissions: SandboxPermissions::UseDefault,
             additional_permissions: None,
-            justification: None,
+        };
+        let options = ExecOptions {
+            expiration: ExecExpiration::DefaultTimeout,
+            capture_policy: ExecCapturePolicy::ShellTool,
         };
 
         let sandbox = SandboxManager::new();
@@ -682,8 +686,8 @@ impl PyReplManager {
             has_managed_network_requirements,
         );
         let exec_env = sandbox
-            .transform(crate::sandboxing::SandboxTransformRequest {
-                spec,
+            .transform(SandboxTransformRequest {
+                command,
                 policy: &turn.sandbox_policy,
                 file_system_policy: &turn.file_system_sandbox_policy,
                 network_policy: turn.network_sandbox_policy,
@@ -694,10 +698,15 @@ impl PyReplManager {
                 #[cfg(target_os = "macos")]
                 macos_seatbelt_profile_extensions: None,
                 codex_linux_sandbox_exe: turn.codex_linux_sandbox_exe.as_ref(),
-                use_linux_sandbox_bwrap: turn
-                    .features
-                    .enabled(crate::features::Feature::UseLinuxSandboxBwrap),
+                use_legacy_landlock: turn.features.use_legacy_landlock(),
                 windows_sandbox_level: turn.windows_sandbox_level,
+                windows_sandbox_private_desktop: turn
+                    .config
+                    .permissions
+                    .windows_sandbox_private_desktop,
+            })
+            .map(|request| {
+                crate::sandboxing::ExecRequest::from_sandbox_exec_request(request, options)
             })
             .map_err(|err| format!("failed to configure sandbox for py_repl: {err}"))?;
 
@@ -1159,14 +1168,17 @@ impl PyReplManager {
 
         let router = ToolRouter::from_config(
             &exec.turn.tools_config,
-            Some(
-                mcp_tools
-                    .into_iter()
-                    .map(|(name, tool)| (name, tool.tool))
-                    .collect(),
-            ),
-            None,
-            exec.turn.dynamic_tools.as_slice(),
+            ToolRouterParams {
+                mcp_tools: Some(
+                    mcp_tools
+                        .into_iter()
+                        .map(|(name, tool)| (name, tool.tool))
+                        .collect(),
+                ),
+                app_tools: None,
+                discoverable_tools: None,
+                dynamic_tools: exec.turn.dynamic_tools.as_slice(),
+            },
         );
 
         let payload = if let Some((server, tool)) = exec
@@ -1454,7 +1466,7 @@ pub(crate) fn resolve_python(config_path: Option<&Path>) -> Option<PathBuf> {
 mod tests {
     use super::*;
     use crate::codex::make_session_and_context;
-    use crate::features::Feature;
+    use codex_features::Feature;
     use codex_protocol::models::FunctionCallOutputContentItem;
     use codex_protocol::models::ImageDetail;
     use pretty_assertions::assert_eq;

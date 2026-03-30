@@ -6395,10 +6395,10 @@ mod tests {
 
         assert!(handled);
 
-        let app_event = tokio::time::timeout(Duration::from_secs(1), app_event_rx.recv())
-            .await
-            .expect("history lookup should emit an app event")
-            .expect("app event channel should stay open");
+        let app_event = recv_app_event_matching(&mut app_event_rx, |event| {
+            matches!(event, AppEvent::ThreadHistoryEntryResponse { .. })
+        })
+        .await;
 
         let AppEvent::ThreadHistoryEntryResponse {
             thread_id: routed_thread_id,
@@ -7422,10 +7422,14 @@ mod tests {
             .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
         assert_matches!(
-            app_event_rx.try_recv(),
+            try_recv_app_event_matching(&mut app_event_rx, |event| {
+                matches!(event, AppEvent::UpdateFeatureFlags { .. })
+            }),
             Ok(AppEvent::UpdateFeatureFlags { updates }) if updates == vec![(Feature::Collab, true)]
         );
-        let cell = match app_event_rx.try_recv() {
+        let cell = match try_recv_app_event_matching(&mut app_event_rx, |event| {
+            matches!(event, AppEvent::InsertHistoryCell(_))
+        }) {
             Ok(AppEvent::InsertHistoryCell(cell)) => cell,
             other => panic!("expected InsertHistoryCell event, got {other:?}"),
         };
@@ -7502,7 +7506,9 @@ mod tests {
                 personality: None,
             })
         );
-        let cell = match app_event_rx.try_recv() {
+        let cell = match try_recv_app_event_matching(&mut app_event_rx, |event| {
+            matches!(event, AppEvent::InsertHistoryCell(_))
+        }) {
             Ok(AppEvent::InsertHistoryCell(cell)) => cell,
             other => panic!("expected InsertHistoryCell event, got {other:?}"),
         };
@@ -7593,7 +7599,9 @@ mod tests {
                 personality: None,
             })
         );
-        let cell = match app_event_rx.try_recv() {
+        let cell = match try_recv_app_event_matching(&mut app_event_rx, |event| {
+            matches!(event, AppEvent::InsertHistoryCell(_))
+        }) {
             Ok(AppEvent::InsertHistoryCell(cell)) => cell,
             other => panic!("expected InsertHistoryCell event, got {other:?}"),
         };
@@ -7729,10 +7737,12 @@ mod tests {
                 personality: None,
             })
         );
-        assert!(
-            app_event_rx.try_recv().is_err(),
-            "manual review should not emit a permissions history update when the effective state stays default"
-        );
+        match try_recv_non_status_line_branch_update(&mut app_event_rx) {
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {}
+            other => panic!(
+                "manual review should not emit a permissions history update when the effective state stays default; got {other:?}"
+            ),
+        }
 
         let config = std::fs::read_to_string(codex_home.path().join("config.toml"))?;
         assert!(!config.contains("guardian_approval = true"));
@@ -7875,7 +7885,9 @@ guardian_approval = true
                 personality: None,
             })
         );
-        let cell = match app_event_rx.try_recv() {
+        let cell = match try_recv_app_event_matching(&mut app_event_rx, |event| {
+            matches!(event, AppEvent::InsertHistoryCell(_))
+        }) {
             Ok(AppEvent::InsertHistoryCell(cell)) => cell,
             other => panic!("expected InsertHistoryCell event, got {other:?}"),
         };
@@ -7985,7 +7997,9 @@ guardian_approval = true
             .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
         assert_matches!(
-            app_event_rx.try_recv(),
+            try_recv_app_event_matching(&mut app_event_rx, |event| {
+                matches!(event, AppEvent::SelectAgentThread(_))
+            }),
             Ok(AppEvent::SelectAgentThread(selected_thread_id)) if selected_thread_id == thread_id
         );
         Ok(())
@@ -8830,6 +8844,62 @@ guardian_approval = true
             rx,
             op_rx,
         )
+    }
+
+    async fn recv_non_status_line_branch_update(
+        app_event_rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
+    ) -> AppEvent {
+        loop {
+            let app_event = tokio::time::timeout(Duration::from_secs(1), app_event_rx.recv())
+                .await
+                .expect("app event should arrive before timeout")
+                .expect("app event channel should stay open");
+            if !matches!(
+                app_event,
+                AppEvent::StatusLineBranchUpdated { .. }
+                    | AppEvent::StatusLineBranchDiffUpdated { .. }
+            ) {
+                return app_event;
+            }
+        }
+    }
+
+    fn try_recv_non_status_line_branch_update(
+        app_event_rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
+    ) -> Result<AppEvent, tokio::sync::mpsc::error::TryRecvError> {
+        loop {
+            match app_event_rx.try_recv() {
+                Ok(
+                    AppEvent::StatusLineBranchUpdated { .. }
+                    | AppEvent::StatusLineBranchDiffUpdated { .. },
+                ) => {}
+                other => return other,
+            }
+        }
+    }
+
+    async fn recv_app_event_matching(
+        app_event_rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
+        predicate: impl Fn(&AppEvent) -> bool,
+    ) -> AppEvent {
+        loop {
+            let app_event = recv_non_status_line_branch_update(app_event_rx).await;
+            if predicate(&app_event) {
+                return app_event;
+            }
+        }
+    }
+
+    fn try_recv_app_event_matching(
+        app_event_rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
+        predicate: impl Fn(&AppEvent) -> bool,
+    ) -> Result<AppEvent, tokio::sync::mpsc::error::TryRecvError> {
+        loop {
+            let app_event = try_recv_non_status_line_branch_update(app_event_rx)?;
+            if predicate(&app_event) {
+                return Ok(app_event);
+            }
+        }
     }
 
     fn test_thread_session(thread_id: ThreadId, cwd: PathBuf) -> ThreadSessionState {

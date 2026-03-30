@@ -4,6 +4,7 @@ use crate::codex::make_session_and_context_with_dynamic_tools_and_rx;
 use crate::protocol::AskForApproval;
 use crate::protocol::EventMsg;
 use crate::protocol::SandboxPolicy;
+use crate::tools::repl_image::VALID_TEST_PNG_DATA_URL;
 use crate::turn_diff_tracker::TurnDiffTracker;
 use codex_features::Feature;
 use codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem;
@@ -369,10 +370,8 @@ async fn emitted_image_content_item_drops_explicit_original_detail_when_disabled
 
 #[test]
 fn validate_emitted_image_url_accepts_case_insensitive_data_scheme() {
-    assert_eq!(
-        validate_emitted_image_url("DATA:image/png;base64,AAA"),
-        Ok(())
-    );
+    let image_url = VALID_TEST_PNG_DATA_URL.replacen("data:", "DATA:", 1);
+    assert_eq!(validate_emitted_image_url(&image_url), Ok(()));
 }
 
 #[test]
@@ -1717,9 +1716,8 @@ async fn js_repl_emit_image_accepts_case_insensitive_data_url() -> anyhow::Resul
 
     let tracker = Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::default()));
     let manager = turn.js_repl.manager().await?;
-    let code = r#"
-await codex.emitImage("DATA:image/png;base64,AAA");
-"#;
+    let image_url = VALID_TEST_PNG_DATA_URL.replacen("data:", "DATA:", 1);
+    let code = format!("await codex.emitImage(\"{image_url}\");\n");
 
     let result = manager
         .execute(
@@ -1727,7 +1725,7 @@ await codex.emitImage("DATA:image/png;base64,AAA");
             turn,
             tracker,
             JsReplArgs {
-                code: code.to_string(),
+                code,
                 timeout_ms: Some(15_000),
             },
         )
@@ -1735,7 +1733,7 @@ await codex.emitImage("DATA:image/png;base64,AAA");
     assert_eq!(
         result.content_items.as_slice(),
         [FunctionCallOutputContentItem::InputImage {
-            image_url: "DATA:image/png;base64,AAA".to_string(),
+            image_url: image_url.clone(),
             detail: None,
         }]
         .as_slice()

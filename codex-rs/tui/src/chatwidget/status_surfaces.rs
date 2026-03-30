@@ -51,6 +51,19 @@ impl StatusSurfaceSelections {
                 .terminal_title_items
                 .contains(&TerminalTitleItem::GitBranch)
     }
+
+    fn uses_branch_diff(&self) -> bool {
+        self.status_line_items.iter().any(|item| {
+            matches!(
+                item,
+                StatusLineItem::BranchLinesAdded | StatusLineItem::BranchLinesRemoved
+            )
+        })
+    }
+
+    fn uses_git_metadata(&self) -> bool {
+        self.uses_git_branch() || self.uses_branch_diff()
+    }
 }
 
 /// Cached project-root display name keyed by the cwd used for the last lookup.
@@ -120,17 +133,23 @@ impl ChatWidget {
     }
 
     fn sync_status_surface_shared_state(&mut self, selections: &StatusSurfaceSelections) {
-        if !selections.uses_git_branch() {
+        if !selections.uses_git_metadata() {
             self.status_line_branch = None;
             self.status_line_branch_pending = false;
             self.status_line_branch_lookup_complete = false;
+            self.status_line_branch_diff = None;
+            self.status_line_branch_diff_pending = false;
+            self.status_line_branch_diff_lookup_complete = false;
             return;
         }
 
         let cwd = self.status_line_cwd().to_path_buf();
         self.sync_status_line_branch_state(&cwd);
-        if !self.status_line_branch_lookup_complete {
-            self.request_status_line_branch(cwd);
+        if selections.uses_git_branch() && !self.status_line_branch_lookup_complete {
+            self.request_status_line_branch(cwd.clone());
+        }
+        if selections.uses_branch_diff() && !self.status_line_branch_diff_lookup_complete {
+            self.request_status_line_branch_diff(cwd);
         }
     }
 
@@ -144,16 +163,12 @@ impl ChatWidget {
 
         let mut parts = Vec::new();
         for item in &selections.status_line_items {
-            if let Some(value) = self.status_line_value_for_item(item) {
-                parts.push(value);
+            if let Some(value) = self.status_line_value_for_item(*item) {
+                parts.push((*item, value));
             }
         }
 
-        let line = if parts.is_empty() {
-            None
-        } else {
-            Some(Line::from(parts.join(" · ")))
-        };
+        let line = format_status_line(parts);
         self.set_status_line(line);
     }
 
@@ -264,12 +279,17 @@ impl ChatWidget {
 
     pub(super) fn request_status_line_branch_refresh(&mut self) {
         let selections = self.status_surface_selections();
-        if !selections.uses_git_branch() {
+        if !selections.uses_git_metadata() {
             return;
         }
         let cwd = self.status_line_cwd().to_path_buf();
         self.sync_status_line_branch_state(&cwd);
-        self.request_status_line_branch(cwd);
+        if selections.uses_git_branch() {
+            self.request_status_line_branch(cwd.clone());
+        }
+        if selections.uses_branch_diff() {
+            self.request_status_line_branch_diff(cwd);
+        }
     }
 
     /// Parses configured status-line ids into known items and collects unknown ids.
@@ -337,11 +357,10 @@ impl ChatWidget {
     }
 
     fn status_line_project_root_name_for_cwd(&self, cwd: &Path) -> Option<String> {
-        self.status_line_project_root_for_cwd(cwd).map(|root| {
-            root.file_name()
-                .map(|name| name.to_string_lossy().to_string())
-                .unwrap_or_else(|| format_directory_display(&root, /*max_width*/ None))
-        })
+        let root = self.status_line_project_root_for_cwd(cwd)?;
+        Some(project_root_display_name_for_cwd(cwd, &root, |path| {
+            format_directory_display(path, /*max_width*/ None)
+        }))
     }
 
     /// Returns a cached project-root display name for the active cwd.
@@ -379,10 +398,11 @@ impl ChatWidget {
         ))
     }
 
-    /// Resets git-branch cache state when the status-line cwd changes.
+    /// Resets cached git metadata when the status-line cwd changes.
     ///
-    /// The branch cache is keyed by cwd because branch lookup is performed relative to that path.
-    /// Keeping stale branch values across cwd changes would surface incorrect repository context.
+    /// These caches are keyed by cwd because git lookups are performed relative to that path.
+    /// Keeping stale branch or diff values across cwd changes would surface incorrect repository
+    /// context.
     fn sync_status_line_branch_state(&mut self, cwd: &Path) {
         if self
             .status_line_branch_cwd
@@ -395,6 +415,9 @@ impl ChatWidget {
         self.status_line_branch = None;
         self.status_line_branch_pending = false;
         self.status_line_branch_lookup_complete = false;
+        self.status_line_branch_diff = None;
+        self.status_line_branch_diff_pending = false;
+        self.status_line_branch_diff_lookup_complete = false;
     }
 
     /// Starts an async git-branch lookup unless one is already running.
@@ -413,12 +436,25 @@ impl ChatWidget {
         });
     }
 
+    /// Starts an async branch-diff lookup unless one is already running.
+    fn request_status_line_branch_diff(&mut self, cwd: PathBuf) {
+        if self.status_line_branch_diff_pending {
+            return;
+        }
+        self.status_line_branch_diff_pending = true;
+        let tx = self.app_event_tx.clone();
+        tokio::spawn(async move {
+            let diff = branch_diff_line_counts(&cwd).await;
+            tx.send(AppEvent::StatusLineBranchDiffUpdated { cwd, diff });
+        });
+    }
+
     /// Resolves a display string for one configured status-line item.
     ///
     /// Returning `None` means "omit this item for now", not "configuration error". Callers rely on
     /// this to keep partially available status lines readable while waiting for session, token, or
     /// git metadata.
-    pub(super) fn status_line_value_for_item(&mut self, item: &StatusLineItem) -> Option<String> {
+    pub(super) fn status_line_value_for_item(&mut self, item: StatusLineItem) -> Option<String> {
         match item {
             StatusLineItem::ModelName => Some(self.model_display_name().to_string()),
             StatusLineItem::ModelWithReasoning => {
@@ -441,6 +477,12 @@ impl ChatWidget {
             }
             StatusLineItem::ProjectRoot => self.status_line_project_root_name(),
             StatusLineItem::GitBranch => self.status_line_branch.clone(),
+            StatusLineItem::BranchLinesAdded => self
+                .status_line_branch_diff
+                .map(|diff| diff.added.to_string()),
+            StatusLineItem::BranchLinesRemoved => self
+                .status_line_branch_diff
+                .map(|diff| diff.removed.to_string()),
             StatusLineItem::UsedTokens => {
                 let usage = self.status_line_total_usage();
                 let total = usage.tokens_in_context_window();

@@ -565,6 +565,8 @@ fn create_seatbelt_args_with_read_only_git_and_codex_subpaths() {
         /*network*/ None,
     );
 
+    let dot_git_config_canonical = dot_git_canonical.join("config");
+    let dot_git_hooks_canonical = dot_git_canonical.join("hooks");
     let policy_text = seatbelt_policy_arg(&args);
     assert!(
         policy_text.contains("(require-all (subpath (param \"WRITABLE_ROOT_0\"))"),
@@ -576,8 +578,9 @@ fn create_seatbelt_args_with_read_only_git_and_codex_subpaths() {
     );
     assert!(
         policy_text.contains("WRITABLE_ROOT_1_EXCLUDED_0")
-            && policy_text.contains("WRITABLE_ROOT_1_EXCLUDED_1"),
-        "expected explicit writable root .git/.codex carveouts in policy:\n{policy_text}",
+            && policy_text.contains("WRITABLE_ROOT_1_EXCLUDED_1")
+            && policy_text.contains("WRITABLE_ROOT_1_EXCLUDED_2"),
+        "expected explicit writable root git/.codex carveouts in policy:\n{policy_text}",
     );
     assert!(
         policy_text.contains("(subpath (param \"WRITABLE_ROOT_2\"))"),
@@ -604,10 +607,14 @@ fn create_seatbelt_args_with_read_only_git_and_codex_subpaths() {
         ),
         format!(
             "-DWRITABLE_ROOT_1_EXCLUDED_0={}",
-            dot_git_canonical.to_string_lossy()
+            dot_git_config_canonical.to_string_lossy()
         ),
         format!(
             "-DWRITABLE_ROOT_1_EXCLUDED_1={}",
+            dot_git_hooks_canonical.to_string_lossy()
+        ),
+        format!(
+            "-DWRITABLE_ROOT_1_EXCLUDED_2={}",
             dot_codex_canonical.to_string_lossy()
         ),
         format!(
@@ -950,13 +957,16 @@ fn create_seatbelt_args_for_cwd_as_git_repo() {
     // Note that the policy includes:
     // - the base policy,
     // - read-only access to the filesystem,
-    // - write access to WRITABLE_ROOT_0 (but not its .git or .codex), WRITABLE_ROOT_1, and cwd as WRITABLE_ROOT_2.
+    // - write access to WRITABLE_ROOT_0 (but not high-risk git paths or
+    //   .codex), WRITABLE_ROOT_1, and cwd as WRITABLE_ROOT_2.
+    let dot_git_config_canonical = dot_git_canonical.join("config");
+    let dot_git_hooks_canonical = dot_git_canonical.join("hooks");
     let expected_policy = format!(
         r#"{MACOS_SEATBELT_BASE_POLICY}
 ; allow read-only file operations
 (allow file-read*)
 (allow file-write*
-(require-all (subpath (param "WRITABLE_ROOT_0")) (require-not (literal (param "WRITABLE_ROOT_0_EXCLUDED_0"))) (require-not (subpath (param "WRITABLE_ROOT_0_EXCLUDED_0"))) (require-not (literal (param "WRITABLE_ROOT_0_EXCLUDED_1"))) (require-not (subpath (param "WRITABLE_ROOT_0_EXCLUDED_1"))) ) (subpath (param "WRITABLE_ROOT_1")){tempdir_policy_entry}
+(require-all (subpath (param "WRITABLE_ROOT_0")) (require-not (literal (param "WRITABLE_ROOT_0_EXCLUDED_0"))) (require-not (subpath (param "WRITABLE_ROOT_0_EXCLUDED_0"))) (require-not (literal (param "WRITABLE_ROOT_0_EXCLUDED_1"))) (require-not (subpath (param "WRITABLE_ROOT_0_EXCLUDED_1"))) (require-not (literal (param "WRITABLE_ROOT_0_EXCLUDED_2"))) (require-not (subpath (param "WRITABLE_ROOT_0_EXCLUDED_2"))) ) (subpath (param "WRITABLE_ROOT_1")){tempdir_policy_entry}
 )
 "#,
     );
@@ -970,10 +980,14 @@ fn create_seatbelt_args_for_cwd_as_git_repo() {
         ),
         format!(
             "-DWRITABLE_ROOT_0_EXCLUDED_0={}",
-            dot_git_canonical.to_string_lossy()
+            dot_git_config_canonical.to_string_lossy()
         ),
         format!(
             "-DWRITABLE_ROOT_0_EXCLUDED_1={}",
+            dot_git_hooks_canonical.to_string_lossy()
+        ),
+        format!(
+            "-DWRITABLE_ROOT_0_EXCLUDED_2={}",
             dot_codex_canonical.to_string_lossy()
         ),
         format!(

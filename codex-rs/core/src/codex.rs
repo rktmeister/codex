@@ -453,7 +453,7 @@ impl Codex {
         .await
     }
 
-     async fn spawn_internal(args: CodexSpawnArgs) -> CodexResult<CodexSpawnOk> {
+    async fn spawn_internal(args: CodexSpawnArgs) -> CodexResult<CodexSpawnOk> {
         let CodexSpawnArgs {
             mut config,
             auth_manager,
@@ -543,7 +543,14 @@ impl Codex {
             config.startup_warnings.push(message);
         }
 
-        let user_instructions = get_user_instructions(&config).await;
+        let allowed_skills_for_implicit_invocation =
+            loaded_skills.allowed_skills_for_implicit_invocation();
+        let user_instructions = get_user_instructions(
+            &config,
+            Some(&allowed_skills_for_implicit_invocation),
+            Some(plugin_outcome.capability_summaries()),
+        )
+        .await;
 
         let exec_policy = if crate::guardian::is_guardian_reviewer_source(&session_source) {
             // Guardian review should rely on the built-in shell safety checks,
