@@ -1,6 +1,6 @@
-use crate::config::types::Personality;
 use crate::error::Result;
 pub use codex_api::common::ResponseEvent;
+use codex_config::types::Personality;
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::models::ResponseItem;
@@ -79,10 +79,8 @@ fn reserialize_shell_outputs(items: &mut [ResponseItem]) {
             call_id,
             name,
             input: _,
-        } => {
-            if name == "apply_patch" {
-                shell_call_ids.insert(call_id.clone());
-            }
+        } if name == "apply_patch" => {
+            shell_call_ids.insert(call_id.clone());
         }
         ResponseItem::FunctionCall { name, call_id, .. }
             if is_shell_tool_name(name) || name == "apply_patch" =>
@@ -154,14 +152,6 @@ fn strip_total_output_header(output: &str) -> Option<(&str, u32)> {
     let total_lines = total_segment.parse::<u32>().ok()?;
     let remainder = remainder.strip_prefix('\n').unwrap_or(remainder);
     Some((remainder, total_lines))
-}
-
-pub(crate) mod tools {
-    pub(crate) use codex_tools::FreeformTool;
-    pub(crate) use codex_tools::FreeformToolFormat;
-    pub(crate) use codex_tools::ResponsesApiTool;
-    pub(crate) use codex_tools::ToolSearchOutputTool;
-    pub(crate) use codex_tools::ToolSpec;
 }
 
 pub struct ResponseStream {

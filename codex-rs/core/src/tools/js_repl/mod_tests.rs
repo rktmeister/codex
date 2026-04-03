@@ -1,9 +1,6 @@
 use super::*;
 use crate::codex::make_session_and_context;
 use crate::codex::make_session_and_context_with_dynamic_tools_and_rx;
-use crate::protocol::AskForApproval;
-use crate::protocol::EventMsg;
-use crate::protocol::SandboxPolicy;
 use crate::tools::repl_image::VALID_TEST_PNG_DATA_URL;
 use crate::turn_diff_tracker::TurnDiffTracker;
 use codex_features::Feature;
@@ -15,6 +12,11 @@ use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ImageDetail;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::openai_models::InputModality;
+use codex_protocol::permissions::FileSystemSandboxPolicy;
+use codex_protocol::permissions::NetworkSandboxPolicy;
+use codex_protocol::protocol::AskForApproval;
+use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::SandboxPolicy;
 use core_test_support::PathBufExt;
 use core_test_support::TempDirExt;
 use pretty_assertions::assert_eq;
@@ -26,10 +28,8 @@ fn set_danger_full_access(turn: &mut crate::codex::TurnContext) {
     turn.sandbox_policy
         .set(SandboxPolicy::DangerFullAccess)
         .expect("test setup should allow updating sandbox policy");
-    turn.file_system_sandbox_policy =
-        crate::protocol::FileSystemSandboxPolicy::from(turn.sandbox_policy.get());
-    turn.network_sandbox_policy =
-        crate::protocol::NetworkSandboxPolicy::from(turn.sandbox_policy.get());
+    turn.file_system_sandbox_policy = FileSystemSandboxPolicy::from(turn.sandbox_policy.get());
+    turn.network_sandbox_policy = NetworkSandboxPolicy::from(turn.sandbox_policy.get());
 }
 
 #[test]
@@ -371,6 +371,7 @@ async fn emitted_image_content_item_drops_explicit_original_detail_when_disabled
 #[test]
 fn validate_emitted_image_url_accepts_case_insensitive_data_scheme() {
     let image_url = VALID_TEST_PNG_DATA_URL.replacen("data:", "DATA:", 1);
+
     assert_eq!(validate_emitted_image_url(&image_url), Ok(()));
 }
 
@@ -1716,8 +1717,9 @@ async fn js_repl_emit_image_accepts_case_insensitive_data_url() -> anyhow::Resul
 
     let tracker = Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::default()));
     let manager = turn.js_repl.manager().await?;
-    let image_url = VALID_TEST_PNG_DATA_URL.replacen("data:", "DATA:", 1);
-    let code = format!("await codex.emitImage(\"{image_url}\");\n");
+    let code = r#"
+await codex.emitImage("DATA:image/png;base64,AAA");
+"#;
 
     let result = manager
         .execute(
@@ -1725,7 +1727,7 @@ async fn js_repl_emit_image_accepts_case_insensitive_data_url() -> anyhow::Resul
             turn,
             tracker,
             JsReplArgs {
-                code,
+                code: code.to_string(),
                 timeout_ms: Some(15_000),
             },
         )
@@ -1733,7 +1735,7 @@ async fn js_repl_emit_image_accepts_case_insensitive_data_url() -> anyhow::Resul
     assert_eq!(
         result.content_items.as_slice(),
         [FunctionCallOutputContentItem::InputImage {
-            image_url: image_url.clone(),
+            image_url: "DATA:image/png;base64,AAA".to_string(),
             detail: None,
         }]
         .as_slice()

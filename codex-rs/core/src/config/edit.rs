@@ -1,9 +1,8 @@
-use crate::config::types::McpServerConfig;
-use crate::config::types::Notice;
 use crate::path_utils::resolve_symlink_write_paths;
 use crate::path_utils::write_atomically;
 use anyhow::Context;
 use codex_config::CONFIG_TOML_FILE;
+use codex_config::types::McpServerConfig;
 use codex_features::FEATURES;
 use codex_protocol::config_types::Personality;
 use codex_protocol::config_types::ServiceTier;
@@ -19,6 +18,8 @@ use toml_edit::DocumentMut;
 use toml_edit::Item as TomlItem;
 use toml_edit::Table as TomlTable;
 use toml_edit::value;
+
+const NOTICE_TABLE_KEY: &str = "notice";
 
 /// Discrete config mutations supported by the persistence engine.
 #[derive(Clone, Debug)]
@@ -104,7 +105,7 @@ pub fn terminal_title_items_edit(items: &[String]) -> ConfigEdit {
 
 pub fn model_availability_nux_count_edits(shown_count: &HashMap<String, u32>) -> Vec<ConfigEdit> {
     let mut shown_count_entries: Vec<_> = shown_count.iter().collect();
-    shown_count_entries.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
+    shown_count_entries.sort_unstable_by_key(|(left, _)| *left);
 
     let mut edits = vec![ConfigEdit::ClearPath {
         segments: vec!["tui".to_string(), "model_availability_nux".to_string()],
@@ -125,10 +126,10 @@ pub fn model_availability_nux_count_edits(shown_count: &HashMap<String, u32>) ->
 
 // TODO(jif) move to a dedicated file
 mod document_helpers {
-    use crate::config::types::AppToolApproval;
-    use crate::config::types::McpServerConfig;
-    use crate::config::types::McpServerToolConfig;
-    use crate::config::types::McpServerTransportConfig;
+    use codex_config::types::AppToolApproval;
+    use codex_config::types::McpServerConfig;
+    use codex_config::types::McpServerToolConfig;
+    use codex_config::types::McpServerTransportConfig;
     use toml_edit::Array as TomlArray;
     use toml_edit::InlineTable;
     use toml_edit::Item as TomlItem;
@@ -253,7 +254,7 @@ mod document_helpers {
         if !config.tools.is_empty() {
             let mut tools = new_implicit_table();
             let mut tool_entries: Vec<_> = config.tools.iter().collect();
-            tool_entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+            tool_entries.sort_by_key(|(left, _)| *left);
             for (name, tool_config) in tool_entries {
                 tools.insert(name, serialize_mcp_server_tool(tool_config));
             }
@@ -331,7 +332,7 @@ mod document_helpers {
         I: IntoIterator<Item = (&'a String, &'a String)>,
     {
         let mut entries: Vec<_> = pairs.into_iter().collect();
-        entries.sort_by(|(a, _), (b, _)| a.cmp(b));
+        entries.sort_by_key(|(a, _)| *a);
         let mut table = TomlTable::new();
         table.set_implicit(false);
         for (key, val) in entries {
@@ -387,29 +388,29 @@ impl ConfigDocument {
             )),
             ConfigEdit::SetNoticeHideFullAccessWarning(acknowledged) => Ok(self.write_value(
                 Scope::Global,
-                &[Notice::TABLE_KEY, "hide_full_access_warning"],
+                &[NOTICE_TABLE_KEY, "hide_full_access_warning"],
                 value(*acknowledged),
             )),
             ConfigEdit::SetNoticeHideWorldWritableWarning(acknowledged) => Ok(self.write_value(
                 Scope::Global,
-                &[Notice::TABLE_KEY, "hide_world_writable_warning"],
+                &[NOTICE_TABLE_KEY, "hide_world_writable_warning"],
                 value(*acknowledged),
             )),
             ConfigEdit::SetNoticeHideRateLimitModelNudge(acknowledged) => Ok(self.write_value(
                 Scope::Global,
-                &[Notice::TABLE_KEY, "hide_rate_limit_model_nudge"],
+                &[NOTICE_TABLE_KEY, "hide_rate_limit_model_nudge"],
                 value(*acknowledged),
             )),
             ConfigEdit::SetNoticeHideModelMigrationPrompt(migration_config, acknowledged) => {
                 Ok(self.write_value(
                     Scope::Global,
-                    &[Notice::TABLE_KEY, migration_config.as_str()],
+                    &[NOTICE_TABLE_KEY, migration_config.as_str()],
                     value(*acknowledged),
                 ))
             }
             ConfigEdit::RecordModelMigrationSeen { from, to } => Ok(self.write_value(
                 Scope::Global,
-                &[Notice::TABLE_KEY, "model_migrations", from.as_str()],
+                &[NOTICE_TABLE_KEY, "model_migrations", from.as_str()],
                 value(to.clone()),
             )),
             ConfigEdit::SetWindowsWslSetupAcknowledged(acknowledged) => Ok(self.write_value(

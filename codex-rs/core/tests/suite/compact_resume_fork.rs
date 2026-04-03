@@ -665,10 +665,8 @@ async fn snapshot_rollback_followup_turn_trims_context_updates() -> Result<()> {
 
 fn normalize_line_endings(value: &mut Value) {
     match value {
-        Value::String(text) => {
-            if text.contains('\r') {
-                *text = text.replace("\r\n", "\n").replace('\r', "\n");
-            }
+        Value::String(text) if text.contains('\r') => {
+            *text = text.replace("\r\n", "\n").replace('\r', "\n");
         }
         Value::Array(items) => {
             for item in items {
@@ -843,7 +841,7 @@ async fn resume_conversation(
     path: std::path::PathBuf,
 ) -> Arc<CodexThread> {
     let auth_manager = codex_core::test_support::auth_manager_from_auth(
-        codex_core::CodexAuth::from_api_key("dummy"),
+        codex_login::CodexAuth::from_api_key("dummy"),
     );
     Box::pin(manager.resume_thread_from_rollout(
         config.clone(),

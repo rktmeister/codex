@@ -1,5 +1,5 @@
 use crate::config::ConfigToml;
-use crate::config::types::RawMcpServerConfig;
+use codex_config::types::RawMcpServerConfig;
 use codex_features::FEATURES;
 use codex_features::legacy_feature_keys;
 use schemars::r#gen::SchemaGenerator;
@@ -72,7 +72,7 @@ fn canonicalize(value: &Value) -> Value {
         Value::Array(items) => Value::Array(items.iter().map(canonicalize).collect()),
         Value::Object(map) => {
             let mut entries: Vec<_> = map.iter().collect();
-            entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+            entries.sort_by_key(|(left, _)| *left);
             let mut sorted = Map::with_capacity(map.len());
             for (key, child) in entries {
                 sorted.insert(key.clone(), canonicalize(child));

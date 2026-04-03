@@ -1,4 +1,3 @@
-use async_trait::async_trait;
 use serde_json::Value as JsonValue;
 use std::sync::Arc;
 use std::time::Duration;
@@ -7,7 +6,6 @@ use std::time::Instant;
 use crate::exec::ExecToolCallOutput;
 use crate::exec::StreamOutput;
 use crate::function_tool::FunctionCallError;
-use crate::protocol::ExecCommandSource;
 use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
@@ -22,6 +20,7 @@ use crate::tools::registry::ToolHandler;
 use crate::tools::registry::ToolKind;
 use codex_features::Feature;
 use codex_protocol::models::FunctionCallOutputContentItem;
+use codex_protocol::protocol::ExecCommandSource;
 
 pub struct PyReplHandler;
 pub struct PyReplResetHandler;
@@ -93,7 +92,6 @@ async fn emit_py_repl_exec_end(
     emitter.emit(ctx, stage).await;
 }
 
-#[async_trait]
 impl ToolHandler for PyReplHandler {
     type Output = FunctionToolOutput;
 
@@ -184,7 +182,6 @@ impl ToolHandler for PyReplHandler {
     }
 }
 
-#[async_trait]
 impl ToolHandler for PyReplResetHandler {
     type Output = FunctionToolOutput;
 
@@ -302,8 +299,8 @@ mod tests {
 
     use super::parse_freeform_args;
     use crate::codex::make_session_and_context_with_rx;
-    use crate::protocol::EventMsg;
-    use crate::protocol::ExecCommandSource;
+    use codex_protocol::protocol::EventMsg;
+    use codex_protocol::protocol::ExecCommandSource;
 
     #[test]
     fn parse_freeform_args_without_pragma() {

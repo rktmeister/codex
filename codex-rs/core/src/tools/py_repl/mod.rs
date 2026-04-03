@@ -26,7 +26,6 @@ use tokio_util::sync::CancellationToken;
 use tracing::warn;
 use uuid::Uuid;
 
-use crate::client_common::tools::ToolSpec;
 use crate::codex::Session;
 use crate::codex::TurnContext;
 use crate::exec::ExecCapturePolicy;
@@ -43,6 +42,7 @@ use codex_sandboxing::SandboxCommand;
 use codex_sandboxing::SandboxManager;
 use codex_sandboxing::SandboxTransformRequest;
 use codex_sandboxing::SandboxablePreference;
+use codex_tools::ToolSpec;
 
 pub(crate) const PY_REPL_PRAGMA_PREFIX: &str = "# codex-py-repl:";
 const KERNEL_SOURCE: &str = include_str!("kernel.py");

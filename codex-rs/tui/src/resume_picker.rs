@@ -658,8 +658,8 @@ impl PickerState {
                     self.request_frame();
                 }
             }
-            KeyCode::PageDown => {
-                if !self.filtered_rows.is_empty() {
+            KeyCode::PageDown
+                if !self.filtered_rows.is_empty() => {
                     let step = self.view_rows.unwrap_or(10).max(1);
                     let max_index = self.filtered_rows.len().saturating_sub(1);
                     self.selected = (self.selected + step).min(max_index);
@@ -667,7 +667,6 @@ impl PickerState {
                     self.maybe_load_more_for_scroll();
                     self.request_frame();
                 }
-            }
             KeyCode::Tab => {
                 self.toggle_sort_key();
                 self.request_frame();
@@ -677,18 +676,17 @@ impl PickerState {
                 new_query.pop();
                 self.set_query(new_query);
             }
-            KeyCode::Char(c) => {
+            KeyCode::Char(c)
                 // basic text input for search
                 if !key
                     .modifiers
                     .contains(crossterm::event::KeyModifiers::CONTROL)
                     && !key.modifiers.contains(crossterm::event::KeyModifiers::ALT)
-                {
+                => {
                     let mut new_query = self.query.clone();
                     new_query.push(c);
                     self.set_query(new_query);
                 }
-            }
             _ => {}
         }
         Ok(None)
@@ -791,9 +789,6 @@ impl PickerState {
             let Some(thread_id) = row.thread_id else {
                 continue;
             };
-            if row.thread_name.is_some() {
-                continue;
-            }
             if self.thread_name_cache.contains_key(&thread_id) {
                 continue;
             }
@@ -817,11 +812,14 @@ impl PickerState {
             let Some(thread_id) = row.thread_id else {
                 continue;
             };
-            let thread_name = self.thread_name_cache.get(&thread_id).cloned().flatten();
-            if row.thread_name == thread_name {
+            let Some(thread_name) = self.thread_name_cache.get(&thread_id).cloned().flatten()
+            else {
+                continue;
+            };
+            if row.thread_name.as_ref() == Some(&thread_name) {
                 continue;
             }
-            row.thread_name = thread_name;
+            row.thread_name = Some(thread_name);
             updated = true;
         }
 
@@ -1360,11 +1358,10 @@ fn render_empty_state_line(state: &PickerState) -> Line<'static> {
         return vec!["No results for your search".italic().dim()].into();
     }
 
-    if state.all_rows.is_empty() && state.pagination.num_scanned_files == 0 {
-        return vec!["No sessions yet".italic().dim()].into();
-    }
-
     if state.pagination.loading.is_pending() {
+        if state.all_rows.is_empty() && state.pagination.num_scanned_files == 0 {
+            return vec!["Loading sessions…".italic().dim()].into();
+        }
         return vec!["Loading older sessions…".italic().dim()].into();
     }
 
@@ -2276,6 +2273,57 @@ mod tests {
         assert_snapshot!("resume_picker_thread_names", snapshot);
     }
 
+    #[tokio::test]
+    async fn update_thread_names_prefers_local_session_index_names() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let thread_id =
+            ThreadId::from_string("11111111-1111-1111-1111-111111111111").expect("thread id");
+        let session_index_entry = json!({
+            "id": thread_id,
+            "thread_name": "Saved session name",
+            "updated_at": "2025-01-01T00:00:00Z",
+        });
+        std::fs::write(
+            tempdir.path().join("session_index.jsonl"),
+            format!("{session_index_entry}\n"),
+        )
+        .expect("write session index");
+
+        let loader: PageLoader = Arc::new(|_| {});
+        let mut state = PickerState::new(
+            tempdir.path().to_path_buf(),
+            FrameRequester::test_dummy(),
+            loader,
+            ProviderFilter::MatchDefault(String::from("openai")),
+            /*show_all*/ true,
+            /*filter_cwd*/ None,
+            SessionPickerAction::Resume,
+        );
+
+        state.all_rows = vec![Row {
+            path: Some(PathBuf::from("/tmp/a.jsonl")),
+            preview: String::from("First prompt"),
+            thread_id: Some(thread_id),
+            thread_name: Some(String::from("stale backend title")),
+            created_at: None,
+            updated_at: None,
+            cwd: None,
+            git_branch: None,
+        }];
+        state.filtered_rows = state.all_rows.clone();
+
+        state.update_thread_names().await;
+
+        assert_eq!(
+            state.all_rows[0].thread_name,
+            Some(String::from("Saved session name"))
+        );
+        assert_eq!(
+            state.filtered_rows[0].display_preview(),
+            "Saved session name"
+        );
+    }
+
     #[test]
     fn pageless_scrolling_deduplicates_and_keeps_order() {
         let loader: PageLoader = Arc::new(|_| {});
@@ -2589,6 +2637,7 @@ mod tests {
         let thread_id = ThreadId::new();
         let thread = Thread {
             id: thread_id.to_string(),
+            forked_from_id: None,
             preview: String::from("remote thread"),
             ephemeral: false,
             model_provider: String::from("openai"),
