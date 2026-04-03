@@ -1107,7 +1107,7 @@ impl CodexMessageProcessor {
             });
         }
 
-        let mut opts = LoginServerOptions {
+        let opts = LoginServerOptions {
             open_browser: false,
             ..LoginServerOptions::new(
                 config.codex_home.clone(),
@@ -1117,11 +1117,15 @@ impl CodexMessageProcessor {
             )
         };
         #[cfg(debug_assertions)]
-        if let Ok(issuer) = std::env::var(LOGIN_ISSUER_OVERRIDE_ENV_VAR)
-            && !issuer.trim().is_empty()
-        {
-            opts.issuer = issuer;
-        }
+        let opts = {
+            let mut opts = opts;
+            if let Ok(issuer) = std::env::var(LOGIN_ISSUER_OVERRIDE_ENV_VAR)
+                && !issuer.trim().is_empty()
+            {
+                opts.issuer = issuer;
+            }
+            opts
+        };
 
         Ok(opts)
     }
