@@ -42,6 +42,7 @@ use codex_app_server_protocol::ThreadRealtimeAppendTextParams;
 use codex_app_server_protocol::ThreadRealtimeAppendTextResponse;
 use codex_app_server_protocol::ThreadRealtimeStartParams;
 use codex_app_server_protocol::ThreadRealtimeStartResponse;
+use codex_app_server_protocol::ThreadRealtimeStartTransport;
 use codex_app_server_protocol::ThreadRealtimeStopParams;
 use codex_app_server_protocol::ThreadRealtimeStopResponse;
 use codex_app_server_protocol::ThreadResumeParams;
@@ -63,8 +64,10 @@ use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnStartResponse;
 use codex_app_server_protocol::TurnSteerParams;
 use codex_app_server_protocol::TurnSteerResponse;
+#[cfg(test)]
+use codex_core::append_message_history_entry;
 use codex_core::config::Config;
-use codex_core::message_history;
+use codex_core::message_history_metadata;
 use codex_otel::TelemetryAuthMode;
 use codex_protocol::ThreadId;
 use codex_protocol::openai_models::ModelAvailabilityNux;
@@ -74,6 +77,7 @@ use codex_protocol::openai_models::ReasoningEffortPreset;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::ConversationAudioParams;
 use codex_protocol::protocol::ConversationStartParams;
+use codex_protocol::protocol::ConversationStartTransport;
 use codex_protocol::protocol::ConversationTextParams;
 use codex_protocol::protocol::CreditsSnapshot;
 use codex_protocol::protocol::RateLimitSnapshot;
@@ -104,6 +108,7 @@ pub(crate) struct AppServerBootstrap {
 pub(crate) struct AppServerSession {
     client: AppServerClient,
     next_request_id: i64,
+    remote_cwd_override: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -150,7 +155,17 @@ impl AppServerSession {
         Self {
             client,
             next_request_id: 1,
+            remote_cwd_override: None,
         }
+    }
+
+    pub(crate) fn with_remote_cwd_override(mut self, remote_cwd_override: Option<PathBuf>) -> Self {
+        self.remote_cwd_override = remote_cwd_override;
+        self
+    }
+
+    pub(crate) fn remote_cwd_override(&self) -> Option<&std::path::Path> {
+        self.remote_cwd_override.as_deref()
     }
 
     pub(crate) fn is_remote(&self) -> bool {
@@ -290,7 +305,11 @@ impl AppServerSession {
             .client
             .request_typed(ClientRequest::ThreadStart {
                 request_id,
-                params: thread_start_params_from_config(config, self.thread_params_mode()),
+                params: thread_start_params_from_config(
+                    config,
+                    self.thread_params_mode(),
+                    self.remote_cwd_override.as_deref(),
+                ),
             })
             .await
             .wrap_err("thread/start failed during TUI bootstrap")?;
@@ -311,6 +330,7 @@ impl AppServerSession {
                     config.clone(),
                     thread_id,
                     self.thread_params_mode(),
+                    self.remote_cwd_override.as_deref(),
                 ),
             })
             .await
@@ -332,6 +352,7 @@ impl AppServerSession {
                     config.clone(),
                     thread_id,
                     self.thread_params_mode(),
+                    self.remote_cwd_override.as_deref(),
                 ),
             })
             .await
@@ -641,6 +662,14 @@ impl AppServerSession {
                     thread_id: thread_id.to_string(),
                     prompt: params.prompt,
                     session_id: params.session_id,
+                    transport: params.transport.map(|transport| match transport {
+                        ConversationStartTransport::Websocket => {
+                            ThreadRealtimeStartTransport::Websocket
+                        }
+                        ConversationStartTransport::Webrtc { sdp } => {
+                            ThreadRealtimeStartTransport::Webrtc { sdp }
+                        }
+                    }),
                 },
             })
             .await
@@ -839,11 +868,12 @@ fn sandbox_mode_from_policy(
 fn thread_start_params_from_config(
     config: &Config,
     thread_params_mode: ThreadParamsMode,
+    remote_cwd_override: Option<&std::path::Path>,
 ) -> ThreadStartParams {
     ThreadStartParams {
         model: config.model.clone(),
         model_provider: thread_params_mode.model_provider_from_config(config),
-        cwd: thread_cwd_from_config(config, thread_params_mode),
+        cwd: thread_cwd_from_config(config, thread_params_mode, remote_cwd_override),
         approval_policy: Some(config.permissions.approval_policy.value().into()),
         approvals_reviewer: approvals_reviewer_override_from_config(config),
         sandbox: sandbox_mode_from_policy(config.permissions.sandbox_policy.get().clone()),
@@ -858,12 +888,13 @@ fn thread_resume_params_from_config(
     config: Config,
     thread_id: ThreadId,
     thread_params_mode: ThreadParamsMode,
+    remote_cwd_override: Option<&std::path::Path>,
 ) -> ThreadResumeParams {
     ThreadResumeParams {
         thread_id: thread_id.to_string(),
         model: config.model.clone(),
         model_provider: thread_params_mode.model_provider_from_config(&config),
-        cwd: thread_cwd_from_config(&config, thread_params_mode),
+        cwd: thread_cwd_from_config(&config, thread_params_mode, remote_cwd_override),
         approval_policy: Some(config.permissions.approval_policy.value().into()),
         approvals_reviewer: approvals_reviewer_override_from_config(&config),
         sandbox: sandbox_mode_from_policy(config.permissions.sandbox_policy.get().clone()),
@@ -877,12 +908,13 @@ fn thread_fork_params_from_config(
     config: Config,
     thread_id: ThreadId,
     thread_params_mode: ThreadParamsMode,
+    remote_cwd_override: Option<&std::path::Path>,
 ) -> ThreadForkParams {
     ThreadForkParams {
         thread_id: thread_id.to_string(),
         model: config.model.clone(),
         model_provider: thread_params_mode.model_provider_from_config(&config),
-        cwd: thread_cwd_from_config(&config, thread_params_mode),
+        cwd: thread_cwd_from_config(&config, thread_params_mode, remote_cwd_override),
         approval_policy: Some(config.permissions.approval_policy.value().into()),
         approvals_reviewer: approvals_reviewer_override_from_config(&config),
         sandbox: sandbox_mode_from_policy(config.permissions.sandbox_policy.get().clone()),
@@ -893,10 +925,16 @@ fn thread_fork_params_from_config(
     }
 }
 
-fn thread_cwd_from_config(config: &Config, thread_params_mode: ThreadParamsMode) -> Option<String> {
+fn thread_cwd_from_config(
+    config: &Config,
+    thread_params_mode: ThreadParamsMode,
+    remote_cwd_override: Option<&std::path::Path>,
+) -> Option<String> {
     match thread_params_mode {
         ThreadParamsMode::Embedded => Some(config.cwd.to_string_lossy().to_string()),
-        ThreadParamsMode::Remote => None,
+        ThreadParamsMode::Remote => {
+            remote_cwd_override.map(|cwd| cwd.to_string_lossy().to_string())
+        }
     }
 }
 
@@ -1050,7 +1088,7 @@ async fn thread_session_state_from_thread_response(
         .map(ThreadId::from_string)
         .transpose()
         .map_err(|err| format!("forked_from_id is invalid: {err}"))?;
-    let (history_log_id, history_entry_count) = message_history::history_metadata(config).await;
+    let (history_log_id, history_entry_count) = message_history_metadata(config).await;
     let history_entry_count = u64::try_from(history_entry_count).unwrap_or(u64::MAX);
 
     Ok(ThreadSessionState {
@@ -1143,26 +1181,76 @@ mod tests {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let config = build_config(&temp_dir).await;
 
-        let params = thread_start_params_from_config(&config, ThreadParamsMode::Embedded);
+        let params = thread_start_params_from_config(
+            &config,
+            ThreadParamsMode::Embedded,
+            /*remote_cwd_override*/ None,
+        );
 
         assert_eq!(params.cwd, Some(config.cwd.to_string_lossy().to_string()));
         assert_eq!(params.model_provider, Some(config.model_provider_id));
     }
 
     #[tokio::test]
-    async fn thread_lifecycle_params_omit_local_overrides_for_remote_sessions() {
+    async fn thread_lifecycle_params_omit_cwd_without_remote_override_for_remote_sessions() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let config = build_config(&temp_dir).await;
         let thread_id = ThreadId::new();
 
-        let start = thread_start_params_from_config(&config, ThreadParamsMode::Remote);
-        let resume =
-            thread_resume_params_from_config(config.clone(), thread_id, ThreadParamsMode::Remote);
-        let fork = thread_fork_params_from_config(config, thread_id, ThreadParamsMode::Remote);
+        let start = thread_start_params_from_config(
+            &config,
+            ThreadParamsMode::Remote,
+            /*remote_cwd_override*/ None,
+        );
+        let resume = thread_resume_params_from_config(
+            config.clone(),
+            thread_id,
+            ThreadParamsMode::Remote,
+            /*remote_cwd_override*/ None,
+        );
+        let fork = thread_fork_params_from_config(
+            config,
+            thread_id,
+            ThreadParamsMode::Remote,
+            /*remote_cwd_override*/ None,
+        );
 
         assert_eq!(start.cwd, None);
         assert_eq!(resume.cwd, None);
         assert_eq!(fork.cwd, None);
+        assert_eq!(start.model_provider, None);
+        assert_eq!(resume.model_provider, None);
+        assert_eq!(fork.model_provider, None);
+    }
+
+    #[tokio::test]
+    async fn thread_lifecycle_params_forward_explicit_remote_cwd_override_for_remote_sessions() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let config = build_config(&temp_dir).await;
+        let thread_id = ThreadId::new();
+        let remote_cwd = PathBuf::from("repo/on/server");
+
+        let start = thread_start_params_from_config(
+            &config,
+            ThreadParamsMode::Remote,
+            Some(remote_cwd.as_path()),
+        );
+        let resume = thread_resume_params_from_config(
+            config.clone(),
+            thread_id,
+            ThreadParamsMode::Remote,
+            Some(remote_cwd.as_path()),
+        );
+        let fork = thread_fork_params_from_config(
+            config,
+            thread_id,
+            ThreadParamsMode::Remote,
+            Some(remote_cwd.as_path()),
+        );
+
+        assert_eq!(start.cwd.as_deref(), Some("repo/on/server"));
+        assert_eq!(resume.cwd.as_deref(), Some("repo/on/server"));
+        assert_eq!(fork.cwd.as_deref(), Some("repo/on/server"));
         assert_eq!(start.model_provider, None);
         assert_eq!(resume.model_provider, None);
         assert_eq!(fork.model_provider, None);
@@ -1211,6 +1299,9 @@ mod tests {
                     ],
                     status: TurnStatus::Completed,
                     error: None,
+                    started_at: None,
+                    completed_at: None,
+                    duration_ms: None,
                 }],
             },
             model: "gpt-5.4".to_string(),
@@ -1237,10 +1328,10 @@ mod tests {
         let config = build_config(&temp_dir).await;
         let thread_id = ThreadId::new();
 
-        message_history::append_entry("older", &thread_id, &config)
+        append_message_history_entry("older", &thread_id, &config)
             .await
             .expect("history append should succeed");
-        message_history::append_entry("newer", &thread_id, &config)
+        append_message_history_entry("newer", &thread_id, &config)
             .await
             .expect("history append should succeed");
 

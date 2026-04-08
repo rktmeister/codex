@@ -65,6 +65,7 @@ use codex_app_server_protocol::GetAccountRateLimitsResponse;
 use codex_app_server_protocol::ListMcpServerStatusParams;
 use codex_app_server_protocol::ListMcpServerStatusResponse;
 use codex_app_server_protocol::McpServerStatus;
+use codex_app_server_protocol::McpServerStatusDetail;
 use codex_app_server_protocol::PluginInstallParams;
 use codex_app_server_protocol::PluginInstallResponse;
 use codex_app_server_protocol::PluginListParams;
@@ -85,19 +86,20 @@ use codex_app_server_protocol::TurnError as AppServerTurnError;
 use codex_app_server_protocol::TurnStatus;
 use codex_config::types::ApprovalsReviewer;
 use codex_config::types::ModelAvailabilityNuxConfig;
+use codex_core::append_message_history_entry;
 use codex_core::config::Config;
 use codex_core::config::ConfigBuilder;
 use codex_core::config::ConfigOverrides;
 use codex_core::config::edit::ConfigEdit;
 use codex_core::config::edit::ConfigEditsBuilder;
 use codex_core::config_loader::ConfigLayerStackOrdering;
-use codex_core::message_history;
-use codex_core::models_manager::collaboration_mode_presets::CollaborationModesConfig;
-use codex_core::models_manager::model_presets::HIDE_GPT_5_1_CODEX_MAX_MIGRATION_PROMPT_CONFIG;
-use codex_core::models_manager::model_presets::HIDE_GPT5_1_MIGRATION_PROMPT_CONFIG;
+use codex_core::lookup_message_history_entry;
 #[cfg(target_os = "windows")]
 use codex_core::windows_sandbox::WindowsSandboxLevelExt;
 use codex_features::Feature;
+use codex_models_manager::collaboration_mode_presets::CollaborationModesConfig;
+use codex_models_manager::model_presets::HIDE_GPT_5_1_CODEX_MAX_MIGRATION_PROMPT_CONFIG;
+use codex_models_manager::model_presets::HIDE_GPT5_1_MIGRATION_PROMPT_CONFIG;
 use codex_otel::SessionTelemetry;
 use codex_protocol::ThreadId;
 use codex_protocol::approvals::ExecApprovalRequestEvent;
@@ -315,12 +317,13 @@ fn session_summary(
     thread_id: Option<ThreadId>,
     thread_name: Option<String>,
 ) -> Option<SessionSummary> {
-    if token_usage.is_zero() {
+    let usage_line = (!token_usage.is_zero()).then(|| FinalOutput::from(token_usage).to_string());
+    let resume_command = codex_core::util::resume_command(thread_name.as_deref(), thread_id);
+
+    if usage_line.is_none() && resume_command.is_none() {
         return None;
     }
 
-    let usage_line = FinalOutput::from(token_usage).to_string();
-    let resume_command = codex_core::util::resume_command(thread_name.as_deref(), thread_id);
     Some(SessionSummary {
         usage_line,
         resume_command,
@@ -471,8 +474,10 @@ fn emit_project_config_warnings(app_event_tx: &AppEventSender, config: &Config) 
     )));
 }
 
-fn emit_system_bwrap_warning(app_event_tx: &AppEventSender) {
-    let Some(message) = codex_core::config::system_bwrap_warning() else {
+fn emit_system_bwrap_warning(app_event_tx: &AppEventSender, config: &Config) {
+    let Some(message) =
+        codex_core::config::system_bwrap_warning(config.permissions.sandbox_policy.get())
+    else {
         return;
     };
 
@@ -483,7 +488,7 @@ fn emit_system_bwrap_warning(app_event_tx: &AppEventSender) {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SessionSummary {
-    usage_line: String,
+    usage_line: Option<String>,
     resume_command: Option<String>,
 }
 
@@ -1020,7 +1025,7 @@ fn normalize_harness_overrides_for_cwd(
 
     let mut normalized = Vec::with_capacity(overrides.additional_writable_roots.len());
     for root in overrides.additional_writable_roots.drain(..) {
-        let absolute = AbsolutePathBuf::resolve_path_against_base(root, base_cwd)?;
+        let absolute = AbsolutePathBuf::resolve_path_against_base(root, base_cwd);
         normalized.push(absolute.into_path_buf());
     }
     overrides.additional_writable_roots = normalized;
@@ -1870,8 +1875,8 @@ impl App {
         Ok(())
     }
 
-    /// Spawn a background task that fetches the full MCP server inventory from the
-    /// app-server via paginated RPCs, then delivers the result back through
+    /// Spawn a background task that fetches MCP server status from the app-server
+    /// via paginated RPCs, then delivers the result back through
     /// `AppEvent::McpInventoryLoaded`.
     ///
     /// The spawned task is fire-and-forget: no `JoinHandle` is stored, so a stale
@@ -2124,7 +2129,9 @@ impl App {
 
         self.chat_widget
             .add_to_history(history_cell::new_mcp_tools_output_from_statuses(
-                &config, &statuses,
+                &config,
+                &statuses,
+                McpServerStatusDetail::ToolsAndAuthOnly,
             ));
     }
 
@@ -2155,8 +2162,7 @@ impl App {
                 let text = text.clone();
                 let config = self.chat_widget.config_ref().clone();
                 tokio::spawn(async move {
-                    if let Err(err) =
-                        message_history::append_entry(&text, &thread_id, &config).await
+                    if let Err(err) = append_message_history_entry(&text, &thread_id, &config).await
                     {
                         tracing::warn!(
                             thread_id = %thread_id,
@@ -2174,7 +2180,7 @@ impl App {
                 let app_event_tx = self.app_event_tx.clone();
                 tokio::spawn(async move {
                     let entry_opt = tokio::task::spawn_blocking(move || {
-                        message_history::lookup(log_id, offset, &config)
+                        lookup_message_history_entry(log_id, offset, &config)
                     })
                     .await
                     .unwrap_or_else(|err| {
@@ -3297,7 +3303,10 @@ impl App {
                         "Failed to attach to fresh app-server thread: {err}"
                     ));
                 } else if let Some(summary) = summary {
-                    let mut lines: Vec<Line<'static>> = vec![summary.usage_line.clone().into()];
+                    let mut lines: Vec<Line<'static>> = Vec::new();
+                    if let Some(usage_line) = summary.usage_line {
+                        lines.push(usage_line.into());
+                    }
                     if let Some(command) = summary.resume_command {
                         let spans = vec!["To continue this session, run ".into(), command.cyan()];
                         lines.push(spans.into());
@@ -3565,7 +3574,7 @@ impl App {
         let (app_event_tx, mut app_event_rx) = unbounded_channel();
         let app_event_tx = AppEventSender::new(app_event_tx);
         emit_project_config_warnings(&app_event_tx, &config);
-        emit_system_bwrap_warning(&app_event_tx);
+        emit_system_bwrap_warning(&app_event_tx, &config);
         tui.set_notification_method(config.tui_notification_method);
 
         let harness_overrides =
@@ -4110,8 +4119,10 @@ impl App {
                                 {
                                     Ok(()) => {
                                         if let Some(summary) = summary {
-                                            let mut lines: Vec<Line<'static>> =
-                                                vec![summary.usage_line.clone().into()];
+                                            let mut lines: Vec<Line<'static>> = Vec::new();
+                                            if let Some(usage_line) = summary.usage_line {
+                                                lines.push(usage_line.into());
+                                            }
                                             if let Some(command) = summary.resume_command {
                                                 let spans = vec![
                                                     "To continue this session, run ".into(),
@@ -4170,8 +4181,10 @@ impl App {
                             {
                                 Ok(()) => {
                                     if let Some(summary) = summary {
-                                        let mut lines: Vec<Line<'static>> =
-                                            vec![summary.usage_line.clone().into()];
+                                        let mut lines: Vec<Line<'static>> = Vec::new();
+                                        if let Some(usage_line) = summary.usage_line {
+                                            lines.push(usage_line.into());
+                                        }
                                         if let Some(command) = summary.resume_command {
                                             let spans = vec![
                                                 "To continue this session, run ".into(),
@@ -4702,7 +4715,7 @@ impl App {
 
                     tokio::task::spawn_blocking(move || {
                         let requested_path = PathBuf::from(path);
-                        let event = match codex_core::windows_sandbox_read_grants::grant_read_root_non_elevated(
+                        let event = match codex_core::grant_read_root_non_elevated(
                             &policy,
                             policy_cwd.as_path(),
                             command_cwd.as_path(),
@@ -6014,8 +6027,9 @@ impl App {
     }
 }
 
-/// Collect every MCP server status from the app-server by walking the paginated
-/// `mcpServerStatus/list` RPC until no `next_cursor` is returned.
+/// Collect every MCP server status needed for `/mcp` from the app-server by
+/// walking the paginated `mcpServerStatus/list` RPC until no `next_cursor` is
+/// returned.
 ///
 /// All pages are eagerly gathered into a single `Vec` so the caller can render
 /// the inventory atomically. Each page requests up to 100 entries.
@@ -6033,6 +6047,7 @@ async fn fetch_all_mcp_server_statuses(
                 params: ListMcpServerStatusParams {
                     cursor: cursor.clone(),
                     limit: Some(100),
+                    detail: Some(McpServerStatusDetail::ToolsAndAuthOnly),
                 },
             })
             .await
@@ -9268,13 +9283,19 @@ guardian_approval = true
             items,
             status,
             error: None,
+            started_at: None,
+            completed_at: None,
+            duration_ms: None,
         }
     }
 
     fn turn_started_notification(thread_id: ThreadId, turn_id: &str) -> ServerNotification {
         ServerNotification::TurnStarted(TurnStartedNotification {
             thread_id: thread_id.to_string(),
-            turn: test_turn(turn_id, TurnStatus::InProgress, Vec::new()),
+            turn: Turn {
+                started_at: Some(0),
+                ..test_turn(turn_id, TurnStatus::InProgress, Vec::new())
+            },
         })
     }
 
@@ -9285,7 +9306,11 @@ guardian_approval = true
     ) -> ServerNotification {
         ServerNotification::TurnCompleted(TurnCompletedNotification {
             thread_id: thread_id.to_string(),
-            turn: test_turn(turn_id, status, Vec::new()),
+            turn: Turn {
+                completed_at: Some(0),
+                duration_ms: Some(1),
+                ..test_turn(turn_id, status, Vec::new())
+            },
         })
     }
 
@@ -10506,6 +10531,9 @@ guardian_approval = true
                         }],
                         status: TurnStatus::Completed,
                         error: None,
+                        started_at: None,
+                        completed_at: None,
+                        duration_ms: None,
                     },
                     Turn {
                         id: "turn-2".to_string(),
@@ -10526,6 +10554,9 @@ guardian_approval = true
                         ],
                         status: TurnStatus::Completed,
                         error: None,
+                        started_at: None,
+                        completed_at: None,
+                        duration_ms: None,
                     },
                 ],
                 events: Vec::new(),
@@ -10958,7 +10989,7 @@ guardian_approval = true
     }
 
     #[tokio::test]
-    async fn session_summary_skip_zero_usage() {
+    async fn session_summary_skips_when_no_usage_or_resume_hint() {
         assert!(
             session_summary(
                 TokenUsage::default(),
@@ -10983,7 +11014,7 @@ guardian_approval = true
             session_summary(usage, Some(conversation), /*thread_name*/ None).expect("summary");
         assert_eq!(
             summary.usage_line,
-            "Token usage: total=12 input=10 output=2"
+            Some("Token usage: total=12 input=10 output=2".to_string())
         );
         assert_eq!(
             summary.resume_command,

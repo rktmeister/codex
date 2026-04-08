@@ -135,6 +135,16 @@ pub struct ConversationStartParams {
     pub prompt: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transport: Option<ConversationStartTransport>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, JsonSchema, TS)]
+#[serde(tag = "type", rename_all = "snake_case")]
+#[ts(tag = "type")]
+pub enum ConversationStartTransport {
+    Websocket,
+    Webrtc { sdp: String },
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
@@ -1074,10 +1084,7 @@ impl SandboxPolicy {
                 // high-risk subpaths (`config`, `hooks`) read-only.
                 let mut git_admin_roots: Vec<AbsolutePathBuf> = Vec::new();
                 for writable_root in &roots {
-                    #[allow(clippy::expect_used)]
-                    let top_level_git = writable_root
-                        .join(".git")
-                        .expect(".git is a valid relative path");
+                    let top_level_git = writable_root.join(".git");
                     if is_git_pointer_file(&top_level_git)
                         && let Some(gitdir) = resolve_gitdir_from_file(&top_level_git)
                         && gitdir.as_path().is_dir()
@@ -1128,10 +1135,7 @@ fn default_read_only_subpaths_for_writable_root(
     is_git_admin_root: bool,
 ) -> Vec<AbsolutePathBuf> {
     let mut subpaths: Vec<AbsolutePathBuf> = Vec::new();
-    #[allow(clippy::expect_used)]
-    let top_level_git = writable_root
-        .join(".git")
-        .expect(".git is a valid relative path");
+    let top_level_git = writable_root.join(".git");
     // This applies to typical repos (directory .git), worktrees/submodules
     // (file .git with gitdir pointer), and linked-worktree git admin roots
     // discovered separately below.
@@ -1153,8 +1157,7 @@ fn default_read_only_subpaths_for_writable_root(
         protect_high_risk_git_subpaths(&mut subpaths, writable_root);
     }
 
-    #[allow(clippy::expect_used)]
-    let top_level_agents = writable_root.join(".agents").expect("valid relative path");
+    let top_level_agents = writable_root.join(".agents");
     if top_level_agents.as_path().is_dir() {
         push_read_only_subpath(&mut subpaths, top_level_agents);
     }
@@ -1163,8 +1166,7 @@ fn default_read_only_subpaths_for_writable_root(
     // default. For the workspace root itself, protect it even before the
     // directory exists so first-time creation still goes through the
     // protected-path approval flow.
-    #[allow(clippy::expect_used)]
-    let top_level_codex = writable_root.join(".codex").expect("valid relative path");
+    let top_level_codex = writable_root.join(".codex");
     if protect_missing_dot_codex || top_level_codex.as_path().is_dir() {
         push_read_only_subpath(&mut subpaths, top_level_codex);
     }
@@ -1186,9 +1188,8 @@ fn push_read_only_subpath(subpaths: &mut Vec<AbsolutePathBuf>, subpath: Absolute
 
 fn protect_high_risk_git_subpaths(subpaths: &mut Vec<AbsolutePathBuf>, git_dir: &AbsolutePathBuf) {
     for relative_path in ["config", "hooks"] {
-        if let Ok(path) = git_dir.join(relative_path) {
-            push_read_only_subpath(subpaths, path);
-        }
+        let path = git_dir.join(relative_path);
+        push_read_only_subpath(subpaths, path);
     }
 }
 
@@ -1233,16 +1234,7 @@ fn resolve_gitdir_from_file(dot_git: &AbsolutePathBuf) -> Option<AbsolutePathBuf
             return None;
         }
     };
-    let gitdir_path = match AbsolutePathBuf::resolve_path_against_base(gitdir_raw, base) {
-        Ok(path) => path,
-        Err(err) => {
-            error!(
-                "Failed to resolve gitdir path {gitdir_raw} from {path}: {err}",
-                path = dot_git.as_path().display()
-            );
-            return None;
-        }
-    };
+    let gitdir_path = AbsolutePathBuf::resolve_path_against_base(gitdir_raw, base);
     if !gitdir_path.as_path().exists() {
         error!(
             "Resolved gitdir path {path} does not exist.",
@@ -1254,16 +1246,7 @@ fn resolve_gitdir_from_file(dot_git: &AbsolutePathBuf) -> Option<AbsolutePathBuf
 }
 
 fn resolve_commondir_from_gitdir(gitdir: &AbsolutePathBuf) -> Option<AbsolutePathBuf> {
-    let commondir_file = match gitdir.join("commondir") {
-        Ok(path) => path,
-        Err(err) => {
-            error!(
-                "Failed to construct commondir path under {path}: {err}",
-                path = gitdir.as_path().display()
-            );
-            return None;
-        }
-    };
+    let commondir_file = gitdir.join("commondir");
     if !commondir_file.as_path().is_file() {
         return None;
     }
@@ -1289,16 +1272,7 @@ fn resolve_commondir_from_gitdir(gitdir: &AbsolutePathBuf) -> Option<AbsolutePat
     }
 
     let commondir_path =
-        match AbsolutePathBuf::resolve_path_against_base(commondir_raw, gitdir.as_path()) {
-            Ok(path) => path,
-            Err(err) => {
-                error!(
-                    "Failed to resolve commondir path {commondir_raw} from {path}: {err}",
-                    path = commondir_file.as_path().display()
-                );
-                return None;
-            }
-        };
+        AbsolutePathBuf::resolve_path_against_base(commondir_raw, gitdir.as_path());
     if !commondir_path.as_path().exists() {
         error!(
             "Resolved commondir path {path} does not exist.",
@@ -1340,6 +1314,9 @@ pub enum EventMsg {
 
     /// Realtime conversation lifecycle close event.
     RealtimeConversationClosed(RealtimeConversationClosedEvent),
+
+    /// Realtime session description protocol payload.
+    RealtimeConversationSdp(RealtimeConversationSdpEvent),
 
     /// Model routing changed from the requested model to a different model.
     ModelReroute(ModelRerouteEvent),
@@ -1641,6 +1618,11 @@ pub struct RealtimeConversationRealtimeEvent {
 pub struct RealtimeConversationClosedEvent {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, JsonSchema, TS)]
+pub struct RealtimeConversationSdpEvent {
+    pub sdp: String,
 }
 
 impl From<CollabAgentSpawnBeginEvent> for EventMsg {
@@ -1968,11 +1950,23 @@ pub struct ContextCompactedEvent;
 pub struct TurnCompleteEvent {
     pub turn_id: String,
     pub last_agent_message: Option<String>,
+    /// Unix timestamp (in seconds) when the turn completed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(type = "number | null", optional)]
+    pub completed_at: Option<i64>,
+    /// Duration between turn start and completion in milliseconds, if known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(type = "number | null", optional)]
+    pub duration_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
 pub struct TurnStartedEvent {
     pub turn_id: String,
+    /// Unix timestamp (in seconds) when the turn started.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(type = "number | null", optional)]
+    pub started_at: Option<i64>,
     // TODO(aibrahim): make this not optional
     pub model_context_window: Option<i64>,
     #[serde(default)]
@@ -3479,6 +3473,14 @@ pub struct Chunk {
 pub struct TurnAbortedEvent {
     pub turn_id: Option<String>,
     pub reason: TurnAbortReason,
+    /// Unix timestamp (in seconds) when the turn was aborted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(type = "number | null", optional)]
+    pub completed_at: Option<i64>,
+    /// Duration between turn start and abort in milliseconds, if known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(type = "number | null", optional)]
+    pub duration_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, JsonSchema, TS)]
@@ -4134,7 +4136,7 @@ mod tests {
             .flat_map(|root| {
                 root.read_only_subpaths
                     .iter()
-                    .map(|subpath| subpath.as_path())
+                    .map(codex_utils_absolute_path::AbsolutePathBuf::as_path)
             })
             .collect();
 
@@ -4204,8 +4206,7 @@ mod tests {
             .last()
             .and_then(|path| AbsolutePathBuf::from_absolute_path(path).ok())
             .expect("filesystem root");
-        let blocked = AbsolutePathBuf::resolve_path_against_base("blocked", cwd.path())
-            .expect("resolve blocked");
+        let blocked = AbsolutePathBuf::resolve_path_against_base("blocked", cwd.path());
         let expected_blocked = AbsolutePathBuf::from_absolute_path(
             cwd.path()
                 .canonicalize()
@@ -4256,8 +4257,7 @@ mod tests {
         let canonical_cwd = cwd.path().canonicalize().expect("canonicalize cwd");
         let cwd_absolute =
             AbsolutePathBuf::from_absolute_path(&canonical_cwd).expect("absolute tempdir");
-        let secret = AbsolutePathBuf::resolve_path_against_base("secret", cwd.path())
-            .expect("resolve unreadable path");
+        let secret = AbsolutePathBuf::resolve_path_against_base("secret", cwd.path());
         let expected_secret = AbsolutePathBuf::from_absolute_path(canonical_cwd.join("secret"))
             .expect("canonical secret");
         let expected_agents = AbsolutePathBuf::from_absolute_path(canonical_cwd.join(".agents"))
@@ -4322,10 +4322,8 @@ mod tests {
     fn restricted_file_system_policy_treats_read_entries_as_read_only_subpaths() {
         let cwd = TempDir::new().expect("tempdir");
         let canonical_cwd = cwd.path().canonicalize().expect("canonicalize cwd");
-        let docs =
-            AbsolutePathBuf::resolve_path_against_base("docs", cwd.path()).expect("resolve docs");
-        let docs_public = AbsolutePathBuf::resolve_path_against_base("docs/public", cwd.path())
-            .expect("resolve docs/public");
+        let docs = AbsolutePathBuf::resolve_path_against_base("docs", cwd.path());
+        let docs_public = AbsolutePathBuf::resolve_path_against_base("docs/public", cwd.path());
         let expected_docs = AbsolutePathBuf::from_absolute_path(canonical_cwd.join("docs"))
             .expect("canonical docs");
         let expected_docs_public =
@@ -4369,8 +4367,7 @@ mod tests {
     #[test]
     fn legacy_workspace_write_nested_readable_root_stays_writable() {
         let cwd = TempDir::new().expect("tempdir");
-        let docs =
-            AbsolutePathBuf::resolve_path_against_base("docs", cwd.path()).expect("resolve docs");
+        let docs = AbsolutePathBuf::resolve_path_against_base("docs", cwd.path());
         let canonical_cwd = cwd.path().canonicalize().expect("canonicalize cwd");
         let expected_dot_codex = AbsolutePathBuf::from_absolute_path(canonical_cwd.join(".codex"))
             .expect("canonical .codex");
@@ -4427,12 +4424,9 @@ mod tests {
     #[test]
     fn legacy_sandbox_policy_semantics_survive_split_bridge() {
         let cwd = TempDir::new().expect("tempdir");
-        let readable_root = AbsolutePathBuf::resolve_path_against_base("readable", cwd.path())
-            .expect("resolve readable root");
-        let writable_root = AbsolutePathBuf::resolve_path_against_base("writable", cwd.path())
-            .expect("resolve writable root");
-        let nested_readable_root = AbsolutePathBuf::resolve_path_against_base("docs", cwd.path())
-            .expect("resolve nested readable root");
+        let readable_root = AbsolutePathBuf::resolve_path_against_base("readable", cwd.path());
+        let writable_root = AbsolutePathBuf::resolve_path_against_base("writable", cwd.path());
+        let nested_readable_root = AbsolutePathBuf::resolve_path_against_base("docs", cwd.path());
         let policies = [
             SandboxPolicy::DangerFullAccess,
             SandboxPolicy::ExternalSandbox {
@@ -4621,6 +4615,14 @@ mod tests {
         let start = Op::RealtimeConversationStart(ConversationStartParams {
             prompt: "be helpful".to_string(),
             session_id: Some("conv_1".to_string()),
+            transport: None,
+        });
+        let webrtc_start = Op::RealtimeConversationStart(ConversationStartParams {
+            prompt: "be helpful".to_string(),
+            session_id: Some("conv_1".to_string()),
+            transport: Some(ConversationStartTransport::Webrtc {
+                sdp: "v=offer\r\n".to_string(),
+            }),
         });
         let text = Op::RealtimeConversationText(ConversationTextParams {
             text: "hello".to_string(),
@@ -4660,6 +4662,18 @@ mod tests {
         assert_eq!(
             serde_json::from_value::<Op>(serde_json::to_value(&close).unwrap()).unwrap(),
             close
+        );
+        assert_eq!(
+            serde_json::to_value(&webrtc_start).unwrap(),
+            json!({
+                "type": "realtime_conversation_start",
+                "prompt": "be helpful",
+                "session_id": "conv_1",
+                "transport": {
+                    "type": "webrtc",
+                    "sdp": "v=offer\r\n"
+                }
+            })
         );
     }
 
@@ -4769,7 +4783,9 @@ mod tests {
         }))?;
 
         match event {
-            EventMsg::TurnAborted(TurnAbortedEvent { turn_id, reason }) => {
+            EventMsg::TurnAborted(TurnAbortedEvent {
+                turn_id, reason, ..
+            }) => {
                 assert_eq!(turn_id, None);
                 assert_eq!(reason, TurnAbortReason::Interrupted);
             }
