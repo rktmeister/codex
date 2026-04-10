@@ -41,8 +41,7 @@ fn status_line_segment(item: StatusLineItem, value: String) -> Vec<Span<'static>
         StatusLineItem::GitBranch => vec![" ".green(), Span::from(value).green()],
         StatusLineItem::BranchLinesAdded => vec![Span::from(format!("+{value}")).green()],
         StatusLineItem::BranchLinesRemoved => vec![Span::from(format!("-{value}")).red()],
-        StatusLineItem::ContextRemaining => percent_segment("◔", value, true),
-        StatusLineItem::ContextUsed => percent_segment("◕", value, false),
+        StatusLineItem::ContextUsage => vec![Span::from(value)],
         StatusLineItem::FiveHourLimit => limit_segment("5h", value),
         StatusLineItem::WeeklyLimit => limit_segment("week", value),
         StatusLineItem::CodexVersion => vec!["codex ".magenta(), Span::from(value).dim()],
@@ -71,18 +70,6 @@ fn model_segment(value: String) -> Vec<Span<'static>> {
 
 fn labeled_segment(label: &'static str, value: String) -> Vec<Span<'static>> {
     vec![Span::from(format!("{label} ")).dim(), value.into()]
-}
-
-fn percent_segment(
-    icon: &'static str,
-    value: String,
-    positive_when_high: bool,
-) -> Vec<Span<'static>> {
-    let style = semantic_percent_style(extract_percent(&value), positive_when_high);
-    vec![
-        Span::styled(format!("{icon} "), style),
-        Span::styled(value, style),
-    ]
 }
 
 fn limit_segment(label: &'static str, value: String) -> Vec<Span<'static>> {
@@ -175,7 +162,7 @@ mod tests {
                 StatusLineItem::ModelWithReasoning,
                 "gpt-5.3-codex xhigh".to_string(),
             ),
-            (StatusLineItem::ContextRemaining, "98% left".to_string()),
+            (StatusLineItem::ContextUsage, "Context [█████]".to_string()),
             (StatusLineItem::ProjectRoot, "noumena".to_string()),
             (StatusLineItem::GitBranch, "launch/march6".to_string()),
             (StatusLineItem::BranchLinesAdded, "21770".to_string()),
@@ -191,8 +178,7 @@ mod tests {
                 " ".to_string(),
                 "xhigh".to_string(),
                 "  ".to_string(),
-                "◔ ".to_string(),
-                "98% left".to_string(),
+                "Context [█████]".to_string(),
                 "  ".to_string(),
                 "⌂ ".to_string(),
                 "noumena".to_string(),
@@ -209,10 +195,9 @@ mod tests {
         assert_eq!(line.spans[1].style.fg, Some(Color::Cyan));
         assert!(line.spans[1].style.add_modifier.contains(Modifier::BOLD));
         assert_eq!(line.spans[3].style.fg, Some(Color::Cyan));
-        assert_eq!(line.spans[5].style.fg, Some(Color::Green));
-        assert_eq!(line.spans[11].style.fg, Some(Color::Green));
-        assert_eq!(line.spans[14].style.fg, Some(Color::Green));
-        assert_eq!(line.spans[16].style.fg, Some(Color::Red));
+        assert_eq!(line.spans[10].style.fg, Some(Color::Green));
+        assert_eq!(line.spans[13].style.fg, Some(Color::Green));
+        assert_eq!(line.spans[15].style.fg, Some(Color::Red));
     }
 
     #[test]

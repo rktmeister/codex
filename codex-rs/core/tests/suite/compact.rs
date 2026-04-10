@@ -245,6 +245,7 @@ async fn summarize_context_three_requests_and_instructions() {
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .unwrap();
@@ -267,6 +268,7 @@ async fn summarize_context_three_requests_and_instructions() {
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .unwrap();
@@ -441,6 +443,7 @@ async fn manual_compact_uses_custom_prompt() {
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .expect("submit first user turn");
@@ -585,6 +588,7 @@ async fn manual_compact_emits_context_compaction_items() {
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .unwrap();
@@ -748,6 +752,7 @@ async fn multiple_auto_compact_per_task_runs_after_token_limit_hit() {
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .expect("submit user input");
@@ -1247,6 +1252,7 @@ async fn auto_compact_runs_after_token_limit_hit() {
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .unwrap();
@@ -1260,6 +1266,7 @@ async fn auto_compact_runs_after_token_limit_hit() {
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .unwrap();
@@ -1273,6 +1280,7 @@ async fn auto_compact_runs_after_token_limit_hit() {
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .unwrap();
@@ -1441,6 +1449,7 @@ async fn auto_compact_emits_context_compaction_items() {
                     text_elements: Vec::new(),
                 }],
                 final_output_json_schema: None,
+                responsesapi_client_metadata: None,
             })
             .await
             .unwrap();
@@ -1519,6 +1528,7 @@ async fn auto_compact_starts_after_turn_started() {
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .unwrap();
@@ -1531,6 +1541,7 @@ async fn auto_compact_starts_after_turn_started() {
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .unwrap();
@@ -1543,6 +1554,7 @@ async fn auto_compact_starts_after_turn_started() {
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .unwrap();
@@ -2035,6 +2047,7 @@ async fn auto_compact_persists_rollout_entries() {
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .unwrap();
@@ -2047,6 +2060,7 @@ async fn auto_compact_persists_rollout_entries() {
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .unwrap();
@@ -2059,6 +2073,7 @@ async fn auto_compact_persists_rollout_entries() {
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .unwrap();
@@ -2145,6 +2160,7 @@ async fn manual_compact_retries_after_context_window_error() {
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .unwrap();
@@ -2256,6 +2272,7 @@ async fn manual_compact_non_context_failure_retries_then_emits_task_error() {
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .expect("submit user input");
@@ -2348,6 +2365,7 @@ async fn manual_compact_twice_preserves_latest_user_messages() {
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .unwrap();
@@ -2363,6 +2381,7 @@ async fn manual_compact_twice_preserves_latest_user_messages() {
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .unwrap();
@@ -2378,6 +2397,7 @@ async fn manual_compact_twice_preserves_latest_user_messages() {
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .unwrap();
@@ -2539,6 +2559,7 @@ async fn auto_compact_allows_multiple_attempts_when_interleaved_with_other_turn_
                     text_elements: Vec::new(),
                 }],
                 final_output_json_schema: None,
+                responsesapi_client_metadata: None,
             })
             .await
             .unwrap();
@@ -2641,6 +2662,7 @@ async fn snapshot_request_shape_mid_turn_continuation_compaction() {
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .unwrap();
@@ -2837,6 +2859,7 @@ async fn auto_compact_counts_encrypted_reasoning_before_last_user() {
                     text_elements: Vec::new(),
                 }],
                 final_output_json_schema: None,
+                responsesapi_client_metadata: None,
             })
             .await
             .unwrap();
@@ -2954,6 +2977,7 @@ async fn auto_compact_runs_when_reasoning_header_clears_between_turns() {
                     text_elements: Vec::new(),
                 }],
                 final_output_json_schema: None,
+                responsesapi_client_metadata: None,
             })
             .await
             .unwrap();
@@ -3013,6 +3037,7 @@ async fn snapshot_request_shape_pre_turn_compaction_including_incoming_user_mess
                     text_elements: Vec::new(),
                 }],
                 final_output_json_schema: None,
+                responsesapi_client_metadata: None,
             })
             .await
             .expect("submit user input");
@@ -3048,6 +3073,7 @@ async fn snapshot_request_shape_pre_turn_compaction_including_incoming_user_mess
                 },
             ],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .expect("submit user input");
@@ -3258,6 +3284,7 @@ async fn snapshot_request_shape_pre_turn_compaction_context_window_exceeded() {
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .expect("submit first user");
@@ -3270,6 +3297,7 @@ async fn snapshot_request_shape_pre_turn_compaction_context_window_exceeded() {
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .expect("submit second user");
@@ -3340,6 +3368,7 @@ async fn snapshot_request_shape_manual_compact_without_previous_user_messages() 
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .expect("submit follow-up user input");

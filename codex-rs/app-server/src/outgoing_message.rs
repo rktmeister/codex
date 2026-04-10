@@ -426,9 +426,7 @@ impl OutgoingMessageSender {
         thread_id: ThreadId,
     ) -> Vec<ServerRequest> {
         let request_id_to_callback = self.request_id_to_callback.lock().await;
-        let mut requests = request_id_to_callback
-            .iter()
-            .filter_map(|(_, entry)| {
+        let mut requests = request_id_to_callback.values().filter_map(|entry| {
                 (entry.thread_id == Some(thread_id)).then_some(entry.request.clone())
             })
             .collect::<Vec<_>>();
@@ -735,6 +733,7 @@ mod tests {
                     }),
                     secondary: None,
                     credits: None,
+                    spend_control: None,
                     plan_type: Some(PlanType::Plus),
                 },
             });
@@ -754,6 +753,7 @@ mod tests {
                         },
                         "secondary": null,
                         "credits": null,
+                        "spendControl": null,
                         "planType": "plus"
                     }
                 },
@@ -769,6 +769,8 @@ mod tests {
         let notification = ServerNotification::AccountUpdated(AccountUpdatedNotification {
             auth_mode: Some(AuthMode::ApiKey),
             plan_type: None,
+            workspace_role: None,
+            is_workspace_owner: None,
         });
 
         let jsonrpc_notification = OutgoingMessage::AppServerNotification(notification);
@@ -777,7 +779,9 @@ mod tests {
                 "method": "account/updated",
                 "params": {
                     "authMode": "apikey",
-                    "planType": null
+                    "planType": null,
+                    "workspaceRole": null,
+                    "isWorkspaceOwner": null
                 },
             }),
             serde_json::to_value(jsonrpc_notification)

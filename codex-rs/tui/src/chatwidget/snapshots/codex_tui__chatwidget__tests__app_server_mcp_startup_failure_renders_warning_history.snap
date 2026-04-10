@@ -1,6 +1,5 @@
 ---
 source: tui/src/chatwidget/tests/mcp_startup.rs
-assertion_line: 141
 expression: normalize_snapshot_paths(term.backend().vt100().screen().contents())
 ---
 
@@ -12,4 +11,4 @@ expression: normalize_snapshot_paths(term.backend().vt100().screen().contents())
 
 › Ask Codex to do anything
 
-  ◉ gpt-5.3-codex default  ◔ 100% left
+  ◉ gpt-5.3-codex default  Context [     ]

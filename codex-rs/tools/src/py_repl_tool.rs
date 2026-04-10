@@ -42,11 +42,7 @@ pub fn create_py_repl_reset_tool() -> ToolSpec {
                 .to_string(),
         strict: false,
         defer_loading: None,
-        parameters: JsonSchema::Object {
-            properties: BTreeMap::new(),
-            required: None,
-            additional_properties: Some(false.into()),
-        },
+        parameters: JsonSchema::object(BTreeMap::new(), /*required*/ None, Some(false.into())),
         output_schema: None,
     })
 }

@@ -662,7 +662,7 @@ impl PyReplManager {
         let command = SandboxCommand {
             program: self.python_path.clone().into_os_string(),
             args: vec!["-u".to_string(), kernel_path.to_string_lossy().to_string()],
-            cwd: turn.cwd.clone().to_path_buf(),
+            cwd: turn.cwd.clone(),
             env,
             additional_permissions: None,
         };
@@ -697,7 +697,7 @@ impl PyReplManager {
                 sandbox_policy_cwd: &turn.cwd,
                 #[cfg(target_os = "macos")]
                 macos_seatbelt_profile_extensions: None,
-                codex_linux_sandbox_exe: turn.codex_linux_sandbox_exe.as_ref(),
+                codex_linux_sandbox_exe: turn.codex_linux_sandbox_exe.as_deref(),
                 use_legacy_landlock: turn.features.use_legacy_landlock(),
                 windows_sandbox_level: turn.windows_sandbox_level,
                 windows_sandbox_private_desktop: turn
@@ -1169,13 +1169,8 @@ impl PyReplManager {
         let router = ToolRouter::from_config(
             &exec.turn.tools_config,
             ToolRouterParams {
-                mcp_tools: Some(
-                    mcp_tools
-                        .into_iter()
-                        .map(|(name, tool)| (name, tool.tool))
-                        .collect(),
-                ),
-                app_tools: None,
+                deferred_mcp_tools: None,
+                mcp_tools: Some(mcp_tools),
                 discoverable_tools: None,
                 dynamic_tools: exec.turn.dynamic_tools.as_slice(),
             },
