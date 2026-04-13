@@ -41,7 +41,12 @@ Runtime resolution order:
 
 1. `CODEX_PY_REPL_PYTHON_PATH`
 2. `py_repl_python_path` in config
-3. A compatible Python discovered on `PATH`
+3. `<project_root>/.venv` when present
+4. A compatible Python discovered on `PATH`
+
+`<project_root>` is derived from the session `cwd` using the configured
+`project_root_markers`, matching the same root detection Codex uses for
+project docs.
 
 You can configure an explicit runtime path:
 
@@ -70,6 +75,7 @@ py_repl_sys_path = [
 ## Usage
 
 - `py_repl` is a freeform tool: send raw Python source text.
+- Prefer `py_repl` over shelling out to `python - <<'PY'` when you do not need a fresh interpreter or capabilities blocked by the REPL sandbox.
 - Optional first-line pragma:
   - `# codex-py-repl: timeout_ms=15000`
 - Top-level state persists across calls until reset.

@@ -87,6 +87,7 @@ fn render_py_repl_instructions(config: &Config) -> Option<String> {
 
     let mut section = String::from("## Python REPL\n");
     section.push_str("- Use `py_repl` for Python with top-level await in a persistent kernel.\n");
+    section.push_str("- Prefer `py_repl` over shelling out to `python - <<'PY'` when you do not need a fresh interpreter or capabilities blocked by the REPL sandbox.\n");
     section.push_str("- `py_repl` is a freeform/custom tool. Direct `py_repl` calls must send raw Python tool input (optionally with first-line `# codex-py-repl: timeout_ms=15000`). Do not wrap code in JSON (for example `{\"code\":\"...\"}`), quotes, or markdown code fences.\n");
     section.push_str("- Helpers: `codex.tmp_dir`, `codex.tool(name, args=None)`, `codex.emit_image(image_like)`, and `codex.emitImage(image_like)`.\n");
     section.push_str("- `codex.tool(...)` starts a nested tool call. Await it when you need the result; nested tool outputs stay inside Python unless you print or emit them.\n");
@@ -278,51 +279,13 @@ pub async fn discover_project_doc_paths(
         dir = AbsolutePathBuf::try_from(canon)?;
     }
 
-    let mut merged = TomlValue::Table(toml::map::Map::new());
-    for layer in config.config_layer_stack.get_layers(
-        ConfigLayerStackOrdering::LowestPrecedenceFirst,
-        /*include_disabled*/ false,
-    ) {
-        if matches!(layer.name, ConfigLayerSource::Project { .. }) {
-            continue;
-        }
-        merge_toml_values(&mut merged, &layer.config);
-    }
-    let project_root_markers = match project_root_markers_from_config(&merged) {
-        Ok(Some(markers)) => markers,
-        Ok(None) => default_project_root_markers(),
-        Err(err) => {
-            tracing::warn!("invalid project_root_markers: {err}");
-            default_project_root_markers()
-        }
-    };
-    let mut project_root = None;
-    if !project_root_markers.is_empty() {
-        for ancestor in dir.ancestors() {
-            for marker in &project_root_markers {
-                let marker_path = AbsolutePathBuf::try_from(ancestor.join(marker))?;
-                let marker_exists = match fs.get_metadata(&marker_path).await {
-                    Ok(_) => true,
-                    Err(err) if err.kind() == io::ErrorKind::NotFound => false,
-                    Err(err) => return Err(err),
-                };
-                if marker_exists {
-                    project_root = Some(AbsolutePathBuf::try_from(ancestor.to_path_buf())?);
-                    break;
-                }
-            }
-            if project_root.is_some() {
-                break;
-            }
-        }
-    }
-
-    let search_dirs: Vec<AbsolutePathBuf> = if let Some(root) = project_root {
+    let project_root = discover_project_root(config, fs).await?;
+    let search_dirs: Vec<AbsolutePathBuf> = if project_root != dir {
         let mut dirs = Vec::new();
         let mut cursor = dir.clone();
         loop {
             dirs.push(cursor.clone());
-            if cursor == root {
+            if cursor == project_root {
                 break;
             }
             let Some(parent) = cursor.parent() else {
@@ -354,6 +317,58 @@ pub async fn discover_project_doc_paths(
     }
 
     Ok(found)
+}
+
+pub(crate) async fn discover_project_root(
+    config: &Config,
+    fs: &dyn ExecutorFileSystem,
+) -> io::Result<AbsolutePathBuf> {
+    let mut dir = config.cwd.clone();
+    if let Ok(canon) = normalize_path(&dir) {
+        dir = AbsolutePathBuf::try_from(canon)?;
+    }
+
+    let project_root_markers = configured_project_root_markers(config);
+    if project_root_markers.is_empty() {
+        return Ok(dir);
+    }
+
+    for ancestor in dir.ancestors() {
+        for marker in &project_root_markers {
+            let marker_path = AbsolutePathBuf::try_from(ancestor.join(marker))?;
+            let marker_exists = match fs.get_metadata(&marker_path).await {
+                Ok(_) => true,
+                Err(err) if err.kind() == io::ErrorKind::NotFound => false,
+                Err(err) => return Err(err),
+            };
+            if marker_exists {
+                return AbsolutePathBuf::try_from(ancestor.to_path_buf());
+            }
+        }
+    }
+
+    Ok(dir)
+}
+
+fn configured_project_root_markers(config: &Config) -> Vec<String> {
+    let mut merged = TomlValue::Table(toml::map::Map::new());
+    for layer in config.config_layer_stack.get_layers(
+        ConfigLayerStackOrdering::LowestPrecedenceFirst,
+        /*include_disabled*/ false,
+    ) {
+        if matches!(layer.name, ConfigLayerSource::Project { .. }) {
+            continue;
+        }
+        merge_toml_values(&mut merged, &layer.config);
+    }
+    match project_root_markers_from_config(&merged) {
+        Ok(Some(markers)) => markers,
+        Ok(None) => default_project_root_markers(),
+        Err(err) => {
+            tracing::warn!("invalid project_root_markers: {err}");
+            default_project_root_markers()
+        }
+    }
 }
 fn candidate_filenames<'a>(config: &'a Config) -> Vec<&'a str> {
     let mut names: Vec<&'a str> =

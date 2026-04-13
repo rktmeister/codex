@@ -60,6 +60,7 @@ use codex_app_server_protocol::McpServerElicitationRequestParams;
 use codex_config::types::OAuthCredentialsStoreMode;
 use codex_exec_server::Environment;
 use codex_exec_server::EnvironmentManager;
+use codex_exec_server::LOCAL_FS;
 use codex_features::FEATURES;
 use codex_features::Feature;
 use codex_features::unstable_features_warning_event;
@@ -312,6 +313,7 @@ use crate::tools::network_approval::build_blocked_request_observer;
 use crate::tools::network_approval::build_network_policy_decider;
 use crate::tools::parallel::ToolCallRuntime;
 use crate::tools::py_repl::PyReplHandle;
+use crate::tools::py_repl::discover_project_venv_python_path;
 use crate::tools::py_repl::resolve_compatible_python;
 use crate::tools::router::ToolRouterParams;
 use crate::tools::sandboxing::ApprovalStore;
@@ -539,7 +541,11 @@ impl Codex {
             let _ = config.features.disable(Feature::CodeMode);
             config.startup_warnings.push(message);
         }
-        let py_repl_python_path = config.resolve_py_repl_python_path();
+        let py_repl_python_path = if let Some(path) = config.resolve_py_repl_python_path() {
+            Some(path)
+        } else {
+            discover_project_venv_python_path(&config, LOCAL_FS.as_ref()).await
+        };
         if config.features.enabled(Feature::PyRepl)
             && let Err(err) = resolve_compatible_python(py_repl_python_path.as_deref()).await
         {
@@ -2078,12 +2084,17 @@ impl Session {
         services
             .model_client
             .set_window_generation(window_generation);
+        let py_repl_python_path = if let Some(path) = config.resolve_py_repl_python_path() {
+            Some(path)
+        } else {
+            discover_project_venv_python_path(config.as_ref(), LOCAL_FS.as_ref()).await
+        };
         let js_repl = Arc::new(JsReplHandle::with_node_path(
             config.js_repl_node_path.clone(),
             config.js_repl_node_module_dirs.clone(),
         ));
         let py_repl = Arc::new(PyReplHandle::with_python_path(
-            config.resolve_py_repl_python_path(),
+            py_repl_python_path.clone(),
             config.resolve_py_repl_sys_path(),
         ));
         let (out_of_band_elicitation_paused, _out_of_band_elicitation_paused_rx) =

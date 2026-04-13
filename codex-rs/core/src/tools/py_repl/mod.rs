@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use codex_exec_server::ExecutorFileSystem;
 use codex_protocol::ThreadId;
 use codex_protocol::models::FunctionCallOutputContentItem;
 use codex_protocol::models::ImageDetail;
@@ -28,11 +29,13 @@ use uuid::Uuid;
 
 use crate::codex::Session;
 use crate::codex::TurnContext;
+use crate::config::Config;
 use crate::exec::ExecCapturePolicy;
 use crate::exec::ExecExpiration;
 use crate::exec_env::create_env;
 use crate::function_tool::FunctionCallError;
 use crate::original_image_detail::normalize_output_image_detail;
+use crate::project_doc::discover_project_root;
 use crate::sandboxing::ExecOptions;
 use crate::tools::ToolRouter;
 use crate::tools::context::SharedTurnDiffTracker;
@@ -1430,6 +1433,36 @@ pub(crate) async fn resolve_compatible_python(
     Ok(python_path)
 }
 
+pub(crate) async fn discover_project_venv_python_path(
+    config: &Config,
+    fs: &dyn ExecutorFileSystem,
+) -> Option<PathBuf> {
+    let project_root = discover_project_root(config, fs).await.ok()?;
+    let candidates = if cfg!(windows) {
+        [".venv/Scripts/python.exe", ".venv/Scripts/python3.exe"]
+    } else {
+        [".venv/bin/python", ".venv/bin/python3"]
+    };
+
+    for relative in candidates {
+        let candidate = project_root.join(relative);
+        match fs.get_metadata(&candidate).await {
+            Ok(metadata) if metadata.is_file => return Some(candidate.to_path_buf()),
+            Ok(_) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(err) => {
+                warn!(
+                    "failed to inspect py_repl project venv candidate {}: {err}",
+                    candidate.display()
+                );
+                return None;
+            }
+        }
+    }
+
+    None
+}
+
 pub(crate) fn resolve_python(config_path: Option<&Path>) -> Option<PathBuf> {
     if let Some(path) = std::env::var_os("CODEX_PY_REPL_PYTHON_PATH")
         && !path.is_empty()
@@ -1461,10 +1494,14 @@ pub(crate) fn resolve_python(config_path: Option<&Path>) -> Option<PathBuf> {
 mod tests {
     use super::*;
     use crate::codex::make_session_and_context;
+    use crate::config::ConfigBuilder;
+    use codex_exec_server::LOCAL_FS;
     use codex_features::Feature;
     use codex_protocol::models::FunctionCallOutputContentItem;
     use codex_protocol::models::ImageDetail;
+    use codex_utils_absolute_path::AbsolutePathBuf;
     use pretty_assertions::assert_eq;
+    use std::fs;
 
     const VALID_PNG_DATA_URL: &str = crate::tools::repl_image::VALID_TEST_PNG_DATA_URL;
 
@@ -1500,6 +1537,40 @@ mod tests {
             validate_emitted_image_url("data:image/png;base64,AAA="),
             Err("codex.emit_image received invalid image data".to_string())
         );
+    }
+
+    #[tokio::test]
+    async fn discover_project_venv_python_path_uses_project_root() {
+        let repo = tempfile::tempdir().expect("tempdir");
+        fs::write(repo.path().join(".git"), "gitdir: /tmp/test.git\n").expect("write .git marker");
+
+        let nested = repo.path().join("packages/core");
+        fs::create_dir_all(&nested).expect("create nested cwd");
+
+        let python_path = if cfg!(windows) {
+            let scripts = repo.path().join(".venv/Scripts");
+            fs::create_dir_all(&scripts).expect("create scripts dir");
+            scripts.join("python.exe")
+        } else {
+            let bin = repo.path().join(".venv/bin");
+            fs::create_dir_all(&bin).expect("create bin dir");
+            bin.join("python")
+        };
+        fs::write(&python_path, "").expect("create venv interpreter placeholder");
+
+        let codex_home = tempfile::tempdir().expect("codex home");
+        let mut config = ConfigBuilder::default()
+            .codex_home(codex_home.path().to_path_buf())
+            .build()
+            .await
+            .expect("defaults for test should always succeed");
+        config.cwd =
+            AbsolutePathBuf::try_from(dunce::canonicalize(&nested).expect("canonical cwd"))
+                .expect("absolute cwd");
+
+        let resolved = discover_project_venv_python_path(&config, LOCAL_FS.as_ref()).await;
+
+        assert_eq!(resolved, Some(python_path));
     }
 
     #[tokio::test]
