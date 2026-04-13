@@ -426,7 +426,9 @@ impl OutgoingMessageSender {
         thread_id: ThreadId,
     ) -> Vec<ServerRequest> {
         let request_id_to_callback = self.request_id_to_callback.lock().await;
-        let mut requests = request_id_to_callback.values().filter_map(|entry| {
+        let mut requests = request_id_to_callback
+            .values()
+            .filter_map(|entry| {
                 (entry.thread_id == Some(thread_id)).then_some(entry.request.clone())
             })
             .collect::<Vec<_>>();
