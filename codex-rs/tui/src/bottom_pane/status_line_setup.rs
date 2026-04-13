@@ -12,9 +12,9 @@
 //! - Model information (name, reasoning level)
 //! - Directory paths (current dir, project root)
 //! - Git information (branch name)
-//! - Context usage (meter, window size)
+//! - Context usage (remaining %, used %, window size)
 //! - Usage limits (5-hour, weekly)
-//! - Session info (ID, tokens used)
+//! - Session info (thread title, ID, tokens used)
 //! - Application version
 
 use ratatui::buffer::Buffer;
@@ -22,6 +22,7 @@ use ratatui::layout::Rect;
 use ratatui::text::Line;
 use std::collections::BTreeMap;
 use std::collections::HashSet;
+use strum::IntoEnumIterator;
 use strum_macros::Display;
 use strum_macros::EnumIter;
 use strum_macros::EnumString;
@@ -69,15 +70,14 @@ pub(crate) enum StatusLineItem {
     /// Lines removed in the current branch relative to the default branch.
     BranchLinesRemoved,
 
-    /// Visual meter of context window usage.
+    /// Percentage of context window remaining.
+    ContextRemaining,
+
+    /// Percentage of context window used.
     ///
-    /// Also accepts legacy `context-remaining` and `context-used` config values.
-    #[strum(
-        to_string = "context-usage",
-        serialize = "context-remaining",
-        serialize = "context-used"
-    )]
-    ContextUsage,
+    /// Also accepts the legacy `context-usage` config value.
+    #[strum(to_string = "context-used", serialize = "context-usage")]
+    ContextUsed,
 
     /// Remaining usage on the 5-hour rate limit.
     FiveHourLimit,
@@ -105,6 +105,9 @@ pub(crate) enum StatusLineItem {
 
     /// Whether Fast mode is currently active.
     FastMode,
+
+    /// Current thread title (if set by user).
+    ThreadTitle,
 }
 
 impl StatusLineItem {
@@ -122,8 +125,11 @@ impl StatusLineItem {
             StatusLineItem::BranchLinesRemoved => {
                 "Lines removed in current branch relative to default branch (omitted when unavailable)"
             }
-            StatusLineItem::ContextUsage => {
-                "Visual meter of context window usage (omitted when unknown)"
+            StatusLineItem::ContextRemaining => {
+                "Percentage of context window remaining (omitted when unknown)"
+            }
+            StatusLineItem::ContextUsed => {
+                "Percentage of context window used (omitted when unknown)"
             }
             StatusLineItem::FiveHourLimit => {
                 "Remaining usage on 5-hour usage limit (omitted when unavailable)"
@@ -142,29 +148,10 @@ impl StatusLineItem {
                 "Current session identifier (omitted until session starts)"
             }
             StatusLineItem::FastMode => "Whether Fast mode is currently active",
+            StatusLineItem::ThreadTitle => "Current thread title (omitted unless changed by user)",
         }
     }
 }
-
-const SELECTABLE_STATUS_LINE_ITEMS: &[StatusLineItem] = &[
-    StatusLineItem::ModelName,
-    StatusLineItem::ModelWithReasoning,
-    StatusLineItem::CurrentDir,
-    StatusLineItem::ProjectRoot,
-    StatusLineItem::GitBranch,
-    StatusLineItem::BranchLinesAdded,
-    StatusLineItem::BranchLinesRemoved,
-    StatusLineItem::ContextUsage,
-    StatusLineItem::FiveHourLimit,
-    StatusLineItem::WeeklyLimit,
-    StatusLineItem::CodexVersion,
-    StatusLineItem::ContextWindowSize,
-    StatusLineItem::UsedTokens,
-    StatusLineItem::TotalInputTokens,
-    StatusLineItem::TotalOutputTokens,
-    StatusLineItem::SessionId,
-    StatusLineItem::FastMode,
-];
 
 /// Runtime values used to preview the current status-line selection.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -237,7 +224,7 @@ impl StatusLineSetupView {
             }
         }
 
-        for item in SELECTABLE_STATUS_LINE_ITEMS.iter().cloned() {
+        for item in StatusLineItem::iter() {
             let item_id = item.to_string();
             if used_ids.contains(&item_id) {
                 continue;
@@ -322,19 +309,27 @@ mod tests {
     use crate::app_event::AppEvent;
 
     #[test]
-    fn context_usage_is_canonical_and_accepts_legacy_ids() {
-        assert_eq!(StatusLineItem::ContextUsage.to_string(), "context-usage");
-        assert_eq!(
-            "context-usage".parse::<StatusLineItem>(),
-            Ok(StatusLineItem::ContextUsage)
-        );
-        assert_eq!(
-            "context-remaining".parse::<StatusLineItem>(),
-            Ok(StatusLineItem::ContextUsage)
-        );
+    fn context_used_accepts_context_usage_legacy_id() {
+        assert_eq!(StatusLineItem::ContextUsed.to_string(), "context-used");
         assert_eq!(
             "context-used".parse::<StatusLineItem>(),
-            Ok(StatusLineItem::ContextUsage)
+            Ok(StatusLineItem::ContextUsed)
+        );
+        assert_eq!(
+            "context-usage".parse::<StatusLineItem>(),
+            Ok(StatusLineItem::ContextUsed)
+        );
+    }
+
+    #[test]
+    fn context_remaining_is_separate_selectable_id() {
+        assert_eq!(
+            "context-remaining".parse::<StatusLineItem>(),
+            Ok(StatusLineItem::ContextRemaining)
+        );
+        assert_eq!(
+            StatusLineItem::ContextRemaining.to_string(),
+            "context-remaining"
         );
     }
 
@@ -390,6 +385,36 @@ mod tests {
         assert_eq!(
             preview_data.line_for_items(&items),
             format_status_line([(StatusLineItem::ModelName, "gpt-5".to_string())])
+        );
+    }
+
+    #[test]
+    fn preview_includes_thread_title() {
+        let preview_data = StatusLinePreviewData::from_iter([
+            (StatusLineItem::ModelName, "gpt-5".to_string()),
+            (StatusLineItem::ThreadTitle, "Roadmap cleanup".to_string()),
+        ]);
+        let items = vec![
+            MultiSelectItem {
+                id: StatusLineItem::ModelName.to_string(),
+                name: String::new(),
+                description: None,
+                enabled: true,
+            },
+            MultiSelectItem {
+                id: StatusLineItem::ThreadTitle.to_string(),
+                name: String::new(),
+                description: None,
+                enabled: true,
+            },
+        ];
+
+        assert_eq!(
+            preview_data.line_for_items(&items),
+            format_status_line([
+                (StatusLineItem::ModelName, "gpt-5".to_string()),
+                (StatusLineItem::ThreadTitle, "Roadmap cleanup".to_string()),
+            ])
         );
     }
 

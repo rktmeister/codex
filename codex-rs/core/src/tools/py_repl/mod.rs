@@ -1179,14 +1179,14 @@ impl PyReplManager {
             },
         );
 
-        let payload = if let Some((server, tool)) = exec
+        let payload = if let Some(tool_info) = exec
             .session
-            .parse_mcp_tool_name(&req.tool_name, &None)
+            .resolve_mcp_tool_info(&req.tool_name, /*namespace*/ None)
             .await
         {
             crate::tools::context::ToolPayload::Mcp {
-                server,
-                tool,
+                server: tool_info.server_name,
+                tool: tool_info.tool.name.to_string(),
                 raw_arguments: req.arguments.clone(),
             }
         } else if is_freeform_tool(&router.specs(), &req.tool_name) {
@@ -1199,9 +1199,9 @@ impl PyReplManager {
             }
         };
 
+        let tool_name = req.tool_name.clone();
         let call = crate::tools::router::ToolCall {
-            tool_name: req.tool_name.clone(),
-            tool_namespace: None,
+            tool_name: codex_tools::ToolName::plain(tool_name.clone()),
             call_id: req.id.clone(),
             payload,
         };
@@ -1446,7 +1446,7 @@ pub(crate) async fn discover_project_venv_python_path(
 
     for relative in candidates {
         let candidate = project_root.join(relative);
-        match fs.get_metadata(&candidate).await {
+        match fs.get_metadata(&candidate, /*sandbox*/ None).await {
             Ok(metadata) if metadata.is_file => return Some(candidate.to_path_buf()),
             Ok(_) => {}
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,

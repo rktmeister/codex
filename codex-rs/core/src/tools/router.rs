@@ -19,6 +19,7 @@ use codex_protocol::models::SearchToolCallParams;
 use codex_protocol::models::ShellToolCallParams;
 use codex_tools::ConfiguredToolSpec;
 use codex_tools::DiscoverableTool;
+use codex_tools::ToolName;
 use codex_tools::ToolSpec;
 use codex_tools::ToolsConfig;
 use std::collections::HashMap;
@@ -29,8 +30,7 @@ pub use crate::tools::context::ToolCallSource;
 
 #[derive(Clone, Debug)]
 pub struct ToolCall {
-    pub tool_name: String,
-    pub tool_namespace: Option<String>,
+    pub tool_name: ToolName,
     pub call_id: String,
     pub payload: ToolPayload,
 }
@@ -109,7 +109,12 @@ impl ToolRouter {
             .map(|config| config.spec.clone())
     }
 
-    pub fn tool_supports_parallel(&self, tool_name: &str) -> bool {
+    pub fn tool_supports_parallel(&self, tool_name: &ToolName) -> bool {
+        if tool_name.namespace.is_some() {
+            return false;
+        }
+
+        let tool_name = tool_name.name.as_str();
         let supports_parallel = self
             .specs
             .iter()
@@ -144,21 +149,26 @@ impl ToolRouter {
                 call_id,
                 ..
             } => {
-                if let Some((server, tool)) = session.parse_mcp_tool_name(&name, &namespace).await {
+                let mcp_tool = session
+                    .resolve_mcp_tool_info(&name, namespace.as_deref())
+                    .await;
+                let tool_name = match namespace {
+                    Some(namespace) => ToolName::namespaced(namespace, name),
+                    None => ToolName::plain(name),
+                };
+                if let Some(tool_info) = mcp_tool {
                     Ok(Some(ToolCall {
-                        tool_name: name,
-                        tool_namespace: namespace,
+                        tool_name,
                         call_id,
                         payload: ToolPayload::Mcp {
-                            server,
-                            tool,
+                            server: tool_info.server_name,
+                            tool: tool_info.tool.name.to_string(),
                             raw_arguments: arguments,
                         },
                     }))
                 } else {
                     Ok(Some(ToolCall {
-                        tool_name: name,
-                        tool_namespace: namespace,
+                        tool_name,
                         call_id,
                         payload: ToolPayload::Function { arguments },
                     }))
@@ -177,8 +187,7 @@ impl ToolRouter {
                         ))
                     })?;
                 Ok(Some(ToolCall {
-                    tool_name: "tool_search".to_string(),
-                    tool_namespace: None,
+                    tool_name: ToolName::plain("tool_search"),
                     call_id,
                     payload: ToolPayload::ToolSearch { arguments },
                 }))
@@ -190,8 +199,7 @@ impl ToolRouter {
                 call_id,
                 ..
             } => Ok(Some(ToolCall {
-                tool_name: name,
-                tool_namespace: None,
+                tool_name: ToolName::plain(name),
                 call_id,
                 payload: ToolPayload::Custom { input },
             })),
@@ -217,8 +225,7 @@ impl ToolRouter {
                             justification: None,
                         };
                         Ok(Some(ToolCall {
-                            tool_name: "local_shell".to_string(),
-                            tool_namespace: None,
+                            tool_name: ToolName::plain("local_shell"),
                             call_id,
                             payload: ToolPayload::LocalShell { params },
                         }))
@@ -294,39 +301,31 @@ impl ToolRouter {
     ) -> Result<AnyToolResult, FunctionCallError> {
         let ToolCall {
             tool_name,
-            tool_namespace,
             call_id,
             payload,
         } = call;
 
         if source == ToolCallSource::Direct {
+            let direct_js_repl_call = tool_name.namespace.is_none()
+                && matches!(tool_name.name.as_str(), "js_repl" | "js_repl_reset");
+            let direct_py_repl_call = tool_name.namespace.is_none()
+                && matches!(tool_name.name.as_str(), "py_repl" | "py_repl_reset");
             let direct_call_error = match (
                 turn.tools_config.js_repl_tools_only,
                 turn.tools_config.py_repl_tools_only,
             ) {
-                (true, true)
-                    if !matches!(
-                        tool_name.as_str(),
-                        "js_repl" | "js_repl_reset" | "py_repl" | "py_repl_reset"
-                    ) =>
-                {
-                    Some(
-                        "direct tool calls are disabled; use js_repl / py_repl and codex.tool(...) instead"
-                            .to_string(),
-                    )
-                }
-                (true, false) if !matches!(tool_name.as_str(), "js_repl" | "js_repl_reset") => {
-                    Some(
-                        "direct tool calls are disabled; use js_repl and codex.tool(...) instead"
-                            .to_string(),
-                    )
-                }
-                (false, true) if !matches!(tool_name.as_str(), "py_repl" | "py_repl_reset") => {
-                    Some(
-                        "direct tool calls are disabled; use py_repl and codex.tool(...) instead"
-                            .to_string(),
-                    )
-                }
+                (true, true) if !(direct_js_repl_call || direct_py_repl_call) => Some(
+                    "direct tool calls are disabled; use js_repl / py_repl and codex.tool(...) instead"
+                        .to_string(),
+                ),
+                (true, false) if !direct_js_repl_call => Some(
+                    "direct tool calls are disabled; use js_repl and codex.tool(...) instead"
+                        .to_string(),
+                ),
+                (false, true) if !direct_py_repl_call => Some(
+                    "direct tool calls are disabled; use py_repl and codex.tool(...) instead"
+                        .to_string(),
+                ),
                 _ => None,
             };
 
@@ -341,7 +340,6 @@ impl ToolRouter {
             tracker,
             call_id,
             tool_name,
-            tool_namespace,
             payload,
         };
 
