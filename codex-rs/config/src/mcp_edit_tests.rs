@@ -22,8 +22,10 @@ async fn replace_mcp_servers_serializes_per_tool_approval_overrides() -> anyhow:
                 env_vars: Vec::new(),
                 cwd: None,
             },
+            experimental_environment: None,
             enabled: true,
             required: false,
+            supports_parallel_tool_calls: true,
             disabled_reason: None,
             startup_timeout_sec: None,
             tool_timeout_sec: None,
@@ -59,6 +61,7 @@ async fn replace_mcp_servers_serializes_per_tool_approval_overrides() -> anyhow:
         serialized,
         r#"[mcp_servers.docs]
 command = "docs-server"
+supports_parallel_tool_calls = true
 
 [mcp_servers.docs.tools]
 

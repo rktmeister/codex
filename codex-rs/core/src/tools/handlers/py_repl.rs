@@ -60,7 +60,7 @@ async fn emit_py_repl_exec_begin(
 ) {
     let emitter = ToolEmitter::shell(
         vec!["py_repl".to_string()],
-        turn.cwd.to_path_buf(),
+        turn.cwd.clone(),
         ExecCommandSource::Agent,
         false,
     );
@@ -79,7 +79,7 @@ async fn emit_py_repl_exec_end(
     let exec_output = build_py_repl_exec_output(output, error, duration);
     let emitter = ToolEmitter::shell(
         vec!["py_repl".to_string()],
-        turn.cwd.to_path_buf(),
+        turn.cwd.clone(),
         ExecCommandSource::Agent,
         false,
     );
@@ -363,7 +363,7 @@ mod tests {
         assert_eq!(event.call_id, "call-1");
         assert_eq!(event.turn_id, turn.sub_id);
         assert_eq!(event.command, vec!["py_repl".to_string()]);
-        assert_eq!(event.cwd, turn.cwd.to_path_buf());
+        assert_eq!(event.cwd, turn.cwd.clone());
         assert_eq!(event.source, ExecCommandSource::Agent);
         assert_eq!(event.interaction_input, None);
         assert_eq!(event.stdout, "hello");

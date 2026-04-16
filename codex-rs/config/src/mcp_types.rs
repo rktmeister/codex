@@ -61,6 +61,10 @@ pub struct McpServerConfig {
     #[serde(flatten)]
     pub transport: McpServerTransportConfig,
 
+    /// Experimental environment selector for where Codex should start this MCP server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub experimental_environment: Option<String>,
+
     /// When `false`, Codex skips initializing this MCP server.
     #[serde(default = "default_enabled")]
     pub enabled: bool,
@@ -68,6 +72,10 @@ pub struct McpServerConfig {
     /// When `true`, `codex exec` exits with an error if this MCP server fails to initialize.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub required: bool,
+
+    /// When `true`, every tool from this server is advertised as safe for parallel tool calls.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub supports_parallel_tool_calls: bool,
 
     /// Reason this server was disabled after applying requirements.
     #[serde(skip)]
@@ -135,6 +143,8 @@ pub struct RawMcpServerConfig {
 
     // shared
     #[serde(default)]
+    pub experimental_environment: Option<String>,
+    #[serde(default)]
     pub startup_timeout_sec: Option<f64>,
     #[serde(default)]
     pub startup_timeout_ms: Option<u64>,
@@ -145,6 +155,8 @@ pub struct RawMcpServerConfig {
     pub enabled: Option<bool>,
     #[serde(default)]
     pub required: Option<bool>,
+    #[serde(default)]
+    pub supports_parallel_tool_calls: Option<bool>,
     #[serde(default)]
     pub enabled_tools: Option<Vec<String>>,
     #[serde(default)]
@@ -175,11 +187,13 @@ impl TryFrom<RawMcpServerConfig> for McpServerConfig {
             url,
             bearer_token,
             bearer_token_env_var,
+            experimental_environment,
             startup_timeout_sec,
             startup_timeout_ms,
             tool_timeout_sec,
             enabled,
             required,
+            supports_parallel_tool_calls,
             enabled_tools,
             disabled_tools,
             scopes,
@@ -239,10 +253,12 @@ impl TryFrom<RawMcpServerConfig> for McpServerConfig {
 
         Ok(Self {
             transport,
+            experimental_environment,
             startup_timeout_sec,
             tool_timeout_sec,
             enabled: enabled.unwrap_or_else(default_enabled),
             required: required.unwrap_or_default(),
+            supports_parallel_tool_calls: supports_parallel_tool_calls.unwrap_or_default(),
             disabled_reason: None,
             enabled_tools,
             disabled_tools,

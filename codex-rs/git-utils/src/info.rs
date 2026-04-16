@@ -667,7 +667,11 @@ async fn diff_against_sha(cwd: &Path, sha: &GitSha) -> Option<String> {
 /// `[get_git_repo_root]`, but resolves to the root of the main
 /// repository. Handles worktrees via filesystem inspection without invoking
 /// the `git` executable.
-pub fn resolve_root_git_project_for_trust(cwd: &Path) -> Option<PathBuf> {
+pub async fn resolve_root_git_project_for_trust(cwd: &Path) -> Option<PathBuf> {
+    resolve_root_git_project_for_trust_sync(cwd)
+}
+
+fn resolve_root_git_project_for_trust_sync(cwd: &Path) -> Option<PathBuf> {
     let base = if cwd.is_dir() { cwd } else { cwd.parent()? };
     let (repo_root, dot_git) = find_ancestor_git_entry(base)?;
     if dot_git.is_dir() {
@@ -708,7 +712,7 @@ where
         .map(|name| name.to_string_lossy().to_string())
         .unwrap_or_else(|| format_path(root));
 
-    let Some(main_root) = resolve_root_git_project_for_trust(cwd) else {
+    let Some(main_root) = resolve_root_git_project_for_trust_sync(cwd) else {
         return root_name;
     };
     if main_root == root {
