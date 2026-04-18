@@ -27,16 +27,16 @@ use tokio_util::sync::CancellationToken;
 use tracing::warn;
 use uuid::Uuid;
 
-use crate::codex::Session;
-use crate::codex::TurnContext;
+use crate::agents_md::discover_project_root;
 use crate::config::Config;
 use crate::exec::ExecCapturePolicy;
 use crate::exec::ExecExpiration;
 use crate::exec_env::create_env;
 use crate::function_tool::FunctionCallError;
 use crate::original_image_detail::normalize_output_image_detail;
-use crate::project_doc::discover_project_root;
 use crate::sandboxing::ExecOptions;
+use crate::session::session::Session;
+use crate::session::turn_context::TurnContext;
 use crate::tools::ToolRouter;
 use crate::tools::context::SharedTurnDiffTracker;
 use crate::tools::repl_image::validate_repl_image_data_url;
@@ -1531,8 +1531,8 @@ pub(crate) fn resolve_python(config_path: Option<&Path>) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::codex::make_session_and_context;
     use crate::config::ConfigBuilder;
+    use crate::session::tests::make_session_and_context;
     use codex_exec_server::LOCAL_FS;
     use codex_features::Feature;
     use codex_protocol::models::FunctionCallOutputContentItem;

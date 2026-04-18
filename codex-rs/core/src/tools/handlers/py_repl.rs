@@ -4,6 +4,8 @@ use std::time::Duration;
 use std::time::Instant;
 
 use crate::function_tool::FunctionCallError;
+use crate::session::session::Session;
+use crate::session::turn_context::TurnContext;
 use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
@@ -53,11 +55,7 @@ fn build_py_repl_exec_output(
     }
 }
 
-async fn emit_py_repl_exec_begin(
-    session: &crate::codex::Session,
-    turn: &crate::codex::TurnContext,
-    call_id: &str,
-) {
+async fn emit_py_repl_exec_begin(session: &Session, turn: &TurnContext, call_id: &str) {
     let emitter = ToolEmitter::shell(
         vec!["py_repl".to_string()],
         turn.cwd.clone(),
@@ -69,8 +67,8 @@ async fn emit_py_repl_exec_begin(
 }
 
 async fn emit_py_repl_exec_end(
-    session: &crate::codex::Session,
-    turn: &crate::codex::TurnContext,
+    session: &Session,
+    turn: &TurnContext,
     call_id: &str,
     output: &str,
     error: Option<&str>,
@@ -298,7 +296,7 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     use super::parse_freeform_args;
-    use crate::codex::make_session_and_context_with_rx;
+    use crate::session::tests::make_session_and_context_with_rx;
     use codex_protocol::protocol::EventMsg;
     use codex_protocol::protocol::ExecCommandSource;
 

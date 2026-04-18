@@ -335,6 +335,9 @@
             "apply_patch_freeform": {
               "type": "boolean"
             },
+            "apply_patch_streaming_events": {
+              "type": "boolean"
+            },
             "apps": {
               "type": "boolean"
             },
@@ -387,6 +390,9 @@
               "type": "boolean"
             },
             "experimental_windows_sandbox": {
+              "type": "boolean"
+            },
+            "external_migration": {
               "type": "boolean"
             },
             "fast_mode": {
@@ -498,6 +504,9 @@
               "type": "boolean"
             },
             "tool_search": {
+              "type": "boolean"
+            },
+            "tool_search_always_defer_mcp_tools": {
               "type": "boolean"
             },
             "tool_suggest": {
@@ -651,6 +660,39 @@
       },
       "type": "object"
     },
+    "ExternalConfigMigrationPrompts": {
+      "additionalProperties": false,
+      "description": "Settings for notices we display to users via the tui and app-server clients (primarily the Codex IDE extension). NOTE: these are different from notifications - notices are warnings, NUX screens, acknowledgements, etc.",
+      "properties": {
+        "home": {
+          "description": "Tracks whether home-level external config migration prompts are hidden.",
+          "type": "boolean"
+        },
+        "home_last_prompted_at": {
+          "description": "Tracks the last time the home-level external config migration prompt was shown.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "project_last_prompted_at": {
+          "additionalProperties": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "default": {},
+          "description": "Tracks the last time a project-level external config migration prompt was shown.",
+          "type": "object"
+        },
+        "projects": {
+          "additionalProperties": {
+            "type": "boolean"
+          },
+          "default": {},
+          "description": "Tracks which project paths have opted out of external config migration prompts.",
+          "type": "object"
+        }
+      },
+      "type": "object"
+    },
     "FeatureToml_for_MultiAgentV2ConfigToml": {
       "anyOf": [
         {
@@ -694,6 +736,14 @@
       ]
     },
     "FilesystemPermissionsToml": {
+      "properties": {
+        "glob_scan_max_depth": {
+          "description": "Optional maximum depth for expanding unreadable glob patterns on platforms that snapshot glob matches before sandbox startup.",
+          "format": "uint",
+          "minimum": 1.0,
+          "type": "integer"
+        }
+      },
       "type": "object"
     },
     "ForcedLoginMethod": {
@@ -800,6 +850,11 @@
     "MarketplaceConfig": {
       "additionalProperties": false,
       "properties": {
+        "last_revision": {
+          "default": null,
+          "description": "Git revision Codex last successfully activated for this marketplace.",
+          "type": "string"
+        },
         "last_updated": {
           "default": null,
           "description": "Last time Codex successfully added or refreshed this marketplace.",
@@ -865,6 +920,10 @@
           "description": "Model used for memory consolidation.",
           "type": "string"
         },
+        "disable_on_external_context": {
+          "description": "When `true`, external context sources mark the thread `memory_mode` as `\"polluted\"`.",
+          "type": "boolean"
+        },
         "extract_model": {
           "description": "Model used for thread summarisation.",
           "type": "string"
@@ -901,10 +960,6 @@
           "description": "Minimum idle time between last thread activity and memory creation (hours). > 12h recommended.",
           "format": "int64",
           "type": "integer"
-        },
-        "no_memories_if_mcp_or_web_search": {
-          "description": "When `true`, web searches and MCP tool calls mark the thread `memory_mode` as `\"polluted\"`.",
-          "type": "boolean"
         },
         "use_memories": {
           "description": "When `false`, skip injecting memory usage instructions into developer prompts.",
@@ -1155,8 +1210,22 @@
       "type": "object"
     },
     "Notice": {
-      "description": "Settings for notices we display to users via the tui and app-server clients (primarily the Codex IDE extension). NOTE: these are different from notifications - notices are warnings, NUX screens, acknowledgements, etc.",
+      "additionalProperties": false,
       "properties": {
+        "external_config_migration_prompts": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ExternalConfigMigrationPrompts"
+            }
+          ],
+          "default": {
+            "home": null,
+            "home_last_prompted_at": null,
+            "project_last_prompted_at": {},
+            "projects": {}
+          },
+          "description": "Tracks scopes where external config migration prompts should be suppressed."
+        },
         "hide_full_access_warning": {
           "description": "Tracks whether the user has acknowledged the full access warning prompt.",
           "type": "boolean"
@@ -1478,6 +1547,14 @@
         "cwd": {
           "default": null,
           "type": "string"
+        },
+        "default_tools_approval_mode": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/AppToolApproval"
+            }
+          ],
+          "default": null
         },
         "disabled_tools": {
           "default": null,
@@ -2225,6 +2302,9 @@
         "apply_patch_freeform": {
           "type": "boolean"
         },
+        "apply_patch_streaming_events": {
+          "type": "boolean"
+        },
         "apps": {
           "type": "boolean"
         },
@@ -2277,6 +2357,9 @@
           "type": "boolean"
         },
         "experimental_windows_sandbox": {
+          "type": "boolean"
+        },
+        "external_migration": {
           "type": "boolean"
         },
         "fast_mode": {
@@ -2388,6 +2471,9 @@
           "type": "boolean"
         },
         "tool_search": {
+          "type": "boolean"
+        },
+        "tool_search_always_defer_mcp_tools": {
           "type": "boolean"
         },
         "tool_suggest": {

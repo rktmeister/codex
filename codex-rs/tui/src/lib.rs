@@ -119,6 +119,8 @@ mod debug_config;
 mod diff_render;
 mod exec_cell;
 mod exec_command;
+mod external_agent_config_migration;
+mod external_agent_config_migration_startup;
 mod external_editor;
 mod file_search;
 mod frames;
@@ -520,6 +522,7 @@ async fn lookup_session_target_by_name_with_app_server(
                 cursor: cursor.clone(),
                 limit: Some(100),
                 sort_key: Some(AppServerThreadSortKey::UpdatedAt),
+                sort_direction: None,
                 model_providers: None,
                 source_kinds: Some(vec![ThreadSourceKind::Cli, ThreadSourceKind::VsCode]),
                 archived: Some(false),
@@ -615,6 +618,7 @@ fn latest_session_lookup_params(
         cursor: None,
         limit: Some(1),
         sort_key: Some(AppServerThreadSortKey::UpdatedAt),
+        sort_direction: None,
         model_providers: if is_remote {
             None
         } else {
@@ -1453,6 +1457,7 @@ async fn run_ratatui_app(
         session_selection,
         feedback,
         should_show_trust_screen, // Proxy to: is it a first run in this directory?
+        should_show_trust_screen_flag, // Preserve the startup-time trust NUX signal before onboarding
         should_prompt_windows_sandbox_nux_at_startup,
         remote_url,
         remote_auth_token,
@@ -2252,6 +2257,7 @@ mod tests {
             approval_policy: config.permissions.approval_policy.value(),
             sandbox_policy: config.permissions.sandbox_policy.get().clone(),
             network: None,
+            file_system_sandbox_policy: None,
             model,
             personality: None,
             collaboration_mode: None,

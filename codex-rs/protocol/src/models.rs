@@ -1,5 +1,7 @@
 use std::collections::HashMap;
+use std::fmt;
 use std::path::Path;
+use std::path::PathBuf;
 use std::sync::LazyLock;
 
 use codex_utils_image::PromptImageMode;
@@ -25,7 +27,6 @@ use crate::protocol::SandboxPolicy;
 use crate::protocol::WritableRoot;
 use crate::user_input::UserInput;
 use codex_execpolicy::Policy;
-use codex_git_utils::GhostCommit;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_image::ImageProcessingError;
 use schemars::JsonSchema;
@@ -44,6 +45,60 @@ static SANDBOX_MODE_READ_ONLY_TEMPLATE: LazyLock<Template> = LazyLock::new(|| {
     Template::parse(SANDBOX_MODE_READ_ONLY.trim_end())
         .unwrap_or_else(|err| panic!("read-only sandbox template must parse: {err}"))
 });
+
+type CommitID = String;
+
+/// Details of a ghost commit created from a repository state.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct GhostCommit {
+    id: CommitID,
+    parent: Option<CommitID>,
+    preexisting_untracked_files: Vec<PathBuf>,
+    preexisting_untracked_dirs: Vec<PathBuf>,
+}
+
+impl GhostCommit {
+    /// Create a new ghost commit wrapper from a raw commit ID and optional parent.
+    pub fn new(
+        id: CommitID,
+        parent: Option<CommitID>,
+        preexisting_untracked_files: Vec<PathBuf>,
+        preexisting_untracked_dirs: Vec<PathBuf>,
+    ) -> Self {
+        Self {
+            id,
+            parent,
+            preexisting_untracked_files,
+            preexisting_untracked_dirs,
+        }
+    }
+
+    /// Commit ID for the snapshot.
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    /// Parent commit ID, if the repository had a `HEAD` at creation time.
+    pub fn parent(&self) -> Option<&str> {
+        self.parent.as_deref()
+    }
+
+    /// Untracked or ignored files that already existed when the snapshot was captured.
+    pub fn preexisting_untracked_files(&self) -> &[PathBuf] {
+        &self.preexisting_untracked_files
+    }
+
+    /// Untracked or ignored directories that already existed when the snapshot was captured.
+    pub fn preexisting_untracked_dirs(&self) -> &[PathBuf] {
+        &self.preexisting_untracked_dirs
+    }
+}
+
+impl fmt::Display for GhostCommit {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.id)
+    }
+}
 
 /// Controls the per-command sandbox override requested by a shell-like tool call.
 #[derive(
@@ -374,7 +429,7 @@ const APPROVAL_POLICY_ON_REQUEST_RULE: &str =
     include_str!("prompts/permissions/approval_policy/on_request.md");
 const APPROVAL_POLICY_ON_REQUEST_RULE_REQUEST_PERMISSION: &str =
     include_str!("prompts/permissions/approval_policy/on_request_rule_request_permission.md");
-const GUARDIAN_SUBAGENT_APPROVAL_SUFFIX: &str = "`approvals_reviewer` is `guardian_subagent`: Sandbox escalations with require_escalated will be reviewed for compliance with the policy. If a rejection happens, you should proceed only with a materially safer alternative, or inform the user of the risk and send a final message to ask for approval.";
+const AUTO_REVIEW_APPROVAL_SUFFIX: &str = "`approvals_reviewer` is `auto_review`: Sandbox escalations with require_escalated will be reviewed for compliance with the policy. If a rejection happens, you should proceed only with a materially safer alternative, or inform the user of the risk and send a final message to ask for approval.";
 
 const SANDBOX_MODE_DANGER_FULL_ACCESS: &str =
     include_str!("prompts/permissions/sandbox_mode/danger_full_access.md");
@@ -447,7 +502,7 @@ impl DeveloperInstructions {
         let text = if approvals_reviewer == ApprovalsReviewer::GuardianSubagent
             && approval_policy != AskForApproval::Never
         {
-            format!("{text}\n\n{GUARDIAN_SUBAGENT_APPROVAL_SUFFIX}")
+            format!("{text}\n\n{AUTO_REVIEW_APPROVAL_SUFFIX}")
         } else {
             text
         };
@@ -1889,7 +1944,8 @@ mod tests {
         )
         .into_text();
 
-        assert!(text.contains("`approvals_reviewer` is `guardian_subagent`"));
+        assert!(text.contains("`approvals_reviewer` is `auto_review`"));
+        assert!(!text.contains("`approvals_reviewer` is `guardian_subagent`"));
         assert!(text.contains("materially safer alternative"));
     }
 
@@ -1904,6 +1960,7 @@ mod tests {
         )
         .into_text();
 
+        assert!(!text.contains("`approvals_reviewer` is `auto_review`"));
         assert!(!text.contains("`approvals_reviewer` is `guardian_subagent`"));
     }
 
