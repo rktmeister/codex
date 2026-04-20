@@ -765,6 +765,7 @@ impl ChatWidget {
             | SlashCommand::Skills
             | SlashCommand::Title
             | SlashCommand::Statusline
+            | SlashCommand::CopyCode
             | SlashCommand::Theme => QueueDrain::Stop,
         }
     }
