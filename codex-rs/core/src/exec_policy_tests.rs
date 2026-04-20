@@ -236,6 +236,31 @@ async fn collect_policy_files_returns_empty_when_dir_missing() {
     assert!(files.is_empty());
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn collect_policy_files_includes_symlinked_rules_files() {
+    let temp_dir = tempdir().expect("create temp dir");
+    let target_dir = temp_dir.path().join("dotfiles");
+    fs::create_dir_all(&target_dir).expect("create target dir");
+    let target_path = target_dir.join("default.rules");
+    fs::write(
+        &target_path,
+        r#"prefix_rule(pattern=["python3"], decision="forbidden")"#,
+    )
+    .expect("write target policy file");
+
+    let policy_dir = temp_dir.path().join(RULES_DIR_NAME);
+    fs::create_dir_all(&policy_dir).expect("create policy dir");
+    let symlink_path = policy_dir.join("default.rules");
+    std::os::unix::fs::symlink(&target_path, &symlink_path).expect("create symlink");
+
+    let files = collect_policy_files(&policy_dir)
+        .await
+        .expect("collect policy files");
+
+    assert_eq!(files, vec![symlink_path]);
+}
+
 #[tokio::test]
 async fn format_exec_policy_error_with_source_renders_range() {
     let temp_dir = tempdir().expect("create temp dir");

@@ -873,7 +873,7 @@ async fn collect_policy_files(dir: impl AsRef<Path>) -> Result<Vec<PathBuf>, Exe
             .extension()
             .and_then(|ext| ext.to_str())
             .is_some_and(|ext| ext == RULE_EXTENSION)
-            && file_type.is_file()
+            && (file_type.is_file() || file_type.is_symlink())
         {
             policy_paths.push(path);
         }
