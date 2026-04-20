@@ -29,6 +29,8 @@ use codex_analytics::TurnSteerRequestError;
 use codex_app_server_protocol::Account;
 use codex_app_server_protocol::AccountLoginCompletedNotification;
 use codex_app_server_protocol::AccountUpdatedNotification;
+use codex_app_server_protocol::AddCreditsNudgeCreditType;
+use codex_app_server_protocol::AddCreditsNudgeEmailStatus;
 use codex_app_server_protocol::AppInfo;
 use codex_app_server_protocol::AppsListParams;
 use codex_app_server_protocol::AppsListResponse;
@@ -83,6 +85,8 @@ use codex_app_server_protocol::LogoutAccountResponse;
 use codex_app_server_protocol::MarketplaceAddParams;
 use codex_app_server_protocol::MarketplaceAddResponse;
 use codex_app_server_protocol::MarketplaceInterface;
+use codex_app_server_protocol::MarketplaceRemoveParams;
+use codex_app_server_protocol::MarketplaceRemoveResponse;
 use codex_app_server_protocol::McpResourceReadParams;
 use codex_app_server_protocol::McpResourceReadResponse;
 use codex_app_server_protocol::McpServerOauthLoginCompletedNotification;
@@ -117,6 +121,8 @@ use codex_app_server_protocol::ReviewStartParams;
 use codex_app_server_protocol::ReviewStartResponse;
 use codex_app_server_protocol::ReviewTarget as ApiReviewTarget;
 use codex_app_server_protocol::SandboxMode;
+use codex_app_server_protocol::SendAddCreditsNudgeEmailParams;
+use codex_app_server_protocol::SendAddCreditsNudgeEmailResponse;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ServerRequestResolvedNotification;
 use codex_app_server_protocol::SkillSummary;
@@ -203,6 +209,7 @@ use codex_app_server_protocol::WindowsSandboxSetupStartParams;
 use codex_app_server_protocol::WindowsSandboxSetupStartResponse;
 use codex_app_server_protocol::build_turns_from_rollout_items;
 use codex_arg0::Arg0DispatchPaths;
+use codex_backend_client::AddCreditsNudgeCreditType as BackendAddCreditsNudgeCreditType;
 use codex_backend_client::Client as BackendClient;
 use codex_chatgpt::connectors;
 use codex_cloud_requirements::cloud_requirements_loader;
@@ -238,12 +245,15 @@ use codex_core::find_thread_names_by_ids;
 use codex_core::find_thread_path_by_id_str;
 use codex_core::path_utils;
 use codex_core::plugins::MarketplaceAddError;
+use codex_core::plugins::MarketplaceRemoveError;
+use codex_core::plugins::MarketplaceRemoveRequest as CoreMarketplaceRemoveRequest;
 use codex_core::plugins::OPENAI_CURATED_MARKETPLACE_NAME;
 use codex_core::plugins::PluginInstallError as CorePluginInstallError;
 use codex_core::plugins::PluginInstallRequest;
 use codex_core::plugins::PluginReadRequest;
 use codex_core::plugins::PluginUninstallError as CorePluginUninstallError;
 use codex_core::plugins::add_marketplace as add_marketplace_to_codex_home;
+use codex_core::plugins::remove_marketplace;
 use codex_core::read_head_for_summary;
 use codex_core::read_session_meta_line;
 use codex_core::sandboxing::SandboxPermissions;
@@ -274,11 +284,12 @@ use codex_login::default_client::set_default_client_residency_requirement;
 use codex_login::login_with_api_key;
 use codex_login::request_device_code;
 use codex_login::run_login_server;
+use codex_mcp::McpRuntimeEnvironment;
 use codex_mcp::McpServerStatusSnapshot;
 use codex_mcp::McpSnapshotDetail;
-use codex_mcp::collect_mcp_server_status_snapshot_with_detail;
+use codex_mcp::collect_mcp_server_status_snapshot_with_detail_and_authorization_header;
 use codex_mcp::discover_supported_scopes;
-use codex_mcp::effective_mcp_servers;
+use codex_mcp::effective_mcp_servers_with_authorization_header;
 use codex_mcp::resolve_oauth_scopes;
 use codex_models_manager::collaboration_mode_presets::CollaborationModesConfig;
 use codex_protocol::ThreadId;
@@ -975,6 +986,10 @@ impl CodexMessageProcessor {
                 self.marketplace_add(to_connection_request_id(request_id), params)
                     .await;
             }
+            ClientRequest::MarketplaceRemove { request_id, params } => {
+                self.marketplace_remove(to_connection_request_id(request_id), params)
+                    .await;
+            }
             ClientRequest::PluginList { request_id, params } => {
                 self.plugin_list(to_connection_request_id(request_id), params)
                     .await;
@@ -1186,6 +1201,10 @@ impl CodexMessageProcessor {
                 params: _,
             } => {
                 self.get_account_rate_limits(to_connection_request_id(request_id))
+                    .await;
+            }
+            ClientRequest::SendAddCreditsNudgeEmail { request_id, params } => {
+                self.send_add_credits_nudge_email(to_connection_request_id(request_id), params)
                     .await;
             }
             ClientRequest::FeedbackUpload { request_id, params } => {
@@ -1902,6 +1921,74 @@ impl CodexMessageProcessor {
         }
     }
 
+    async fn send_add_credits_nudge_email(
+        &self,
+        request_id: ConnectionRequestId,
+        params: SendAddCreditsNudgeEmailParams,
+    ) {
+        match self.send_add_credits_nudge_email_inner(params).await {
+            Ok(status) => {
+                self.outgoing
+                    .send_response(request_id, SendAddCreditsNudgeEmailResponse { status })
+                    .await;
+            }
+            Err(error) => {
+                self.outgoing.send_error(request_id, error).await;
+            }
+        }
+    }
+
+    async fn send_add_credits_nudge_email_inner(
+        &self,
+        params: SendAddCreditsNudgeEmailParams,
+    ) -> Result<AddCreditsNudgeEmailStatus, JSONRPCErrorError> {
+        let Some(auth) = self.auth_manager.auth().await else {
+            return Err(JSONRPCErrorError {
+                code: INVALID_REQUEST_ERROR_CODE,
+                message: "codex account authentication required to notify workspace owner"
+                    .to_string(),
+                data: None,
+            });
+        };
+
+        if !auth.is_chatgpt_auth() {
+            return Err(JSONRPCErrorError {
+                code: INVALID_REQUEST_ERROR_CODE,
+                message: "chatgpt authentication required to notify workspace owner".to_string(),
+                data: None,
+            });
+        }
+
+        let client = BackendClient::from_auth(self.config.chatgpt_base_url.clone(), &auth)
+            .map_err(|err| JSONRPCErrorError {
+                code: INTERNAL_ERROR_CODE,
+                message: format!("failed to construct backend client: {err}"),
+                data: None,
+            })?;
+
+        match client
+            .send_add_credits_nudge_email(Self::backend_credit_type(params.credit_type))
+            .await
+        {
+            Ok(()) => Ok(AddCreditsNudgeEmailStatus::Sent),
+            Err(err) if err.status().is_some_and(|status| status.as_u16() == 429) => {
+                Ok(AddCreditsNudgeEmailStatus::CooldownActive)
+            }
+            Err(err) => Err(JSONRPCErrorError {
+                code: INTERNAL_ERROR_CODE,
+                message: format!("failed to notify workspace owner: {err}"),
+                data: None,
+            }),
+        }
+    }
+
+    fn backend_credit_type(value: AddCreditsNudgeCreditType) -> BackendAddCreditsNudgeCreditType {
+        match value {
+            AddCreditsNudgeCreditType::Credits => BackendAddCreditsNudgeCreditType::Credits,
+            AddCreditsNudgeCreditType::UsageLimit => BackendAddCreditsNudgeCreditType::UsageLimit,
+        }
+    }
+
     async fn fetch_account_rate_limits(
         &self,
     ) -> Result<
@@ -1927,12 +2014,28 @@ impl CodexMessageProcessor {
             });
         }
 
-        let client = BackendClient::from_auth(self.config.chatgpt_base_url.clone(), &auth)
+        let authorization_header_value = self
+            .auth_manager
+            .chatgpt_authorization_header_for_auth(&auth)
+            .await;
+        let mut client = BackendClient::new(self.config.chatgpt_base_url.clone())
+            .map(|client| {
+                client.with_user_agent(codex_login::default_client::get_codex_user_agent())
+            })
             .map_err(|err| JSONRPCErrorError {
                 code: INTERNAL_ERROR_CODE,
                 message: format!("failed to construct backend client: {err}"),
                 data: None,
             })?;
+        if let Some(authorization_header_value) = authorization_header_value {
+            client = client.with_authorization_header_value(authorization_header_value);
+        }
+        if let Some(account_id) = auth.get_account_id() {
+            client = client.with_chatgpt_account_id(account_id);
+        }
+        if auth.is_fedramp_account() {
+            client = client.with_fedramp_routing_header();
+        }
 
         let snapshots = client
             .get_rate_limits_many()
@@ -5647,113 +5750,137 @@ impl CodexMessageProcessor {
         let mcp_config = config
             .to_mcp_config(self.thread_manager.plugins_manager().as_ref())
             .await;
-        let auth = self.auth_manager.auth().await;
+        let auth_manager = Arc::clone(&self.auth_manager);
+        let auth = auth_manager.auth().await;
+        let runtime_environment = match self.thread_manager.environment_manager().current().await {
+            Ok(Some(environment)) => {
+                // Status listing has no turn cwd. This fallback is used only
+                // by executor-backed stdio MCPs whose config omits `cwd`.
+                McpRuntimeEnvironment::new(environment, config.cwd.to_path_buf())
+            }
+            Ok(None) => McpRuntimeEnvironment::new(
+                Arc::new(codex_exec_server::Environment::default()),
+                config.cwd.to_path_buf(),
+            ),
+            Err(err) => {
+                // TODO(aibrahim): Investigate degrading MCP status listing when
+                // executor environment creation fails.
+                let error = JSONRPCErrorError {
+                    code: INTERNAL_ERROR_CODE,
+                    message: format!("failed to create environment: {err}"),
+                    data: None,
+                };
+                self.outgoing.send_error(request, error).await;
+                return;
+            }
+        };
 
         tokio::spawn(async move {
-            Self::list_mcp_server_status_task(outgoing, request, params, config, mcp_config, auth)
-                .await;
-        });
-    }
-
-    async fn list_mcp_server_status_task(
-        outgoing: Arc<OutgoingMessageSender>,
-        request_id: ConnectionRequestId,
-        params: ListMcpServerStatusParams,
-        config: Config,
-        mcp_config: codex_mcp::McpConfig,
-        auth: Option<CodexAuth>,
-    ) {
-        let detail = match params.detail.unwrap_or(McpServerStatusDetail::Full) {
-            McpServerStatusDetail::Full => McpSnapshotDetail::Full,
-            McpServerStatusDetail::ToolsAndAuthOnly => McpSnapshotDetail::ToolsAndAuthOnly,
-        };
-
-        let snapshot = collect_mcp_server_status_snapshot_with_detail(
-            &mcp_config,
-            auth.as_ref(),
-            request_id.request_id.to_string(),
-            detail,
-        )
-        .await;
-
-        let effective_servers = effective_mcp_servers(&mcp_config, auth.as_ref());
-        let McpServerStatusSnapshot {
-            tools_by_server,
-            resources,
-            resource_templates,
-            auth_statuses,
-        } = snapshot;
-
-        let mut server_names: Vec<String> = config
-            .mcp_servers
-            .keys()
-            .cloned()
-            // Include built-in/plugin MCP servers that are present in the
-            // effective runtime config even when they are not user-declared in
-            // `config.mcp_servers`.
-            .chain(effective_servers.keys().cloned())
-            .chain(auth_statuses.keys().cloned())
-            .chain(resources.keys().cloned())
-            .chain(resource_templates.keys().cloned())
-            .collect();
-        server_names.sort();
-        server_names.dedup();
-
-        let total = server_names.len();
-        let limit = params.limit.unwrap_or(total as u32).max(1) as usize;
-        let effective_limit = limit.min(total);
-        let start = match params.cursor {
-            Some(cursor) => match cursor.parse::<usize>() {
-                Ok(idx) => idx,
-                Err(_) => {
-                    let error = JSONRPCErrorError {
-                        code: INVALID_REQUEST_ERROR_CODE,
-                        message: format!("invalid cursor: {cursor}"),
-                        data: None,
-                    };
-                    outgoing.send_error(request_id, error).await;
-                    return;
-                }
-            },
-            None => 0,
-        };
-
-        if start > total {
-            let error = JSONRPCErrorError {
-                code: INVALID_REQUEST_ERROR_CODE,
-                message: format!("cursor {start} exceeds total MCP servers {total}"),
-                data: None,
+            let detail = match params.detail.unwrap_or(McpServerStatusDetail::Full) {
+                McpServerStatusDetail::Full => McpSnapshotDetail::Full,
+                McpServerStatusDetail::ToolsAndAuthOnly => McpSnapshotDetail::ToolsAndAuthOnly,
             };
-            outgoing.send_error(request_id, error).await;
-            return;
-        }
 
-        let end = start.saturating_add(effective_limit).min(total);
+            let background_authorization_header_value = if let Some(auth) = auth.as_ref() {
+                auth_manager
+                    .chatgpt_authorization_header_for_auth(auth)
+                    .await
+            } else {
+                None
+            };
+            let snapshot = collect_mcp_server_status_snapshot_with_detail_and_authorization_header(
+                &mcp_config,
+                auth.as_ref(),
+                request.request_id.to_string(),
+                runtime_environment,
+                detail,
+                background_authorization_header_value.as_deref(),
+            )
+            .await;
 
-        let data: Vec<McpServerStatus> = server_names[start..end]
-            .iter()
-            .map(|name| McpServerStatus {
-                name: name.clone(),
-                tools: tools_by_server.get(name).cloned().unwrap_or_default(),
-                resources: resources.get(name).cloned().unwrap_or_default(),
-                resource_templates: resource_templates.get(name).cloned().unwrap_or_default(),
-                auth_status: auth_statuses
-                    .get(name)
-                    .cloned()
-                    .unwrap_or(CoreMcpAuthStatus::Unsupported)
-                    .into(),
-            })
-            .collect();
+            let effective_servers = effective_mcp_servers_with_authorization_header(
+                &mcp_config,
+                auth.as_ref(),
+                background_authorization_header_value.as_deref(),
+            );
+            let McpServerStatusSnapshot {
+                tools_by_server,
+                resources,
+                resource_templates,
+                auth_statuses,
+            } = snapshot;
 
-        let next_cursor = if end < total {
-            Some(end.to_string())
-        } else {
-            None
-        };
+            let mut server_names: Vec<String> = config
+                .mcp_servers
+                .keys()
+                .cloned()
+                // Include built-in/plugin MCP servers that are present in the
+                // effective runtime config even when they are not user-declared in
+                // `config.mcp_servers`.
+                .chain(effective_servers.keys().cloned())
+                .chain(auth_statuses.keys().cloned())
+                .chain(resources.keys().cloned())
+                .chain(resource_templates.keys().cloned())
+                .collect();
+            server_names.sort();
+            server_names.dedup();
 
-        let response = ListMcpServerStatusResponse { data, next_cursor };
+            let total = server_names.len();
+            let limit = params.limit.unwrap_or(total as u32).max(1) as usize;
+            let effective_limit = limit.min(total);
+            let start = match params.cursor {
+                Some(cursor) => match cursor.parse::<usize>() {
+                    Ok(idx) => idx,
+                    Err(_) => {
+                        let error = JSONRPCErrorError {
+                            code: INVALID_REQUEST_ERROR_CODE,
+                            message: format!("invalid cursor: {cursor}"),
+                            data: None,
+                        };
+                        outgoing.send_error(request, error).await;
+                        return;
+                    }
+                },
+                None => 0,
+            };
 
-        outgoing.send_response(request_id, response).await;
+            if start > total {
+                let error = JSONRPCErrorError {
+                    code: INVALID_REQUEST_ERROR_CODE,
+                    message: format!("cursor {start} exceeds total MCP servers {total}"),
+                    data: None,
+                };
+                outgoing.send_error(request, error).await;
+                return;
+            }
+
+            let end = start.saturating_add(effective_limit).min(total);
+
+            let data: Vec<McpServerStatus> = server_names[start..end]
+                .iter()
+                .map(|name| McpServerStatus {
+                    name: name.clone(),
+                    tools: tools_by_server.get(name).cloned().unwrap_or_default(),
+                    resources: resources.get(name).cloned().unwrap_or_default(),
+                    resource_templates: resource_templates.get(name).cloned().unwrap_or_default(),
+                    auth_status: auth_statuses
+                        .get(name)
+                        .cloned()
+                        .unwrap_or(CoreMcpAuthStatus::Unsupported)
+                        .into(),
+                })
+                .collect();
+
+            let next_cursor = if end < total {
+                Some(end.to_string())
+            } else {
+                None
+            };
+
+            let response = ListMcpServerStatusResponse { data, next_cursor };
+
+            outgoing.send_response(request, response).await;
+        });
     }
 
     async fn read_mcp_resource(
@@ -6426,6 +6553,40 @@ impl CodexMessageProcessor {
         self.outgoing
             .send_response(request_id, SkillsListResponse { data })
             .await;
+    }
+
+    async fn marketplace_remove(
+        &self,
+        request_id: ConnectionRequestId,
+        params: MarketplaceRemoveParams,
+    ) {
+        let result = remove_marketplace(
+            self.config.codex_home.to_path_buf(),
+            CoreMarketplaceRemoveRequest {
+                marketplace_name: params.marketplace_name,
+            },
+        )
+        .await;
+
+        match result {
+            Ok(outcome) => {
+                self.outgoing
+                    .send_response(
+                        request_id,
+                        MarketplaceRemoveResponse {
+                            marketplace_name: outcome.marketplace_name,
+                            installed_root: outcome.removed_installed_root,
+                        },
+                    )
+                    .await;
+            }
+            Err(MarketplaceRemoveError::InvalidRequest(message)) => {
+                self.send_invalid_request_error(request_id, message).await;
+            }
+            Err(MarketplaceRemoveError::Internal(message)) => {
+                self.send_internal_error(request_id, message).await;
+            }
+        }
     }
 
     async fn plugin_list(&self, request_id: ConnectionRequestId, params: PluginListParams) {

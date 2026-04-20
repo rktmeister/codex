@@ -136,8 +136,8 @@ pub enum Feature {
     Sqlite,
     /// Enable startup memory extraction and file-backed memory consolidation.
     MemoryTool,
-    /// Enable the Telepathy sidecar for passive screen-context memories.
-    Telepathy,
+    /// Enable the Chronicle sidecar for passive screen-context memories.
+    Chronicle,
     /// Append additional AGENTS.md guidance to user instructions.
     ChildAgentsMd,
     /// Compress request bodies (zstd) when sending streaming requests to codex-backend.
@@ -197,6 +197,8 @@ pub enum Feature {
     TuiAppServer,
     /// Prevent idle system sleep while a turn is actively running.
     PreventIdleSleep,
+    /// Enable workspace-specific owner nudge copy and prompts in the TUI.
+    WorkspaceOwnerUsageNudge,
     /// Legacy rollout flag for Responses API WebSocket transport experiments.
     ResponsesWebsockets,
     /// Legacy rollout flag for Responses API WebSocket transport v2 experiments.
@@ -733,8 +735,8 @@ pub const FEATURES: &[FeatureSpec] = &[
         default_enabled: false,
     },
     FeatureSpec {
-        id: Feature::Telepathy,
-        key: "telepathy",
+        id: Feature::Chronicle,
+        key: "chronicle",
         stage: Stage::UnderDevelopment,
         default_enabled: false,
     },
@@ -990,6 +992,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         } else {
             Stage::UnderDevelopment
         },
+        default_enabled: false,
+    },
+    FeatureSpec {
+        id: Feature::WorkspaceOwnerUsageNudge,
+        key: "workspace_owner_usage_nudge",
+        stage: Stage::UnderDevelopment,
         default_enabled: false,
     },
     FeatureSpec {

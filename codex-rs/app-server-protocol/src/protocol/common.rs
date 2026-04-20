@@ -344,6 +344,10 @@ client_request_definitions! {
         params: v2::MarketplaceAddParams,
         response: v2::MarketplaceAddResponse,
     },
+    MarketplaceRemove => "marketplace/remove" {
+        params: v2::MarketplaceRemoveParams,
+        response: v2::MarketplaceRemoveResponse,
+    },
     PluginList => "plugin/list" {
         params: v2::PluginListParams,
         response: v2::PluginListResponse,
@@ -522,6 +526,11 @@ client_request_definitions! {
     GetAccountRateLimits => "account/rateLimits/read" {
         params: #[ts(type = "undefined")] #[serde(skip_serializing_if = "Option::is_none")] Option<()>,
         response: v2::GetAccountRateLimitsResponse,
+    },
+
+    SendAddCreditsNudgeEmail => "account/sendAddCreditsNudgeEmail" {
+        params: v2::SendAddCreditsNudgeEmailParams,
+        response: v2::SendAddCreditsNudgeEmailResponse,
     },
 
     FeedbackUpload => "feedback/upload" {

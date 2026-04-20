@@ -344,6 +344,9 @@
             "child_agents_md": {
               "type": "boolean"
             },
+            "chronicle": {
+              "type": "boolean"
+            },
             "code_mode": {
               "type": "boolean"
             },
@@ -543,6 +546,9 @@
               "type": "boolean"
             },
             "workspace_dependencies": {
+              "type": "boolean"
+            },
+            "workspace_owner_usage_nudge": {
               "type": "boolean"
             }
           },
@@ -896,6 +902,28 @@
         "local"
       ],
       "type": "string"
+    },
+    "McpServerEnvVar": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "source": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "name"
+          ],
+          "type": "object"
+        }
+      ]
     },
     "McpServerToolConfig": {
       "additionalProperties": false,
@@ -1591,7 +1619,7 @@
         "env_vars": {
           "default": null,
           "items": {
-            "type": "string"
+            "$ref": "#/definitions/McpServerEnvVar"
           },
           "type": "array"
         },
@@ -1901,6 +1929,10 @@
             "$ref": "#/definitions/SkillConfig"
           },
           "type": "array"
+        },
+        "include_instructions": {
+          "description": "Whether turns receive the automatic skills instructions block.",
+          "type": "boolean"
         }
       },
       "type": "object"
@@ -2311,6 +2343,9 @@
         "child_agents_md": {
           "type": "boolean"
         },
+        "chronicle": {
+          "type": "boolean"
+        },
         "code_mode": {
           "type": "boolean"
         },
@@ -2510,6 +2545,9 @@
           "type": "boolean"
         },
         "workspace_dependencies": {
+          "type": "boolean"
+        },
+        "workspace_owner_usage_nudge": {
           "type": "boolean"
         }
       },

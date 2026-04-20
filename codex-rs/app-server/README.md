@@ -185,6 +185,7 @@ Example with notification opt-out:
 - `collaborationMode/list` — list available collaboration mode presets (experimental, no pagination). This response omits built-in developer instructions; clients should either pass `settings.developer_instructions: null` when setting a mode to use Codex's built-in instructions, or provide their own instructions explicitly.
 - `skills/list` — list skills for one or more `cwd` values (optional `forceReload`).
 - `marketplace/add` — add a remote plugin marketplace from an HTTP(S) Git URL, SSH Git URL, or GitHub `owner/repo` shorthand, then persist it into the user marketplace config. Returns the installed root path plus whether the marketplace was already present.
+- `marketplace/remove` — remove a configured marketplace by name from the user marketplace config, and delete its installed marketplace root when one exists.
 - `plugin/list` — list discovered plugin marketplaces and plugin state, including effective marketplace install/auth policy metadata, fail-open `marketplaceLoadErrors` entries for marketplace files that could not be parsed or loaded, and best-effort `featuredPluginIds` for the official curated marketplace. `interface.category` uses the marketplace category when present; otherwise it falls back to the plugin manifest category (**under development; do not call from production clients yet**).
 - `plugin/read` — read one plugin by `marketplacePath` plus `pluginName`, returning marketplace info, a list-style `summary`, manifest descriptions/interface metadata, and bundled skills/apps/MCP server names. Returned plugin skills include their current `enabled` state after local config filtering. Plugin app summaries also include `needsAuth` when the server can determine connector accessibility (**under development; do not call from production clients yet**).
 - `skills/changed` — notification emitted when watched local skill files change.
@@ -1448,6 +1449,7 @@ Codex supports these authentication modes. The current mode is surfaced in `acco
 - `account/updated` (notify) — emitted whenever auth mode changes (`authMode`: `apikey`, `chatgpt`, or `null`) and includes the current ChatGPT `planType` when available.
 - `account/rateLimits/read` — fetch ChatGPT rate limits; updates arrive via `account/rateLimits/updated` (notify).
 - `account/rateLimits/updated` (notify) — emitted whenever a user's ChatGPT rate limits change.
+- `account/sendAddCreditsNudgeEmail` — ask ChatGPT to email the workspace owner about depleted credits or a reached usage limit.
 - `mcpServer/oauthLogin/completed` (notify) — emitted after a `mcpServer/oauth/login` flow finishes for a server; payload includes `{ name, success, error? }`.
 - `mcpServer/startupStatus/updated` (notify) — emitted when a configured MCP server's startup status changes for a loaded thread; payload includes `{ name, status, error }` where `status` is `starting`, `ready`, `failed`, or `cancelled`.
 
@@ -1540,7 +1542,7 @@ Field notes:
 
 ```json
 { "method": "account/rateLimits/read", "id": 7 }
-{ "id": 7, "result": { "rateLimits": { "primary": { "usedPercent": 25, "windowDurationMins": 15, "resetsAt": 1730947200 }, "secondary": null } } }
+{ "id": 7, "result": { "rateLimits": { "primary": { "usedPercent": 25, "windowDurationMins": 15, "resetsAt": 1730947200 }, "secondary": null, "rateLimitReachedType": null } } }
 { "method": "account/rateLimits/updated", "params": { "rateLimits": { … } } }
 ```
 
@@ -1549,6 +1551,16 @@ Field notes:
 - `usedPercent` is current usage within the OpenAI quota window.
 - `windowDurationMins` is the quota window length.
 - `resetsAt` is a Unix timestamp (seconds) for the next reset.
+- `rateLimitReachedType` identifies the backend-classified limit state when one has been reached.
+
+### 8) Notify a workspace owner about a limit
+
+```json
+{ "method": "account/sendAddCreditsNudgeEmail", "id": 8, "params": { "creditType": "credits" } }
+{ "id": 8, "result": { "status": "sent" } }
+```
+
+Use `creditType: "credits"` when workspace credits are depleted, or `creditType: "usage_limit"` when the workspace usage limit has been reached. If the owner was already notified recently, the response status is `cooldown_active`.
 
 ## Experimental API Opt-in
 

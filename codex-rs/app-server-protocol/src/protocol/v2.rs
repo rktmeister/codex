@@ -1789,6 +1789,36 @@ pub struct GetAccountRateLimitsResponse {
     pub rate_limits_by_limit_id: Option<HashMap<String, RateLimitSnapshot>>,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct SendAddCreditsNudgeEmailParams {
+    pub credit_type: AddCreditsNudgeCreditType,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export_to = "v2/", rename_all = "snake_case")]
+pub enum AddCreditsNudgeCreditType {
+    Credits,
+    UsageLimit,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct SendAddCreditsNudgeEmailResponse {
+    pub status: AddCreditsNudgeEmailStatus,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export_to = "v2/", rename_all = "snake_case")]
+pub enum AddCreditsNudgeEmailStatus {
+    Sent,
+    CooldownActive,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
@@ -3449,6 +3479,21 @@ pub struct MarketplaceAddResponse {
     pub marketplace_name: String,
     pub installed_root: AbsolutePathBuf,
     pub already_added: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct MarketplaceRemoveParams {
+    pub marketplace_name: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct MarketplaceRemoveResponse {
+    pub marketplace_name: String,
+    pub installed_root: Option<AbsolutePathBuf>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -8857,6 +8902,40 @@ mod tests {
             PluginUninstallParams {
                 plugin_id: "gmail@openai-curated".to_string(),
             },
+        );
+    }
+
+    #[test]
+    fn marketplace_remove_response_serializes_nullable_installed_root() {
+        let installed_root = if cfg!(windows) {
+            r"C:\marketplaces\debug"
+        } else {
+            "/tmp/marketplaces/debug"
+        };
+        let installed_root = AbsolutePathBuf::try_from(PathBuf::from(installed_root)).unwrap();
+        let installed_root_json = installed_root.as_path().display().to_string();
+        assert_eq!(
+            serde_json::to_value(MarketplaceRemoveResponse {
+                marketplace_name: "debug".to_string(),
+                installed_root: Some(installed_root),
+            })
+            .unwrap(),
+            json!({
+                "marketplaceName": "debug",
+                "installedRoot": installed_root_json,
+            }),
+        );
+
+        assert_eq!(
+            serde_json::to_value(MarketplaceRemoveResponse {
+                marketplace_name: "debug".to_string(),
+                installed_root: None,
+            })
+            .unwrap(),
+            json!({
+                "marketplaceName": "debug",
+                "installedRoot": null,
+            }),
         );
     }
 
