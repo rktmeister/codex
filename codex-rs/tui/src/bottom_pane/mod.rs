@@ -48,7 +48,6 @@ mod approval_overlay;
 mod mcp_server_elicitation;
 mod multi_select_picker;
 mod request_user_input;
-#[cfg(test)]
 mod status_line_format;
 mod status_line_setup;
 mod status_surface_preview;
@@ -63,6 +62,7 @@ pub(crate) use approval_overlay::format_requested_permissions_rule;
 pub(crate) use mcp_server_elicitation::McpServerElicitationFormRequest;
 pub(crate) use mcp_server_elicitation::McpServerElicitationOverlay;
 pub(crate) use request_user_input::RequestUserInputOverlay;
+pub(crate) use status_line_format::format_status_line;
 mod bottom_pane_view;
 
 #[derive(Clone, Debug, PartialEq, Eq)]

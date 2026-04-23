@@ -4,6 +4,7 @@
 //! behavior easier to review without paging through the rest of `chatwidget.rs`.
 
 use super::*;
+use crate::bottom_pane::format_status_line;
 
 /// Items shown in the terminal title when the user has not configured a
 /// custom selection. Intentionally minimal: spinner + project name.
@@ -164,16 +165,11 @@ impl ChatWidget {
         let mut parts = Vec::new();
         for item in &selections.status_line_items {
             if let Some(value) = self.status_line_value_for_item(item) {
-                parts.push(value);
+                parts.push((item.clone(), value));
             }
         }
 
-        let line = if parts.is_empty() {
-            None
-        } else {
-            Some(Line::from(parts.join(" · ")))
-        };
-        self.set_status_line(line);
+        self.set_status_line(format_status_line(parts));
     }
 
     /// Clears the terminal title Codex most recently wrote, if any.

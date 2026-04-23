@@ -1286,7 +1286,10 @@ async fn status_line_context_used_renders_labeled_percent() {
 
     chat.refresh_status_line();
 
-    assert_eq!(status_line_text(&chat), Some("Context 0% used".to_string()));
+    assert_eq!(
+        status_line_text(&chat),
+        Some("◔ Context 0% used".to_string())
+    );
     assert!(
         drain_insert_history(&mut rx).is_empty(),
         "context-used should remain a valid status line item"
@@ -1303,7 +1306,7 @@ async fn status_line_context_remaining_renders_labeled_percent() {
 
     assert_eq!(
         status_line_text(&chat),
-        Some("Context 100% left".to_string())
+        Some("◔ Context 100% left".to_string())
     );
     assert!(
         drain_insert_history(&mut rx).is_empty(),
@@ -1319,7 +1322,10 @@ async fn status_line_legacy_context_usage_renders_context_used_percent() {
 
     chat.refresh_status_line();
 
-    assert_eq!(status_line_text(&chat), Some("Context 0% used".to_string()));
+    assert_eq!(
+        status_line_text(&chat),
+        Some("◔ Context 0% used".to_string())
+    );
     assert!(
         drain_insert_history(&mut rx).is_empty(),
         "legacy context-usage should remain a valid status line item"
@@ -1503,11 +1509,11 @@ async fn status_line_fast_mode_renders_on_and_off() {
     chat.config.tui_status_line = Some(vec!["fast-mode".to_string()]);
 
     chat.refresh_status_line();
-    assert_eq!(status_line_text(&chat), Some("Fast off".to_string()));
+    assert_eq!(status_line_text(&chat), Some("fast off".to_string()));
 
     chat.set_service_tier(Some(ServiceTier::Fast));
     chat.refresh_status_line();
-    assert_eq!(status_line_text(&chat), Some("Fast on".to_string()));
+    assert_eq!(status_line_text(&chat), Some("fast on".to_string()));
 }
 
 #[tokio::test]
@@ -1554,7 +1560,9 @@ async fn status_line_model_with_reasoning_includes_fast_for_fast_capable_models(
 
     assert_eq!(
         status_line_text(&chat),
-        Some(format!("gpt-5.4 xhigh fast · Context 0% used · {test_cwd}"))
+        Some(format!(
+            "◉ gpt-5.4 xhigh fast  ◔ Context 0% used  cwd {test_cwd}"
+        ))
     );
 
     chat.set_model("gpt-5.3-codex");
@@ -1563,7 +1571,7 @@ async fn status_line_model_with_reasoning_includes_fast_for_fast_capable_models(
     assert_eq!(
         status_line_text(&chat),
         Some(format!(
-            "gpt-5.3-codex xhigh · Context 0% used · {test_cwd}"
+            "◉ gpt-5.3-codex xhigh  ◔ Context 0% used  cwd {test_cwd}"
         ))
     );
 }
@@ -1590,7 +1598,7 @@ async fn status_line_model_with_reasoning_updates_on_mode_switch_without_manual_
 
     assert_eq!(
         status_line_text(&chat),
-        Some("gpt-5.3-codex high".to_string())
+        Some("◉ gpt-5.3-codex high".to_string())
     );
 
     let plan_mask = collaboration_modes::plan_mask(chat.model_catalog.as_ref())
@@ -1599,7 +1607,7 @@ async fn status_line_model_with_reasoning_updates_on_mode_switch_without_manual_
 
     assert_eq!(
         status_line_text(&chat),
-        Some("gpt-5.3-codex medium".to_string())
+        Some("◉ gpt-5.3-codex medium".to_string())
     );
 
     let default_mask = collaboration_modes::default_mask(chat.model_catalog.as_ref())
@@ -1608,7 +1616,7 @@ async fn status_line_model_with_reasoning_updates_on_mode_switch_without_manual_
 
     assert_eq!(
         status_line_text(&chat),
-        Some("gpt-5.3-codex high".to_string())
+        Some("◉ gpt-5.3-codex high".to_string())
     );
 }
 
