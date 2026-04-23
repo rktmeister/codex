@@ -41,6 +41,7 @@ fn status_line_segment(item: StatusLineItem, value: String) -> Vec<Span<'static>
         StatusLineItem::GitBranch => vec![" ".green(), Span::from(value).green()],
         StatusLineItem::BranchLinesAdded => vec![Span::from(format!("+{value}")).green()],
         StatusLineItem::BranchLinesRemoved => vec![Span::from(format!("-{value}")).red()],
+        StatusLineItem::Status => vec![Span::from(value).bold()],
         StatusLineItem::ContextRemaining => percent_segment("◔", value, true),
         StatusLineItem::ContextUsed => percent_segment("◔", value, false),
         StatusLineItem::FiveHourLimit => limit_segment("5h", value),
@@ -53,6 +54,7 @@ fn status_line_segment(item: StatusLineItem, value: String) -> Vec<Span<'static>
         StatusLineItem::SessionId => vec!["# ".dim(), Span::from(value).dim()],
         StatusLineItem::FastMode => fast_mode_segment(value),
         StatusLineItem::ThreadTitle => vec![value.into()],
+        StatusLineItem::TaskProgress => vec![Span::from(value).dim()],
     }
 }
 

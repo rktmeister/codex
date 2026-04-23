@@ -710,7 +710,11 @@ impl PyReplManager {
                     .windows_sandbox_private_desktop,
             })
             .map(|request| {
-                crate::sandboxing::ExecRequest::from_sandbox_exec_request(request, options)
+                crate::sandboxing::ExecRequest::from_sandbox_exec_request(
+                    request,
+                    options,
+                    turn.cwd.clone(),
+                )
             })
             .map_err(|err| format!("failed to configure sandbox for py_repl: {err}"))?;
 
@@ -1612,7 +1616,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn emitted_image_content_item_drops_unsupported_explicit_detail() {
+    async fn emitted_image_content_item_preserves_explicit_non_original_detail() {
         let (_session, turn) = make_session_and_context().await;
         let content_item = emitted_image_content_item(
             &turn,
@@ -1623,7 +1627,7 @@ mod tests {
             content_item,
             FunctionCallOutputContentItem::InputImage {
                 image_url: "data:image/png;base64,AAA".to_string(),
-                detail: None,
+                detail: Some(ImageDetail::Low),
             }
         );
     }

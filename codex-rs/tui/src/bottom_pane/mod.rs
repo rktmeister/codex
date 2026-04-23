@@ -48,8 +48,10 @@ mod approval_overlay;
 mod mcp_server_elicitation;
 mod multi_select_picker;
 mod request_user_input;
+#[cfg(test)]
 mod status_line_format;
 mod status_line_setup;
+mod status_surface_preview;
 mod title_setup;
 pub(crate) use app_link_view::AppLinkElicitationTarget;
 pub(crate) use app_link_view::AppLinkSuggestionType;
@@ -107,12 +109,14 @@ pub(crate) use feedback_view::feedback_success_cell;
 pub(crate) use feedback_view::feedback_upload_consent_params;
 pub(crate) use skills_toggle_view::SkillsToggleItem;
 pub(crate) use skills_toggle_view::SkillsToggleView;
-pub(crate) use status_line_format::format_status_line;
 pub(crate) use status_line_setup::StatusLineItem;
-pub(crate) use status_line_setup::StatusLinePreviewData;
 pub(crate) use status_line_setup::StatusLineSetupView;
+pub(crate) use status_surface_preview::StatusSurfacePreviewData;
+pub(crate) use status_surface_preview::StatusSurfacePreviewItem;
 pub(crate) use title_setup::TerminalTitleItem;
 pub(crate) use title_setup::TerminalTitleSetupView;
+#[cfg(test)]
+pub(crate) use title_setup::preview_line_for_title_items;
 mod paste_burst;
 mod pending_input_preview;
 mod pending_thread_approvals;

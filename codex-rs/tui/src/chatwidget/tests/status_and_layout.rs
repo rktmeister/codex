@@ -29,6 +29,46 @@ async fn token_count_none_resets_context_indicator() {
 }
 
 #[tokio::test]
+async fn core_cyber_policy_error_renders_dedicated_notice() {
+    let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.handle_codex_event(Event {
+        id: "cyber-policy".into(),
+        msg: EventMsg::Error(ErrorEvent {
+            message: "server fallback message".to_string(),
+            codex_error_info: Some(CodexErrorInfo::CyberPolicy),
+        }),
+    });
+
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(cells.len(), 1);
+    let rendered = lines_to_single_string(&cells[0]);
+    assert!(rendered.contains("This chat was flagged for possible cybersecurity risk"));
+    assert!(rendered.contains("Trusted Access for Cyber"));
+    assert!(!rendered.contains("server fallback message"));
+}
+
+#[tokio::test]
+async fn core_model_verification_renders_warning() {
+    let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.handle_codex_event(Event {
+        id: "model-verification".into(),
+        msg: EventMsg::ModelVerification(ModelVerificationEvent {
+            verifications: vec![CoreModelVerification::TrustedAccessForCyber],
+        }),
+    });
+
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(cells.len(), 1);
+    let rendered = lines_to_single_string(&cells[0]);
+    assert!(rendered.contains("multiple flags for possible cybersecurity risk"));
+    assert!(rendered.contains("extra safety checks are on"));
+    assert!(rendered.contains("Trusted Access for Cyber"));
+    assert!(rendered.contains("https://chatgpt.com/cyber"));
+}
+
+#[tokio::test]
 async fn context_indicator_shows_used_tokens_when_window_unknown() {
     let (mut chat, _rx, _ops) = make_chatwidget_manual(Some("unknown-model")).await;
 
@@ -80,7 +120,7 @@ async fn turn_started_uses_runtime_context_window_before_first_token_count() {
     });
 
     assert_eq!(
-        chat.status_line_value_for_item(crate::bottom_pane::StatusLineItem::ContextWindowSize),
+        chat.status_line_value_for_item(&crate::bottom_pane::StatusLineItem::ContextWindowSize),
         Some("950K window".to_string())
     );
     assert_eq!(chat.bottom_pane.context_window_percent(), Some(100));
@@ -1246,10 +1286,7 @@ async fn status_line_context_used_renders_labeled_percent() {
 
     chat.refresh_status_line();
 
-    assert_eq!(
-        status_line_text(&chat),
-        Some("◔ Context 0% used".to_string())
-    );
+    assert_eq!(status_line_text(&chat), Some("Context 0% used".to_string()));
     assert!(
         drain_insert_history(&mut rx).is_empty(),
         "context-used should remain a valid status line item"
@@ -1266,7 +1303,7 @@ async fn status_line_context_remaining_renders_labeled_percent() {
 
     assert_eq!(
         status_line_text(&chat),
-        Some("◔ Context 100% left".to_string())
+        Some("Context 100% left".to_string())
     );
     assert!(
         drain_insert_history(&mut rx).is_empty(),
@@ -1282,10 +1319,7 @@ async fn status_line_legacy_context_usage_renders_context_used_percent() {
 
     chat.refresh_status_line();
 
-    assert_eq!(
-        status_line_text(&chat),
-        Some("◔ Context 0% used".to_string())
-    );
+    assert_eq!(status_line_text(&chat), Some("Context 0% used".to_string()));
     assert!(
         drain_insert_history(&mut rx).is_empty(),
         "legacy context-usage should remain a valid status line item"
@@ -1321,6 +1355,7 @@ async fn status_line_branch_refreshes_after_turn_complete() {
             last_agent_message: None,
             completed_at: None,
             duration_ms: None,
+            time_to_first_token_ms: None,
         }),
     });
 
@@ -1364,6 +1399,7 @@ async fn status_line_branch_diff_refreshes_after_turn_complete() {
             last_agent_message: None,
             completed_at: None,
             duration_ms: None,
+            time_to_first_token_ms: None,
         }),
     });
 
@@ -1407,7 +1443,7 @@ async fn status_line_project_root_uses_worktree_label_for_gwt_layout() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
     chat.current_cwd = Some(repo_nested);
     assert_eq!(
-        chat.status_line_value_for_item(crate::bottom_pane::StatusLineItem::ProjectRoot),
+        chat.status_line_value_for_item(&crate::bottom_pane::StatusLineItem::ProjectRoot),
         Some("codex".to_string())
     );
 
@@ -1428,7 +1464,7 @@ async fn status_line_project_root_uses_worktree_label_for_gwt_layout() {
     std::fs::create_dir_all(&worktree_nested).expect("create worktree nested dir");
     chat.current_cwd = Some(worktree_nested);
     assert_eq!(
-        chat.status_line_value_for_item(crate::bottom_pane::StatusLineItem::ProjectRoot),
+        chat.status_line_value_for_item(&crate::bottom_pane::StatusLineItem::ProjectRoot),
         Some("codex@feature/x".to_string())
     );
 
@@ -1456,11 +1492,7 @@ async fn default_status_line_items_follow_reference_order() {
         chat.configured_status_line_items(),
         vec![
             "model-with-reasoning".to_string(),
-            "context-usage".to_string(),
-            "project-root".to_string(),
-            "git-branch".to_string(),
-            "branch-lines-added".to_string(),
-            "branch-lines-removed".to_string(),
+            "current-dir".to_string(),
         ]
     );
 }
@@ -1471,11 +1503,11 @@ async fn status_line_fast_mode_renders_on_and_off() {
     chat.config.tui_status_line = Some(vec!["fast-mode".to_string()]);
 
     chat.refresh_status_line();
-    assert_eq!(status_line_text(&chat), Some("fast off".to_string()));
+    assert_eq!(status_line_text(&chat), Some("Fast off".to_string()));
 
     chat.set_service_tier(Some(ServiceTier::Fast));
     chat.refresh_status_line();
-    assert_eq!(status_line_text(&chat), Some("fast on".to_string()));
+    assert_eq!(status_line_text(&chat), Some("Fast on".to_string()));
 }
 
 #[tokio::test]
@@ -1522,9 +1554,7 @@ async fn status_line_model_with_reasoning_includes_fast_for_fast_capable_models(
 
     assert_eq!(
         status_line_text(&chat),
-        Some(format!(
-            "◉ gpt-5.4 xhigh fast  ◔ Context 0% used  cwd {test_cwd}"
-        ))
+        Some(format!("gpt-5.4 xhigh fast · Context 0% used · {test_cwd}"))
     );
 
     chat.set_model("gpt-5.3-codex");
@@ -1533,7 +1563,7 @@ async fn status_line_model_with_reasoning_includes_fast_for_fast_capable_models(
     assert_eq!(
         status_line_text(&chat),
         Some(format!(
-            "◉ gpt-5.3-codex xhigh  ◔ Context 0% used  cwd {test_cwd}"
+            "gpt-5.3-codex xhigh · Context 0% used · {test_cwd}"
         ))
     );
 }
@@ -1560,7 +1590,7 @@ async fn status_line_model_with_reasoning_updates_on_mode_switch_without_manual_
 
     assert_eq!(
         status_line_text(&chat),
-        Some("◉ gpt-5.3-codex high".to_string())
+        Some("gpt-5.3-codex high".to_string())
     );
 
     let plan_mask = collaboration_modes::plan_mask(chat.model_catalog.as_ref())
@@ -1569,7 +1599,7 @@ async fn status_line_model_with_reasoning_updates_on_mode_switch_without_manual_
 
     assert_eq!(
         status_line_text(&chat),
-        Some("◉ gpt-5.3-codex medium".to_string())
+        Some("gpt-5.3-codex medium".to_string())
     );
 
     let default_mask = collaboration_modes::default_mask(chat.model_catalog.as_ref())
@@ -1578,7 +1608,7 @@ async fn status_line_model_with_reasoning_updates_on_mode_switch_without_manual_
 
     assert_eq!(
         status_line_text(&chat),
-        Some("◉ gpt-5.3-codex high".to_string())
+        Some("gpt-5.3-codex high".to_string())
     );
 }
 
@@ -1791,6 +1821,7 @@ async fn multiple_agent_messages_in_single_turn_emit_multiple_headers() {
             last_agent_message: None,
             completed_at: None,
             duration_ms: None,
+            time_to_first_token_ms: None,
         }),
     });
 
@@ -2736,6 +2767,7 @@ printf 'fenced within fenced\n'
             last_agent_message: None,
             completed_at: None,
             duration_ms: None,
+            time_to_first_token_ms: None,
         }),
     });
     for lines in drain_insert_history(&mut rx) {

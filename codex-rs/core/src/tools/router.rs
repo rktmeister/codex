@@ -27,6 +27,7 @@ use codex_tools::ToolsConfig;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
 use tracing::instrument;
 
 pub use crate::tools::context::ToolCallSource;
@@ -289,7 +290,14 @@ impl ToolRouter {
         let payload_outputs_tool_search = matches!(&call.payload, ToolPayload::ToolSearch { .. });
 
         match self
-            .dispatch_tool_call_with_code_mode_result(session, turn, tracker, call, source)
+            .dispatch_tool_call_with_code_mode_result(
+                session,
+                turn,
+                CancellationToken::new(),
+                tracker,
+                call,
+                source,
+            )
             .await
         {
             Ok(result) => Ok(result.into_response()),
@@ -306,6 +314,7 @@ impl ToolRouter {
                             },
                         },
                         result: Box::new(ToolSearchOutput { tools: Vec::new() }),
+                        post_tool_use_payload: None,
                     }
                 } else if payload_outputs_custom {
                     AnyToolResult {
@@ -314,6 +323,7 @@ impl ToolRouter {
                             input: String::new(),
                         },
                         result: Box::new(FunctionToolOutput::from_text(message, Some(false))),
+                        post_tool_use_payload: None,
                     }
                 } else {
                     AnyToolResult {
@@ -322,6 +332,7 @@ impl ToolRouter {
                             arguments: "{}".to_string(),
                         },
                         result: Box::new(FunctionToolOutput::from_text(message, Some(false))),
+                        post_tool_use_payload: None,
                     }
                 };
                 Ok(result.into_response())
@@ -334,6 +345,7 @@ impl ToolRouter {
         &self,
         session: Arc<Session>,
         turn: Arc<TurnContext>,
+        cancellation_token: CancellationToken,
         tracker: SharedTurnDiffTracker,
         call: ToolCall,
         source: ToolCallSource,
@@ -376,6 +388,7 @@ impl ToolRouter {
         let invocation = ToolInvocation {
             session,
             turn,
+            cancellation_token,
             tracker,
             call_id,
             tool_name,
