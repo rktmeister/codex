@@ -276,7 +276,7 @@ async fn snapshot_shell_does_not_inherit_stdin() -> Result<()> {
 
     let home_display = home.display();
     let script = format!(
-        "HOME=\"{home_display}\"; export HOME; {}",
+        "HOME=\"{home_display}\"; export HOME; unset BASH_ENV; {}",
         bash_snapshot_script()
     );
     let output = run_script_with_timeout(

@@ -118,6 +118,7 @@ struct KernelState {
 struct ExecContext {
     session: Arc<Session>,
     turn: Arc<TurnContext>,
+    cancellation_token: CancellationToken,
     tracker: SharedTurnDiffTracker,
 }
 
@@ -380,6 +381,7 @@ impl PyReplManager {
         &self,
         session: Arc<Session>,
         turn: Arc<TurnContext>,
+        cancellation_token: CancellationToken,
         tracker: SharedTurnDiffTracker,
         args: PyReplArgs,
     ) -> Result<PyExecResult, FunctionCallError> {
@@ -424,6 +426,7 @@ impl PyReplManager {
                 ExecContext {
                     session: Arc::clone(&session),
                     turn: Arc::clone(&turn),
+                    cancellation_token,
                     tracker,
                 },
             );
@@ -1255,28 +1258,21 @@ impl PyReplManager {
         };
 
         match router
-            .dispatch_tool_call(
+            .dispatch_tool_call_with_code_mode_result(
                 Arc::clone(&exec.session),
-                exec.turn,
+                Arc::clone(&exec.turn),
+                exec.cancellation_token.child_token(),
                 exec.tracker,
                 call,
                 crate::tools::router::ToolCallSource::PyRepl,
             )
             .await
         {
-            Ok(response) => match serde_json::to_value(response) {
-                Ok(value) => RunToolResult {
-                    id: req.id,
-                    ok: true,
-                    response: Some(value),
-                    error: None,
-                },
-                Err(err) => RunToolResult {
-                    id: req.id,
-                    ok: false,
-                    response: None,
-                    error: Some(format!("failed to serialize tool output: {err}")),
-                },
+            Ok(response) => RunToolResult {
+                id: req.id,
+                ok: true,
+                response: Some(response.code_mode_result()),
+                error: None,
             },
             Err(err) => RunToolResult {
                 id: req.id,

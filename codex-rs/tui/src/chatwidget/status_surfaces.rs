@@ -5,6 +5,7 @@
 
 use super::*;
 use crate::bottom_pane::format_status_line;
+use crate::status::format_tokens_compact;
 
 /// Items shown in the terminal title when the user has not configured a
 /// custom selection. Intentionally minimal: spinner + project name.

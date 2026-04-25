@@ -2,11 +2,9 @@ use crate::function_tool::FunctionCallError;
 use crate::sandboxing::SandboxPermissions;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
-use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::SharedTurnDiffTracker;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
-use crate::tools::context::ToolSearchOutput;
 use crate::tools::registry::AnyToolResult;
 use crate::tools::registry::ToolArgumentDiffConsumer;
 use crate::tools::registry::ToolRegistry;
@@ -14,7 +12,6 @@ use crate::tools::spec::build_specs_with_discoverable_tools;
 use codex_mcp::ToolInfo;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::models::LocalShellAction;
-use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::models::SearchToolCallParams;
 use codex_protocol::models::ShellToolCallParams;
@@ -45,8 +42,6 @@ pub struct ToolRouter {
     model_visible_specs: Vec<ToolSpec>,
     parallel_mcp_server_names: HashSet<String>,
 }
-
-const SHELL_TOOL_ALIASES: &[&str] = &["shell", "container.exec", "local_shell", "shell_command"];
 
 pub(crate) struct ToolRouterParams<'a> {
     pub(crate) mcp_tools: Option<HashMap<String, ToolInfo>>,
@@ -145,6 +140,25 @@ impl ToolRouter {
         self.registry.create_diff_consumer(tool_name)
     }
 
+    fn configured_tool_supports_parallel(&self, tool_name: &ToolName) -> bool {
+        if tool_name.namespace.is_some() {
+            return false;
+        }
+
+        self.specs
+            .iter()
+            .filter(|config| config.supports_parallel_tool_calls)
+            .any(|config| match &config.spec {
+                ToolSpec::Function(tool) => tool.name == tool_name.name.as_str(),
+                ToolSpec::Freeform(tool) => tool.name == tool_name.name.as_str(),
+                ToolSpec::Namespace(_)
+                | ToolSpec::ToolSearch { .. }
+                | ToolSpec::LocalShell {}
+                | ToolSpec::ImageGeneration { .. }
+                | ToolSpec::WebSearch { .. } => false,
+            })
+    }
+
     pub fn tool_supports_parallel(&self, call: &ToolCall) -> bool {
         match &call.payload {
             // MCP parallel support is configured per server, including for deferred
@@ -153,33 +167,6 @@ impl ToolRouter {
             ToolPayload::Mcp { server, .. } => self.parallel_mcp_server_names.contains(server),
             _ => self.configured_tool_supports_parallel(&call.tool_name),
         }
-    }
-
-    fn configured_tool_supports_parallel(&self, tool_name: &ToolName) -> bool {
-        if tool_name.namespace.is_some() {
-            return false;
-        }
-
-        let tool_name = tool_name.name.as_str();
-        let supports_parallel = self
-            .specs
-            .iter()
-            .find(|config| config.name() == tool_name)
-            .map(|config| config.supports_parallel_tool_calls);
-        if let Some(supports_parallel) = supports_parallel {
-            return supports_parallel;
-        }
-
-        if SHELL_TOOL_ALIASES.contains(&tool_name) {
-            return self
-                .specs
-                .iter()
-                .find(|config| matches!(config.spec.name(), "shell_command" | "exec_command"))
-                .map(|config| config.supports_parallel_tool_calls)
-                .unwrap_or(false);
-        }
-
-        false
     }
 
     #[instrument(level = "trace", skip_all, err)]
@@ -277,70 +264,6 @@ impl ToolRouter {
     }
 
     #[instrument(level = "trace", skip_all, err)]
-    pub async fn dispatch_tool_call(
-        &self,
-        session: Arc<Session>,
-        turn: Arc<TurnContext>,
-        tracker: SharedTurnDiffTracker,
-        call: ToolCall,
-        source: ToolCallSource,
-    ) -> Result<ResponseInputItem, FunctionCallError> {
-        let response_call_id = call.call_id.clone();
-        let payload_outputs_custom = matches!(&call.payload, ToolPayload::Custom { .. });
-        let payload_outputs_tool_search = matches!(&call.payload, ToolPayload::ToolSearch { .. });
-
-        match self
-            .dispatch_tool_call_with_code_mode_result(
-                session,
-                turn,
-                CancellationToken::new(),
-                tracker,
-                call,
-                source,
-            )
-            .await
-        {
-            Ok(result) => Ok(result.into_response()),
-            Err(FunctionCallError::Fatal(message)) => Err(FunctionCallError::Fatal(message)),
-            Err(err) => {
-                let message = err.to_string();
-                let result = if payload_outputs_tool_search {
-                    AnyToolResult {
-                        call_id: response_call_id,
-                        payload: ToolPayload::ToolSearch {
-                            arguments: SearchToolCallParams {
-                                query: String::new(),
-                                limit: None,
-                            },
-                        },
-                        result: Box::new(ToolSearchOutput { tools: Vec::new() }),
-                        post_tool_use_payload: None,
-                    }
-                } else if payload_outputs_custom {
-                    AnyToolResult {
-                        call_id: response_call_id,
-                        payload: ToolPayload::Custom {
-                            input: String::new(),
-                        },
-                        result: Box::new(FunctionToolOutput::from_text(message, Some(false))),
-                        post_tool_use_payload: None,
-                    }
-                } else {
-                    AnyToolResult {
-                        call_id: response_call_id,
-                        payload: ToolPayload::Function {
-                            arguments: "{}".to_string(),
-                        },
-                        result: Box::new(FunctionToolOutput::from_text(message, Some(false))),
-                        post_tool_use_payload: None,
-                    }
-                };
-                Ok(result.into_response())
-            }
-        }
-    }
-
-    #[instrument(level = "trace", skip_all, err)]
     pub async fn dispatch_tool_call_with_code_mode_result(
         &self,
         session: Arc<Session>,
@@ -356,33 +279,16 @@ impl ToolRouter {
             payload,
         } = call;
 
-        if source == ToolCallSource::Direct {
-            let direct_js_repl_call = tool_name.namespace.is_none()
-                && matches!(tool_name.name.as_str(), "js_repl" | "js_repl_reset");
-            let direct_py_repl_call = tool_name.namespace.is_none()
-                && matches!(tool_name.name.as_str(), "py_repl" | "py_repl_reset");
-            let direct_call_error = match (
-                turn.tools_config.js_repl_tools_only,
-                turn.tools_config.py_repl_tools_only,
-            ) {
-                (true, true) if !(direct_js_repl_call || direct_py_repl_call) => Some(
-                    "direct tool calls are disabled; use js_repl / py_repl and codex.tool(...) instead"
-                        .to_string(),
-                ),
-                (true, false) if !direct_js_repl_call => Some(
-                    "direct tool calls are disabled; use js_repl and codex.tool(...) instead"
-                        .to_string(),
-                ),
-                (false, true) if !direct_py_repl_call => Some(
-                    "direct tool calls are disabled; use py_repl and codex.tool(...) instead"
-                        .to_string(),
-                ),
-                _ => None,
-            };
-
-            if let Some(message) = direct_call_error {
-                return Err(FunctionCallError::RespondToModel(message));
-            }
+        let direct_py_repl_call = tool_name.namespace.is_none()
+            && matches!(tool_name.name.as_str(), "py_repl" | "py_repl_reset");
+        if source == ToolCallSource::Direct
+            && turn.tools_config.py_repl_tools_only
+            && !direct_py_repl_call
+        {
+            return Err(FunctionCallError::RespondToModel(
+                "direct tool calls are disabled; use py_repl and codex.tool(...) instead"
+                    .to_string(),
+            ));
         }
 
         let invocation = ToolInvocation {
@@ -392,6 +298,7 @@ impl ToolRouter {
             tracker,
             call_id,
             tool_name,
+            source,
             payload,
         };
 

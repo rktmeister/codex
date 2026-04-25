@@ -182,7 +182,6 @@ pub(crate) fn spawn_end(
         new_agent_nickname,
         new_agent_role,
         prompt,
-        status: _,
         ..
     } = ev;
 

@@ -5,6 +5,8 @@
 
 use super::*;
 
+const SHUTDOWN_FIRST_EXIT_TIMEOUT: Duration = Duration::from_secs(/*secs*/ 2);
+
 impl App {
     pub(super) async fn handle_event(
         &mut self,
@@ -468,6 +470,24 @@ impl App {
             }
             AppEvent::RefreshRateLimits { origin } => {
                 self.refresh_rate_limits(app_server, origin);
+            }
+            AppEvent::OpenThreadGoalMenu { thread_id } => {
+                self.open_thread_goal_menu(app_server, thread_id).await;
+            }
+            AppEvent::SetThreadGoalObjective {
+                thread_id,
+                objective,
+                mode,
+            } => {
+                self.set_thread_goal_objective(app_server, thread_id, objective, mode)
+                    .await;
+            }
+            AppEvent::SetThreadGoalStatus { thread_id, status } => {
+                self.set_thread_goal_status(app_server, thread_id, status)
+                    .await;
+            }
+            AppEvent::ClearThreadGoal { thread_id } => {
+                self.clear_thread_goal(app_server, thread_id).await;
             }
             AppEvent::SendAddCreditsNudgeEmail { credit_type } => {
                 if self
@@ -1667,7 +1687,20 @@ impl App {
                 self.pending_shutdown_exit_thread_id =
                     self.active_thread_id.or(self.chat_widget.thread_id());
                 if self.pending_shutdown_exit_thread_id.is_some() {
-                    self.shutdown_current_thread(app_server).await;
+                    // This is a UI escape-hatch budget, not a protocol
+                    // deadline. A healthy local thread/unsubscribe round trip
+                    // should finish comfortably inside two seconds, while a
+                    // longer wait makes Ctrl+C feel broken when the app-server
+                    // is already wedged.
+                    if tokio::time::timeout(
+                        SHUTDOWN_FIRST_EXIT_TIMEOUT,
+                        self.shutdown_current_thread(app_server),
+                    )
+                    .await
+                    .is_err()
+                    {
+                        tracing::warn!("timed out waiting for app-server thread shutdown");
+                    }
                 }
                 self.pending_shutdown_exit_thread_id = None;
                 AppRunControl::Exit(ExitReason::UserRequested)

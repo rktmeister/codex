@@ -108,6 +108,7 @@ impl ToolHandler for PyReplHandler {
         let ToolInvocation {
             session,
             turn,
+            cancellation_token,
             tracker,
             payload,
             call_id,
@@ -134,7 +135,13 @@ impl ToolHandler for PyReplHandler {
         let started_at = Instant::now();
         emit_py_repl_exec_begin(session.as_ref(), turn.as_ref(), &call_id).await;
         let result = manager
-            .execute(Arc::clone(&session), Arc::clone(&turn), tracker, args)
+            .execute(
+                Arc::clone(&session),
+                Arc::clone(&turn),
+                cancellation_token,
+                tracker,
+                args,
+            )
             .await;
         let result = match result {
             Ok(result) => result,

@@ -4,6 +4,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 use crate::function_tool::FunctionCallError;
+use crate::goals::GoalRuntimeEvent;
 use crate::hook_runtime::record_additional_contexts;
 use crate::hook_runtime::run_post_tool_use_hooks;
 use crate::hook_runtime::run_pre_tool_use_hooks;
@@ -15,6 +16,7 @@ use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
 use crate::tools::hook_names::HookToolName;
+use crate::tools::tool_dispatch_trace::ToolDispatchTrace;
 use codex_hooks::HookEvent;
 use codex_hooks::HookEventAfterToolUse;
 use codex_hooks::HookPayload;
@@ -219,6 +221,19 @@ impl ToolRegistry {
         Self { handlers }
     }
 
+    #[cfg(test)]
+    pub(crate) fn empty_for_test() -> Self {
+        Self::new(HashMap::new())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_handler_for_test<T>(name: ToolName, handler: Arc<T>) -> Self
+    where
+        T: ToolHandler + 'static,
+    {
+        Self::new(HashMap::from([(name, handler as Arc<dyn AnyToolHandler>)]))
+    }
+
     fn handler(&self, name: &ToolName) -> Option<Arc<dyn AnyToolHandler>> {
         self.handlers.get(name).map(Arc::clone)
     }
@@ -294,6 +309,8 @@ impl ToolRegistry {
             }
         }
 
+        let dispatch_trace = ToolDispatchTrace::start(&invocation);
+
         let handler = match self.handler(&tool_name) {
             Some(handler) => handler,
             None => {
@@ -309,7 +326,9 @@ impl ToolRegistry {
                     mcp_server_ref,
                     mcp_server_origin_ref,
                 );
-                return Err(FunctionCallError::RespondToModel(message));
+                let err = FunctionCallError::RespondToModel(message);
+                dispatch_trace.record_failed(&err);
+                return Err(err);
             }
         };
 
@@ -326,7 +345,9 @@ impl ToolRegistry {
                 mcp_server_ref,
                 mcp_server_origin_ref,
             );
-            return Err(FunctionCallError::Fatal(message));
+            let err = FunctionCallError::Fatal(message);
+            dispatch_trace.record_failed(&err);
+            return Err(err);
         }
 
         if let Some(pre_tool_use_payload) = handler.pre_tool_use_payload(&invocation)
@@ -339,7 +360,9 @@ impl ToolRegistry {
             )
             .await
         {
-            return Err(FunctionCallError::RespondToModel(message));
+            let err = FunctionCallError::RespondToModel(message);
+            dispatch_trace.record_failed(&err);
+            return Err(err);
         }
 
         let is_mutating = handler.is_mutating(&invocation).await;
@@ -420,6 +443,7 @@ impl ToolRegistry {
         .await;
 
         if let Some(err) = hook_abort_error {
+            dispatch_trace.record_failed(&err);
             return Err(err);
         }
 
@@ -453,15 +477,35 @@ impl ToolRegistry {
             }
         }
 
+        if let Err(err) = invocation
+            .session
+            .goal_runtime_apply(GoalRuntimeEvent::ToolCompleted {
+                turn_context: invocation.turn.as_ref(),
+                tool_name: tool_name.name.as_str(),
+            })
+            .await
+        {
+            warn!("failed to account thread goal progress after tool call: {err}");
+        }
+
         match result {
             Ok(_) => {
                 let mut guard = response_cell.lock().await;
                 let result = guard.take().ok_or_else(|| {
                     FunctionCallError::Fatal("tool produced no output".to_string())
                 })?;
+                dispatch_trace.record_completed(
+                    &invocation,
+                    &result.call_id,
+                    &result.payload,
+                    result.result.as_ref(),
+                );
                 Ok(result)
             }
-            Err(err) => Err(err),
+            Err(err) => {
+                dispatch_trace.record_failed(&err);
+                Err(err)
+            }
         }
     }
 }

@@ -333,7 +333,7 @@ fn resolve_sandbox_policies(
             })
         }
         (Some(sandbox_policy), None) => Ok(EffectiveSandboxPolicies {
-            file_system_sandbox_policy: FileSystemSandboxPolicy::from_legacy_sandbox_policy(
+            file_system_sandbox_policy: FileSystemSandboxPolicy::from_legacy_sandbox_policy_for_cwd(
                 &sandbox_policy,
                 sandbox_policy_cwd,
             ),
@@ -363,8 +363,14 @@ fn legacy_sandbox_policies_match_semantics(
 ) -> bool {
     NetworkSandboxPolicy::from(provided) == NetworkSandboxPolicy::from(derived)
         && file_system_sandbox_policies_match_semantics(
-            &FileSystemSandboxPolicy::from_legacy_sandbox_policy(provided, sandbox_policy_cwd),
-            &FileSystemSandboxPolicy::from_legacy_sandbox_policy(derived, sandbox_policy_cwd),
+            &FileSystemSandboxPolicy::from_legacy_sandbox_policy_for_cwd(
+                provided,
+                sandbox_policy_cwd,
+            ),
+            &FileSystemSandboxPolicy::from_legacy_sandbox_policy_for_cwd(
+                derived,
+                sandbox_policy_cwd,
+            ),
             sandbox_policy_cwd,
         )
 }
