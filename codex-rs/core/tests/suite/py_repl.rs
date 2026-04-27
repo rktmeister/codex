@@ -539,6 +539,60 @@ async fn py_repl_process_list_and_kill_cleanup_surface_tracks_started_processes(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn py_repl_process_failure_hooks_can_cleanup_tracked_children() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let mut builder = test_codex().with_config(|config| {
+        config
+            .features
+            .enable(Feature::PyRepl)
+            .expect("test config should allow feature update");
+    });
+    let test = builder.build(&server).await?;
+
+    let failed = run_py_repl_turn(
+        &test,
+        &server,
+        "register a failure cleanup hook",
+        "call-1",
+        concat!(
+            "import sys\n",
+            "cleanup_count = 0\n",
+            "async def cleanup(_context):\n",
+            "    global cleanup_count\n",
+            "    cleanup_count += 1\n",
+            "    await codex.process.kill_all()\n",
+            "hook_id = codex.process.on_failure(cleanup)\n",
+            "sleeper = await codex.process.start([sys.executable, '-c', 'import time; time.sleep(5)'], yield_time_ms=100)\n",
+            "print('before=' + str(len(codex.process.list())))\n",
+            "raise RuntimeError('boom')",
+        ),
+    )
+    .await?;
+
+    let failed_req = failed.single_request();
+    assert_py_repl_err(&failed_req, "call-1", "RuntimeError: boom");
+    assert_py_repl_err(&failed_req, "call-1", "before=1");
+
+    let inspected = run_py_repl_turn(
+        &test,
+        &server,
+        "inspect failure cleanup state",
+        "call-2",
+        "print('cleanup_count=' + str(cleanup_count))\nprint('listed=' + str(codex.process.list()))\nprint('running=' + str(sleeper.running))\nprint('removed=' + str(codex.process.remove_failure_hook(hook_id)))",
+    )
+    .await?;
+
+    let inspected_req = inspected.single_request();
+    assert_py_repl_ok(&inspected_req, "call-2", "cleanup_count=1");
+    assert_py_repl_ok(&inspected_req, "call-2", "listed=[]");
+    assert_py_repl_ok(&inspected_req, "call-2", "running=False");
+    assert_py_repl_ok(&inspected_req, "call-2", "removed=True");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn py_repl_process_run_returns_nonzero_exit_without_failing_cell() -> Result<()> {
     skip_if_no_network!(Ok(()));
 

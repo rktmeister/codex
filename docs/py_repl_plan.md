@@ -37,6 +37,7 @@ The current branch has already landed most of the Phase 0-2 surface:
 - fresh Python child execution via `codex.process.python(...)`
 - long-running process handles via `codex.process.start(...)` with `poll(...)`, `wait(...)`, and `kill()`
 - tracked process cleanup via `codex.process.list()`, `codex.process.kill(session_id)`, and `codex.process.kill_all()`
+- Python-level failure cleanup hooks via `codex.process.on_failure(callback)`
 
 The remaining work is concentrated in hardening, parity coverage, typed config cleanup, and docs polish. Keep the sequencing below as the source of truth for what is still left to finish.
 
@@ -71,6 +72,7 @@ The remaining work is concentrated in hardening, parity coverage, typed config c
   - `codex.process.list()`
   - `codex.process.kill(session_id)`
   - `codex.process.kill_all()`
+  - `codex.process.on_failure(callback)`
   - `codex.process.python(code, ...)`
   - `codex.tool(name, args=None)`
   - `codex.emit_image(image_like)`

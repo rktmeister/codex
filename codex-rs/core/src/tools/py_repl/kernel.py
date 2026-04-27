@@ -318,6 +318,15 @@ class ProcessProxy:
     def kill_all(self) -> BackgroundTask:
         return self._kernel.create_background_task(self._kernel.kill_all_processes())
 
+    def on_failure(self, callback: Any) -> int:
+        return self._kernel.register_process_failure_hook(callback)
+
+    def remove_failure_hook(self, hook_id: int) -> bool:
+        return self._kernel.remove_process_failure_hook(hook_id)
+
+    def clear_failure_hooks(self) -> None:
+        self._kernel.clear_process_failure_hooks()
+
 
 class CodexProxy:
     def __init__(self, kernel: "PyReplKernel") -> None:
@@ -369,6 +378,8 @@ class PyReplKernel:
         self.emit_counter = 0
         self.cell_counter = 0
         self.process_handles: dict[int, ProcessHandle] = {}
+        self.process_failure_hooks: dict[int, Any] = {}
+        self.process_failure_hook_counter = 0
         self.cwd = os.getcwd()
         self.tmp_dir = os.environ.get("CODEX_PY_REPL_TMP_DIR", self.cwd)
         self.original_import = builtins.__import__
@@ -475,6 +486,16 @@ class PyReplKernel:
         if error_text is None and helper_error is not None:
             error_text = helper_error
 
+        if error_text is not None:
+            with contextlib.redirect_stdout(buffer), contextlib.redirect_stderr(buffer):
+                cleanup_error = await self._run_failure_hooks(exec_id, buffer.getvalue(), error_text)
+            cleanup_helper_error = await self._drain_background_tasks(exec_state)
+            error_text = self._append_cleanup_errors(
+                error_text,
+                cleanup_error,
+                cleanup_helper_error,
+            )
+
         self.current_exec = None
         output = buffer.getvalue()
         if error_text is not None:
@@ -509,6 +530,64 @@ class PyReplKernel:
                 first_unobserved_error.__traceback__,
             )
         )
+
+    async def _run_failure_hooks(
+        self,
+        exec_id: str,
+        output: str,
+        error_text: str,
+    ) -> str | None:
+        if not self.process_failure_hooks:
+            return None
+
+        context = {
+            "exec_id": exec_id,
+            "error": error_text,
+            "output": output,
+            "processes": self.list_processes(),
+        }
+        hook_errors: list[str] = []
+        for hook_id, callback in list(self.process_failure_hooks.items()):
+            try:
+                result = self._call_failure_hook(callback, context)
+                if inspect.isawaitable(result):
+                    await result
+            except BaseException as err:
+                hook_errors.append(
+                    f"failure hook {hook_id} failed:\n"
+                    + "".join(traceback.format_exception(type(err), err, err.__traceback__))
+                )
+
+        if not hook_errors:
+            return None
+        return "\n".join(hook_errors)
+
+    def _call_failure_hook(self, callback: Any, context: dict[str, Any]) -> Any:
+        try:
+            signature = inspect.signature(callback)
+        except (TypeError, ValueError):
+            return callback(context)
+
+        try:
+            signature.bind(context)
+        except TypeError:
+            try:
+                signature.bind()
+            except TypeError:
+                return callback(context)
+            return callback()
+        return callback(context)
+
+    def _append_cleanup_errors(
+        self,
+        error_text: str,
+        cleanup_error: str | None,
+        cleanup_helper_error: str | None,
+    ) -> str:
+        extra = [error for error in (cleanup_error, cleanup_helper_error) if error]
+        if not extra:
+            return error_text
+        return error_text + "\nDuring py_repl failure cleanup:\n" + "\n".join(extra)
 
     async def _shutdown_async(self) -> None:
         pending = [task for task in asyncio.all_tasks(self.loop) if task is not asyncio.current_task()]
@@ -924,6 +1003,22 @@ class PyReplKernel:
                 self.process_handles.pop(previous_session_id, None)
         if handle.session_id is not None:
             self.process_handles[handle.session_id] = handle
+
+    def register_process_failure_hook(self, callback: Any) -> int:
+        if not callable(callback):
+            raise PyReplError("codex.process.on_failure expects a callable")
+        hook_id = self.process_failure_hook_counter
+        self.process_failure_hook_counter += 1
+        self.process_failure_hooks[hook_id] = callback
+        return hook_id
+
+    def remove_process_failure_hook(self, hook_id: int) -> bool:
+        if not isinstance(hook_id, int) or isinstance(hook_id, bool):
+            raise PyReplError("codex.process.remove_failure_hook expects an integer hook id")
+        return self.process_failure_hooks.pop(hook_id, None) is not None
+
+    def clear_process_failure_hooks(self) -> None:
+        self.process_failure_hooks.clear()
 
     async def run_python(
         self,
