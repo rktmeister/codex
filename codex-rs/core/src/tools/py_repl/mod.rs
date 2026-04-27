@@ -1166,6 +1166,196 @@ impl PyReplManager {
                         }
                     });
                 }
+                KernelToHost::StartProcess(req) => {
+                    let Some(reset_cancel) =
+                        Self::begin_exec_tool_call(&exec_tool_calls, &req.exec_id).await
+                    else {
+                        let exec_id = req.exec_id.clone();
+                        let process_call_id = req.id.clone();
+                        let payload = HostToKernel::StartProcessResult(RunProcessResult {
+                            id: req.id,
+                            ok: false,
+                            response: None,
+                            error: Some("py_repl exec context not found".to_string()),
+                        });
+                        if let Err(err) = Self::write_message(&stdin, &payload).await {
+                            let snapshot =
+                                Self::kernel_debug_snapshot(&child, &recent_stderr).await;
+                            warn!(
+                                exec_id = %exec_id,
+                                process_call_id = %process_call_id,
+                                error = %err,
+                                kernel_pid = ?snapshot.pid,
+                                kernel_status = %snapshot.status,
+                                kernel_stderr_tail = %snapshot.stderr_tail,
+                                "failed to reply to kernel start_process request"
+                            );
+                        }
+                        continue;
+                    };
+
+                    let stdin_clone = Arc::clone(&stdin);
+                    let exec_contexts = Arc::clone(&exec_contexts);
+                    let exec_tool_calls_for_task = Arc::clone(&exec_tool_calls);
+                    let recent_stderr = Arc::clone(&recent_stderr);
+                    tokio::spawn(async move {
+                        let exec_id = req.exec_id.clone();
+                        let process_call_id = req.id.clone();
+                        let context = { exec_contexts.lock().await.get(&exec_id).cloned() };
+                        let result = match context {
+                            Some(ctx) => Self::start_process_request(ctx, req, reset_cancel).await,
+                            None => RunProcessResult {
+                                id: process_call_id.clone(),
+                                ok: false,
+                                response: None,
+                                error: Some("py_repl exec context not found".to_string()),
+                            },
+                        };
+                        Self::finish_exec_tool_call(&exec_tool_calls_for_task, &exec_id).await;
+                        let payload = HostToKernel::StartProcessResult(result);
+                        if let Err(err) = Self::write_message(&stdin_clone, &payload).await {
+                            let stderr_tail =
+                                Self::kernel_stderr_tail_snapshot(&recent_stderr).await;
+                            warn!(
+                                exec_id = %exec_id,
+                                process_call_id = %process_call_id,
+                                error = %err,
+                                kernel_stderr_tail = %stderr_tail,
+                                "failed to reply to kernel start_process request"
+                            );
+                        }
+                    });
+                }
+                KernelToHost::PollProcess(req) => {
+                    let Some(reset_cancel) =
+                        Self::begin_exec_tool_call(&exec_tool_calls, &req.exec_id).await
+                    else {
+                        let exec_id = req.exec_id.clone();
+                        let process_call_id = req.id.clone();
+                        let payload = HostToKernel::PollProcessResult(RunProcessResult {
+                            id: req.id,
+                            ok: false,
+                            response: None,
+                            error: Some("py_repl exec context not found".to_string()),
+                        });
+                        if let Err(err) = Self::write_message(&stdin, &payload).await {
+                            let snapshot =
+                                Self::kernel_debug_snapshot(&child, &recent_stderr).await;
+                            warn!(
+                                exec_id = %exec_id,
+                                process_call_id = %process_call_id,
+                                error = %err,
+                                kernel_pid = ?snapshot.pid,
+                                kernel_status = %snapshot.status,
+                                kernel_stderr_tail = %snapshot.stderr_tail,
+                                "failed to reply to kernel poll_process request"
+                            );
+                        }
+                        continue;
+                    };
+
+                    let stdin_clone = Arc::clone(&stdin);
+                    let exec_contexts = Arc::clone(&exec_contexts);
+                    let exec_tool_calls_for_task = Arc::clone(&exec_tool_calls);
+                    let recent_stderr = Arc::clone(&recent_stderr);
+                    tokio::spawn(async move {
+                        let exec_id = req.exec_id.clone();
+                        let process_call_id = req.id.clone();
+                        let context = { exec_contexts.lock().await.get(&exec_id).cloned() };
+                        let result = match context {
+                            Some(ctx) => Self::poll_process_request(ctx, req, reset_cancel).await,
+                            None => RunProcessResult {
+                                id: process_call_id.clone(),
+                                ok: false,
+                                response: None,
+                                error: Some("py_repl exec context not found".to_string()),
+                            },
+                        };
+                        Self::finish_exec_tool_call(&exec_tool_calls_for_task, &exec_id).await;
+                        let payload = HostToKernel::PollProcessResult(result);
+                        if let Err(err) = Self::write_message(&stdin_clone, &payload).await {
+                            let stderr_tail =
+                                Self::kernel_stderr_tail_snapshot(&recent_stderr).await;
+                            warn!(
+                                exec_id = %exec_id,
+                                process_call_id = %process_call_id,
+                                error = %err,
+                                kernel_stderr_tail = %stderr_tail,
+                                "failed to reply to kernel poll_process request"
+                            );
+                        }
+                    });
+                }
+                KernelToHost::KillProcess(req) => {
+                    let Some(reset_cancel) =
+                        Self::begin_exec_tool_call(&exec_tool_calls, &req.exec_id).await
+                    else {
+                        let exec_id = req.exec_id.clone();
+                        let process_call_id = req.id.clone();
+                        let payload = HostToKernel::KillProcessResult(RunProcessResult {
+                            id: req.id,
+                            ok: false,
+                            response: None,
+                            error: Some("py_repl exec context not found".to_string()),
+                        });
+                        if let Err(err) = Self::write_message(&stdin, &payload).await {
+                            let snapshot =
+                                Self::kernel_debug_snapshot(&child, &recent_stderr).await;
+                            warn!(
+                                exec_id = %exec_id,
+                                process_call_id = %process_call_id,
+                                error = %err,
+                                kernel_pid = ?snapshot.pid,
+                                kernel_status = %snapshot.status,
+                                kernel_stderr_tail = %snapshot.stderr_tail,
+                                "failed to reply to kernel kill_process request"
+                            );
+                        }
+                        continue;
+                    };
+
+                    let stdin_clone = Arc::clone(&stdin);
+                    let exec_contexts = Arc::clone(&exec_contexts);
+                    let exec_tool_calls_for_task = Arc::clone(&exec_tool_calls);
+                    let recent_stderr = Arc::clone(&recent_stderr);
+                    tokio::spawn(async move {
+                        let exec_id = req.exec_id.clone();
+                        let process_call_id = req.id.clone();
+                        let context = { exec_contexts.lock().await.get(&exec_id).cloned() };
+                        let result = match context {
+                            Some(ctx) => {
+                                tokio::select! {
+                                    _ = reset_cancel.cancelled() => RunProcessResult {
+                                        id: process_call_id.clone(),
+                                        ok: false,
+                                        response: None,
+                                        error: Some("py_repl execution reset".to_string()),
+                                    },
+                                    result = Self::kill_process_request(ctx, req) => result,
+                                }
+                            }
+                            None => RunProcessResult {
+                                id: process_call_id.clone(),
+                                ok: false,
+                                response: None,
+                                error: Some("py_repl exec context not found".to_string()),
+                            },
+                        };
+                        Self::finish_exec_tool_call(&exec_tool_calls_for_task, &exec_id).await;
+                        let payload = HostToKernel::KillProcessResult(result);
+                        if let Err(err) = Self::write_message(&stdin_clone, &payload).await {
+                            let stderr_tail =
+                                Self::kernel_stderr_tail_snapshot(&recent_stderr).await;
+                            warn!(
+                                exec_id = %exec_id,
+                                process_call_id = %process_call_id,
+                                error = %err,
+                                kernel_stderr_tail = %stderr_tail,
+                                "failed to reply to kernel kill_process request"
+                            );
+                        }
+                    });
+                }
             }
         };
 
@@ -1368,121 +1558,27 @@ impl PyReplManager {
         req: RunProcessRequest,
         reset_cancel: CancellationToken,
     ) -> RunProcessResult {
-        let request_id = req.id.clone();
         let started_at = StdInstant::now();
-        if req.command.is_empty()
-            || req
-                .command
-                .first()
-                .is_none_or(std::string::String::is_empty)
-        {
-            return Self::run_process_error(
-                request_id,
-                "codex.process.run expects a non-empty command list",
-            );
-        }
-
-        let cwd = req
-            .cwd
-            .clone()
-            .filter(|value| !value.is_empty())
-            .map_or_else(
-                || exec.turn.cwd.clone(),
-                |cwd| exec.turn.resolve_path(Some(cwd)),
-            );
-        let hook_command = codex_shell_command::parse_command::shlex_join(&req.command);
-        let manager = &exec.session.services.unified_exec_manager;
-        let process_id = manager.allocate_process_id().await;
-
-        let exec_permission_approvals_enabled = exec
-            .session
-            .features()
-            .enabled(Feature::ExecPermissionApprovals);
-        let requested_additional_permissions = req.additional_permissions.clone();
-        let effective_additional_permissions = apply_granted_turn_permissions(
-            exec.session.as_ref(),
-            cwd.as_path(),
-            req.sandbox_permissions,
-            req.additional_permissions.clone(),
-        )
-        .await;
-        let additional_permissions_allowed = exec_permission_approvals_enabled
-            || (exec
-                .session
-                .features()
-                .enabled(Feature::RequestPermissionsTool)
-                && effective_additional_permissions.permissions_preapproved);
-
-        if effective_additional_permissions
-            .sandbox_permissions
-            .requests_sandbox_override()
-            && !effective_additional_permissions.permissions_preapproved
-            && !matches!(
-                exec.turn.approval_policy.value(),
-                codex_protocol::protocol::AskForApproval::OnRequest
-            )
-        {
-            let approval_policy = exec.turn.approval_policy.value();
-            manager.release_process_id(process_id).await;
-            return Self::run_process_error(
-                request_id,
-                format!(
-                    "approval policy is {approval_policy:?}; reject command - you cannot ask for escalated permissions if the approval policy is {approval_policy:?}"
-                ),
-            );
-        }
-
-        let normalized_additional_permissions = match implicit_granted_permissions(
-            req.sandbox_permissions,
-            requested_additional_permissions.as_ref(),
-            &effective_additional_permissions,
-        )
-        .map_or_else(
-            || {
-                normalize_and_validate_additional_permissions(
-                    additional_permissions_allowed,
-                    exec.turn.approval_policy.value(),
-                    effective_additional_permissions.sandbox_permissions,
-                    effective_additional_permissions
-                        .additional_permissions
-                        .clone(),
-                    effective_additional_permissions.permissions_preapproved,
-                    cwd.as_path(),
-                )
-            },
-            |permissions| Ok(Some(permissions)),
-        ) {
-            Ok(normalized) => normalized,
-            Err(err) => {
-                manager.release_process_id(process_id).await;
-                return Self::run_process_error(request_id, err);
-            }
-        };
-
         let timeout_ms = req.timeout_ms.unwrap_or(PY_REPL_DEFAULT_TIMEOUT_MS).max(1);
-        let max_output_tokens = req.max_output_tokens;
+        let prepared = match Self::prepare_process_exec_request(
+            &exec,
+            req,
+            timeout_ms.min(PY_REPL_DEFAULT_TIMEOUT_MS),
+        )
+        .await
+        {
+            Ok(prepared) => prepared,
+            Err(result) => return result,
+        };
+        let request_id = prepared.request_id.clone();
+        let process_id = prepared.process_id;
+        let max_output_tokens = prepared.max_output_tokens;
+        let manager = &exec.session.services.unified_exec_manager;
         let context = UnifiedExecContext::new(
             Arc::clone(&exec.session),
             Arc::clone(&exec.turn),
             request_id.clone(),
         );
-        let exec_request = ExecCommandRequest {
-            command: req.command,
-            hook_command,
-            process_id,
-            yield_time_ms: timeout_ms.min(PY_REPL_DEFAULT_TIMEOUT_MS),
-            max_output_tokens,
-            workdir: Some(cwd),
-            env: req.env,
-            network: exec.turn.network.clone(),
-            tty: false,
-            sandbox_permissions: effective_additional_permissions.sandbox_permissions,
-            additional_permissions: normalized_additional_permissions,
-            additional_permissions_preapproved: effective_additional_permissions
-                .permissions_preapproved,
-            justification: req.justification,
-            prefix_rule: req.prefix_rule,
-        };
 
         let initial_output = tokio::select! {
             _ = reset_cancel.cancelled() => {
@@ -1491,7 +1587,7 @@ impl PyReplManager {
                 }
                 return Self::run_process_error(request_id, "py_repl execution reset");
             }
-            output = manager.exec_command(exec_request, &context) => output,
+            output = manager.exec_command(prepared.request, &context) => output,
         };
         let mut output = match initial_output {
             Ok(output) => output,
@@ -1555,6 +1651,265 @@ impl PyReplManager {
             },
         )
         .await
+    }
+
+    async fn start_process_request(
+        exec: ExecContext,
+        req: RunProcessRequest,
+        reset_cancel: CancellationToken,
+    ) -> RunProcessResult {
+        let started_at = StdInstant::now();
+        let yield_time_ms = req
+            .yield_time_ms
+            .or(req.timeout_ms)
+            .unwrap_or(1_000)
+            .clamp(1, PY_REPL_DEFAULT_TIMEOUT_MS);
+        let prepared = match Self::prepare_process_exec_request(&exec, req, yield_time_ms).await {
+            Ok(prepared) => prepared,
+            Err(result) => return result,
+        };
+        let request_id = prepared.request_id.clone();
+        let process_id = prepared.process_id;
+        let manager = &exec.session.services.unified_exec_manager;
+        let context = UnifiedExecContext::new(
+            Arc::clone(&exec.session),
+            Arc::clone(&exec.turn),
+            request_id.clone(),
+        );
+        let initial_output = tokio::select! {
+            _ = reset_cancel.cancelled() => {
+                if !manager.terminate_process(process_id).await {
+                    manager.release_process_id(process_id).await;
+                }
+                return Self::run_process_error(request_id, "py_repl execution reset");
+            }
+            output = manager.exec_command(prepared.request, &context) => output,
+        };
+        let mut output = match initial_output {
+            Ok(output) => output,
+            Err(err) => {
+                return Self::run_process_error(request_id, err.to_string());
+            }
+        };
+
+        Self::finish_run_process_request(
+            &exec,
+            RunProcessCompletion {
+                request_id,
+                started_at,
+                output_bytes: std::mem::take(&mut output.raw_output),
+                exit_code: output.exit_code,
+                timed_out: false,
+                session_id: output.process_id,
+            },
+        )
+        .await
+    }
+
+    async fn poll_process_request(
+        exec: ExecContext,
+        req: PollProcessRequest,
+        reset_cancel: CancellationToken,
+    ) -> RunProcessResult {
+        let request_id = req.id;
+        if req.session_id <= 0 {
+            return Self::run_process_error(
+                request_id,
+                "codex.process poll requires a positive session_id",
+            );
+        }
+
+        let started_at = StdInstant::now();
+        let timeout_ms = req
+            .timeout_ms
+            .unwrap_or(250)
+            .clamp(1, PY_REPL_DEFAULT_TIMEOUT_MS);
+        let manager = &exec.session.services.unified_exec_manager;
+        let poll_request = WriteStdinRequest {
+            process_id: req.session_id,
+            input: "",
+            yield_time_ms: timeout_ms,
+            max_output_tokens: req.max_output_tokens,
+        };
+        let poll_output = tokio::select! {
+            _ = reset_cancel.cancelled() => {
+                return Self::run_process_error(request_id, "py_repl execution reset");
+            }
+            output = manager.write_stdin(poll_request) => output,
+        };
+        let mut output = match poll_output {
+            Ok(output) => output,
+            Err(err) => {
+                return Self::run_process_error(request_id, err.to_string());
+            }
+        };
+        let session_id = output.process_id;
+
+        Self::finish_run_process_request(
+            &exec,
+            RunProcessCompletion {
+                request_id,
+                started_at,
+                output_bytes: std::mem::take(&mut output.raw_output),
+                exit_code: output.exit_code,
+                timed_out: session_id.is_some(),
+                session_id,
+            },
+        )
+        .await
+    }
+
+    async fn kill_process_request(exec: ExecContext, req: KillProcessRequest) -> RunProcessResult {
+        let request_id = req.id;
+        if req.session_id <= 0 {
+            return Self::run_process_error(
+                request_id,
+                "codex.process kill requires a positive session_id",
+            );
+        }
+
+        let started_at = StdInstant::now();
+        let manager = &exec.session.services.unified_exec_manager;
+        if !manager.terminate_process(req.session_id).await {
+            return Self::run_process_error(
+                request_id,
+                format!("Unknown process id {}", req.session_id),
+            );
+        }
+
+        Self::finish_run_process_request(
+            &exec,
+            RunProcessCompletion {
+                request_id,
+                started_at,
+                output_bytes: Vec::new(),
+                exit_code: None,
+                timed_out: false,
+                session_id: None,
+            },
+        )
+        .await
+    }
+
+    async fn prepare_process_exec_request(
+        exec: &ExecContext,
+        req: RunProcessRequest,
+        yield_time_ms: u64,
+    ) -> Result<PreparedProcessExec, RunProcessResult> {
+        let request_id = req.id.clone();
+        if req.command.is_empty()
+            || req
+                .command
+                .first()
+                .is_none_or(std::string::String::is_empty)
+        {
+            return Err(Self::run_process_error(
+                request_id,
+                "codex.process.run expects a non-empty command list",
+            ));
+        }
+
+        let cwd = req
+            .cwd
+            .clone()
+            .filter(|value| !value.is_empty())
+            .map_or_else(
+                || exec.turn.cwd.clone(),
+                |cwd| exec.turn.resolve_path(Some(cwd)),
+            );
+        let hook_command = codex_shell_command::parse_command::shlex_join(&req.command);
+        let manager = &exec.session.services.unified_exec_manager;
+        let process_id = manager.allocate_process_id().await;
+
+        let exec_permission_approvals_enabled = exec
+            .session
+            .features()
+            .enabled(Feature::ExecPermissionApprovals);
+        let requested_additional_permissions = req.additional_permissions.clone();
+        let effective_additional_permissions = apply_granted_turn_permissions(
+            exec.session.as_ref(),
+            cwd.as_path(),
+            req.sandbox_permissions,
+            req.additional_permissions.clone(),
+        )
+        .await;
+        let additional_permissions_allowed = exec_permission_approvals_enabled
+            || (exec
+                .session
+                .features()
+                .enabled(Feature::RequestPermissionsTool)
+                && effective_additional_permissions.permissions_preapproved);
+
+        if effective_additional_permissions
+            .sandbox_permissions
+            .requests_sandbox_override()
+            && !effective_additional_permissions.permissions_preapproved
+            && !matches!(
+                exec.turn.approval_policy.value(),
+                codex_protocol::protocol::AskForApproval::OnRequest
+            )
+        {
+            let approval_policy = exec.turn.approval_policy.value();
+            manager.release_process_id(process_id).await;
+            return Err(Self::run_process_error(
+                request_id,
+                format!(
+                    "approval policy is {approval_policy:?}; reject command - you cannot ask for escalated permissions if the approval policy is {approval_policy:?}"
+                ),
+            ));
+        }
+
+        let normalized_additional_permissions = match implicit_granted_permissions(
+            req.sandbox_permissions,
+            requested_additional_permissions.as_ref(),
+            &effective_additional_permissions,
+        )
+        .map_or_else(
+            || {
+                normalize_and_validate_additional_permissions(
+                    additional_permissions_allowed,
+                    exec.turn.approval_policy.value(),
+                    effective_additional_permissions.sandbox_permissions,
+                    effective_additional_permissions
+                        .additional_permissions
+                        .clone(),
+                    effective_additional_permissions.permissions_preapproved,
+                    cwd.as_path(),
+                )
+            },
+            |permissions| Ok(Some(permissions)),
+        ) {
+            Ok(normalized) => normalized,
+            Err(err) => {
+                manager.release_process_id(process_id).await;
+                return Err(Self::run_process_error(request_id, err));
+            }
+        };
+
+        let request = ExecCommandRequest {
+            command: req.command,
+            hook_command,
+            process_id,
+            yield_time_ms,
+            max_output_tokens: req.max_output_tokens,
+            workdir: Some(cwd),
+            env: req.env,
+            network: exec.turn.network.clone(),
+            tty: false,
+            sandbox_permissions: effective_additional_permissions.sandbox_permissions,
+            additional_permissions: normalized_additional_permissions,
+            additional_permissions_preapproved: effective_additional_permissions
+                .permissions_preapproved,
+            justification: req.justification,
+            prefix_rule: req.prefix_rule,
+        };
+
+        Ok(PreparedProcessExec {
+            request_id,
+            process_id,
+            max_output_tokens: request.max_output_tokens,
+            request,
+        })
     }
 
     fn run_process_error(id: String, error: impl Into<String>) -> RunProcessResult {
@@ -1693,6 +2048,9 @@ enum KernelToHost {
     },
     RunTool(RunToolRequest),
     RunProcess(RunProcessRequest),
+    StartProcess(RunProcessRequest),
+    PollProcess(PollProcessRequest),
+    KillProcess(KillProcessRequest),
     EmitImage(EmitImageRequest),
 }
 
@@ -1707,6 +2065,9 @@ enum HostToKernel {
     },
     RunToolResult(RunToolResult),
     RunProcessResult(RunProcessResult),
+    StartProcessResult(RunProcessResult),
+    PollProcessResult(RunProcessResult),
+    KillProcessResult(RunProcessResult),
     EmitImageResult(EmitImageResult),
 }
 
@@ -1738,6 +2099,8 @@ struct RunProcessRequest {
     #[serde(default)]
     env: HashMap<String, String>,
     #[serde(default)]
+    yield_time_ms: Option<u64>,
+    #[serde(default)]
     timeout_ms: Option<u64>,
     #[serde(default)]
     max_output_tokens: Option<usize>,
@@ -1749,6 +2112,24 @@ struct RunProcessRequest {
     justification: Option<String>,
     #[serde(default)]
     prefix_rule: Option<Vec<String>>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct PollProcessRequest {
+    id: String,
+    exec_id: String,
+    session_id: i32,
+    #[serde(default)]
+    timeout_ms: Option<u64>,
+    #[serde(default)]
+    max_output_tokens: Option<usize>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct KillProcessRequest {
+    id: String,
+    exec_id: String,
+    session_id: i32,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1783,6 +2164,13 @@ struct RunProcessCompletion {
     exit_code: Option<i32>,
     timed_out: bool,
     session_id: Option<i32>,
+}
+
+struct PreparedProcessExec {
+    request_id: String,
+    process_id: i32,
+    max_output_tokens: Option<usize>,
+    request: ExecCommandRequest,
 }
 
 #[derive(Clone, Debug, Deserialize)]

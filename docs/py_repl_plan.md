@@ -33,6 +33,9 @@ The current branch has already landed most of the Phase 0-2 surface:
 - `codex.emit_image(...)` plus `codex.emitImage(...)`
 - startup Python-version validation
 - local import reload support
+- host-mediated `codex.process.run(...)` with per-call env/cwd, timeout, output logs, and permission plumbing
+- fresh Python child execution via `codex.process.python(...)`
+- long-running process handles via `codex.process.start(...)` with `poll(...)`, `wait(...)`, and `kill()`
 
 The remaining work is concentrated in hardening, parity coverage, typed config cleanup, and docs polish. Keep the sequencing below as the source of truth for what is still left to finish.
 
@@ -61,6 +64,10 @@ The remaining work is concentrated in hardening, parity coverage, typed config c
   - Python `>= 3.10`
 - Python helper API:
   - `codex.tmp_dir`
+  - `codex.runtime_info()`
+  - `codex.process.run(command, ...)`
+  - `codex.process.start(command, ...)`
+  - `codex.process.python(code, ...)`
   - `codex.tool(name, args=None)`
   - `codex.emit_image(image_like)`
 - Compatibility alias:

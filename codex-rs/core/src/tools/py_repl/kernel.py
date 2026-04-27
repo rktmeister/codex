@@ -76,6 +76,137 @@ class ProcessResult(dict):
             raise AttributeError(name) from err
 
 
+class ProcessHandle:
+    def __init__(self, kernel: "PyReplKernel", initial_result: ProcessResult) -> None:
+        self._kernel = kernel
+        self.output = ""
+        self.stdout = ""
+        self.stderr = ""
+        self.session_id: int | None = None
+        self.exit_code: int | None = None
+        self.timed_out = False
+        self.last_result = ProcessResult({})
+        self._record(initial_result)
+
+    @property
+    def running(self) -> bool:
+        return self.session_id is not None
+
+    def poll(
+        self,
+        *,
+        timeout_ms: int | None = None,
+        max_output_tokens: int | None = None,
+    ) -> BackgroundTask:
+        return self._kernel.create_background_task(
+            self._poll(timeout_ms=timeout_ms, max_output_tokens=max_output_tokens)
+        )
+
+    def wait(
+        self,
+        *,
+        timeout_ms: int | None = None,
+        poll_ms: int = 1000,
+        max_output_tokens: int | None = None,
+    ) -> BackgroundTask:
+        return self._kernel.create_background_task(
+            self._wait(
+                timeout_ms=timeout_ms,
+                poll_ms=poll_ms,
+                max_output_tokens=max_output_tokens,
+            )
+        )
+
+    def kill(self) -> BackgroundTask:
+        return self._kernel.create_background_task(self._kill())
+
+    async def _poll(
+        self,
+        *,
+        timeout_ms: int | None = None,
+        max_output_tokens: int | None = None,
+    ) -> ProcessResult:
+        if self.session_id is None:
+            return self._snapshot()
+        result = await self._kernel.poll_process(
+            self.session_id,
+            timeout_ms=timeout_ms,
+            max_output_tokens=max_output_tokens,
+        )
+        return self._record(result)
+
+    async def _wait(
+        self,
+        *,
+        timeout_ms: int | None = None,
+        poll_ms: int = 1000,
+        max_output_tokens: int | None = None,
+    ) -> ProcessResult:
+        poll_ms = self._kernel._normalize_optional_positive_int(
+            poll_ms,
+            "poll_ms",
+            helper="codex.process handle.wait",
+        )
+        assert poll_ms is not None
+        timeout_ms = self._kernel._normalize_optional_positive_int(
+            timeout_ms,
+            "timeout_ms",
+            helper="codex.process handle.wait",
+        )
+        started_at = self._kernel.loop.time()
+        while self.session_id is not None:
+            current_poll_ms = poll_ms
+            if timeout_ms is not None:
+                elapsed_ms = int((self._kernel.loop.time() - started_at) * 1000)
+                remaining_ms = timeout_ms - elapsed_ms
+                if remaining_ms <= 0:
+                    self.timed_out = True
+                    snapshot = self._snapshot()
+                    snapshot["timed_out"] = True
+                    return snapshot
+                current_poll_ms = min(current_poll_ms, remaining_ms)
+            await self._poll(
+                timeout_ms=current_poll_ms,
+                max_output_tokens=max_output_tokens,
+            )
+        return self._snapshot()
+
+    async def _kill(self) -> ProcessResult:
+        if self.session_id is None:
+            return self._snapshot()
+        result = await self._kernel.kill_process(self.session_id)
+        return self._record(result)
+
+    def _record(self, result: ProcessResult) -> ProcessResult:
+        self.last_result = ProcessResult(result)
+        output = result.get("output")
+        if isinstance(output, str):
+            self.output += output
+        stdout = result.get("stdout")
+        if isinstance(stdout, str):
+            self.stdout += stdout
+        stderr = result.get("stderr")
+        if isinstance(stderr, str):
+            self.stderr += stderr
+
+        session_id = result.get("session_id")
+        self.session_id = session_id if isinstance(session_id, int) else None
+        exit_code = result.get("exit_code")
+        self.exit_code = exit_code if isinstance(exit_code, int) else None
+        self.timed_out = bool(result.get("timed_out"))
+        return self._snapshot(result)
+
+    def _snapshot(self, result: ProcessResult | None = None) -> ProcessResult:
+        snapshot = ProcessResult(result or self.last_result)
+        snapshot["output"] = self.output
+        snapshot["stdout"] = self.stdout
+        snapshot["stderr"] = self.stderr
+        snapshot["session_id"] = self.session_id
+        snapshot["exit_code"] = self.exit_code
+        snapshot["timed_out"] = self.timed_out
+        return snapshot
+
+
 @dataclass
 class ExecState:
     exec_id: str
@@ -135,6 +266,35 @@ class ProcessProxy:
                 interpreter=interpreter,
                 cwd=cwd,
                 env=env,
+                timeout_ms=timeout_ms,
+                max_output_tokens=max_output_tokens,
+                sandbox_permissions=sandbox_permissions,
+                additional_permissions=additional_permissions,
+                justification=justification,
+                prefix_rule=prefix_rule,
+            )
+        )
+
+    def start(
+        self,
+        command: Any,
+        *,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+        yield_time_ms: int | None = None,
+        timeout_ms: int | None = None,
+        max_output_tokens: int | None = None,
+        sandbox_permissions: str = "use_default",
+        additional_permissions: dict[str, Any] | None = None,
+        justification: str | None = None,
+        prefix_rule: list[str] | None = None,
+    ) -> BackgroundTask:
+        return self._kernel.create_background_task(
+            self._kernel.start_process(
+                command,
+                cwd=cwd,
+                env=env,
+                yield_time_ms=yield_time_ms,
                 timeout_ms=timeout_ms,
                 max_output_tokens=max_output_tokens,
                 sandbox_permissions=sandbox_permissions,
@@ -247,7 +407,14 @@ class PyReplKernel:
             message_type = message.get("type")
             if message_type == "exec":
                 self.exec_queue.put(message)
-            elif message_type in {"run_tool_result", "run_process_result", "emit_image_result"}:
+            elif message_type in {
+                "run_tool_result",
+                "run_process_result",
+                "start_process_result",
+                "poll_process_result",
+                "kill_process_result",
+                "emit_image_result",
+            }:
                 self.loop.call_soon_threadsafe(self._resolve_host_message, message)
             else:
                 debug(f"ignoring unsupported host message type: {message_type!r}")
@@ -441,7 +608,12 @@ class PyReplKernel:
         message_type = message.get("type")
         if message_type == "run_tool_result":
             self._finish_future(self.pending_tool_results, message, "tool failed")
-        elif message_type == "run_process_result":
+        elif message_type in {
+            "run_process_result",
+            "start_process_result",
+            "poll_process_result",
+            "kill_process_result",
+        }:
             self._finish_future(self.pending_process_results, message, "process failed")
         elif message_type == "emit_image_result":
             self._finish_future(self.pending_emit_results, message, "emit_image failed")
@@ -528,22 +700,94 @@ class PyReplKernel:
         justification: str | None = None,
         prefix_rule: list[str] | None = None,
     ) -> ProcessResult:
+        response = await self._request_process(
+            "run_process",
+            command,
+            helper="codex.process.run",
+            cwd=cwd,
+            env=env,
+            timeout_ms=timeout_ms,
+            max_output_tokens=max_output_tokens,
+            sandbox_permissions=sandbox_permissions,
+            additional_permissions=additional_permissions,
+            justification=justification,
+            prefix_rule=prefix_rule,
+        )
+        return ProcessResult(response)
+
+    async def start_process(
+        self,
+        command: Any,
+        *,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+        yield_time_ms: int | None = None,
+        timeout_ms: int | None = None,
+        max_output_tokens: int | None = None,
+        sandbox_permissions: str = "use_default",
+        additional_permissions: dict[str, Any] | None = None,
+        justification: str | None = None,
+        prefix_rule: list[str] | None = None,
+    ) -> ProcessHandle:
+        response = await self._request_process(
+            "start_process",
+            command,
+            helper="codex.process.start",
+            cwd=cwd,
+            env=env,
+            yield_time_ms=yield_time_ms,
+            timeout_ms=timeout_ms,
+            max_output_tokens=max_output_tokens,
+            sandbox_permissions=sandbox_permissions,
+            additional_permissions=additional_permissions,
+            justification=justification,
+            prefix_rule=prefix_rule,
+        )
+        return ProcessHandle(self, ProcessResult(response))
+
+    async def _request_process(
+        self,
+        message_type: str,
+        command: Any,
+        *,
+        helper: str,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+        yield_time_ms: int | None = None,
+        timeout_ms: int | None = None,
+        max_output_tokens: int | None = None,
+        sandbox_permissions: str = "use_default",
+        additional_permissions: dict[str, Any] | None = None,
+        justification: str | None = None,
+        prefix_rule: list[str] | None = None,
+    ) -> dict[str, Any]:
         exec_state = self._require_active_exec()
-        command_list = self._normalize_process_command(command)
-        env_map = self._normalize_string_map(env, "env")
+        command_list = self._normalize_process_command(command, helper=helper)
+        env_map = self._normalize_string_map(env, "env", helper=helper)
         if cwd is not None and not isinstance(cwd, str):
-            raise PyReplError("codex.process.run cwd must be a string")
-        timeout_value = self._normalize_optional_positive_int(timeout_ms, "timeout_ms")
+            raise PyReplError(f"{helper} cwd must be a string")
+        yield_time_value = self._normalize_optional_positive_int(
+            yield_time_ms,
+            "yield_time_ms",
+            helper=helper,
+        )
+        timeout_value = self._normalize_optional_positive_int(
+            timeout_ms,
+            "timeout_ms",
+            helper=helper,
+        )
         max_output_tokens_value = self._normalize_optional_positive_int(
-            max_output_tokens, "max_output_tokens"
+            max_output_tokens,
+            "max_output_tokens",
+            helper=helper,
         )
         if not isinstance(sandbox_permissions, str) or not sandbox_permissions:
-            raise PyReplError("codex.process.run sandbox_permissions must be a non-empty string")
+            raise PyReplError(f"{helper} sandbox_permissions must be a non-empty string")
         if additional_permissions is not None and not isinstance(additional_permissions, dict):
-            raise PyReplError("codex.process.run additional_permissions must be a dict")
+            raise PyReplError(f"{helper} additional_permissions must be a dict")
         if justification is not None and not isinstance(justification, str):
-            raise PyReplError("codex.process.run justification must be a string")
-        prefix_rule_value = self._normalize_string_list(prefix_rule, "prefix_rule")
+            raise PyReplError(f"{helper} justification must be a string")
+        prefix_rule_value = self._normalize_string_list(prefix_rule, "prefix_rule", helper=helper)
 
         request_id = f"{exec_state.exec_id}-process-{self.process_counter}"
         self.process_counter += 1
@@ -551,12 +795,13 @@ class PyReplKernel:
         self.pending_process_results[request_id] = future
         self._send(
             {
-                "type": "run_process",
+                "type": message_type,
                 "id": request_id,
                 "exec_id": exec_state.exec_id,
                 "command": command_list,
                 "cwd": cwd,
                 "env": env_map,
+                "yield_time_ms": yield_time_value,
                 "timeout_ms": timeout_value,
                 "max_output_tokens": max_output_tokens_value,
                 "sandbox_permissions": sandbox_permissions,
@@ -567,7 +812,65 @@ class PyReplKernel:
         )
         response = await future
         if not isinstance(response, dict):
-            raise PyReplError("codex.process.run received a malformed host response")
+            raise PyReplError(f"{helper} received a malformed host response")
+        return response
+
+    async def poll_process(
+        self,
+        session_id: int,
+        *,
+        timeout_ms: int | None = None,
+        max_output_tokens: int | None = None,
+    ) -> ProcessResult:
+        exec_state = self._require_active_exec()
+        session_id = self._normalize_session_id(session_id, helper="codex.process handle.poll")
+        timeout_value = self._normalize_optional_positive_int(
+            timeout_ms,
+            "timeout_ms",
+            helper="codex.process handle.poll",
+        )
+        max_output_tokens_value = self._normalize_optional_positive_int(
+            max_output_tokens,
+            "max_output_tokens",
+            helper="codex.process handle.poll",
+        )
+        request_id = f"{exec_state.exec_id}-process-{self.process_counter}"
+        self.process_counter += 1
+        future: asyncio.Future[Any] = self.loop.create_future()
+        self.pending_process_results[request_id] = future
+        self._send(
+            {
+                "type": "poll_process",
+                "id": request_id,
+                "exec_id": exec_state.exec_id,
+                "session_id": session_id,
+                "timeout_ms": timeout_value,
+                "max_output_tokens": max_output_tokens_value,
+            }
+        )
+        response = await future
+        if not isinstance(response, dict):
+            raise PyReplError("codex.process handle.poll received a malformed host response")
+        return ProcessResult(response)
+
+    async def kill_process(self, session_id: int) -> ProcessResult:
+        exec_state = self._require_active_exec()
+        session_id = self._normalize_session_id(session_id, helper="codex.process handle.kill")
+        request_id = f"{exec_state.exec_id}-process-{self.process_counter}"
+        self.process_counter += 1
+        future: asyncio.Future[Any] = self.loop.create_future()
+        self.pending_process_results[request_id] = future
+        self._send(
+            {
+                "type": "kill_process",
+                "id": request_id,
+                "exec_id": exec_state.exec_id,
+                "session_id": session_id,
+            }
+        )
+        response = await future
+        if not isinstance(response, dict):
+            raise PyReplError("codex.process handle.kill received a malformed host response")
         return ProcessResult(response)
 
     async def run_python(
@@ -634,27 +937,35 @@ class PyReplKernel:
             "managed_roots": self._managed_roots(),
         }
 
-    def _normalize_process_command(self, command: Any) -> list[str]:
+    def _normalize_process_command(
+        self,
+        command: Any,
+        *,
+        helper: str = "codex.process.run",
+    ) -> list[str]:
         if isinstance(command, str):
             if not command:
-                raise PyReplError("codex.process.run command string must be non-empty")
+                raise PyReplError(f"{helper} command string must be non-empty")
             if os.name == "nt":
                 return ["cmd", "/C", command]
             return ["/bin/sh", "-lc", command]
 
         if not isinstance(command, (list, tuple)):
-            raise PyReplError(
-                "codex.process.run command must be a string or sequence of strings"
-            )
+            raise PyReplError(f"{helper} command must be a string or sequence of strings")
         if not command:
-            raise PyReplError("codex.process.run command list must be non-empty")
+            raise PyReplError(f"{helper} command list must be non-empty")
 
         normalized: list[str] = []
         for part in command:
             if not isinstance(part, str) or not part:
-                raise PyReplError("codex.process.run command entries must be non-empty strings")
+                raise PyReplError(f"{helper} command entries must be non-empty strings")
             normalized.append(part)
         return normalized
+
+    def _normalize_session_id(self, session_id: Any, *, helper: str) -> int:
+        if not isinstance(session_id, int) or isinstance(session_id, bool) or session_id <= 0:
+            raise PyReplError(f"{helper} requires a positive session_id")
+        return session_id
 
     def _normalize_string_map(
         self,

@@ -91,6 +91,7 @@ py_repl_sys_path = [
 - `codex.home_dir`
 - `codex.runtime_info()`
 - `codex.process.run(command, *, cwd=None, env=None, timeout_ms=None, max_output_tokens=None, sandbox_permissions="use_default", additional_permissions=None, justification=None, prefix_rule=None)`
+- `codex.process.start(command, *, cwd=None, env=None, yield_time_ms=None, timeout_ms=None, max_output_tokens=None, sandbox_permissions="use_default", additional_permissions=None, justification=None, prefix_rule=None)`
 - `codex.process.python(code, *, args=None, interpreter=None, cwd=None, env=None, timeout_ms=None, max_output_tokens=None, sandbox_permissions="use_default", additional_permissions=None, justification=None, prefix_rule=None)`
 - `codex.tool(name, args=None)`
 - `codex.emit_image(image_like)`
@@ -120,6 +121,24 @@ String commands are run through the platform shell (`/bin/sh -lc` on Unix, `cmd 
 The `env` map is an overlay for that subprocess only. It does not mutate `os.environ` in the persistent kernel. Process execution uses the same Codex approval and sandbox pipeline as `exec_command`; request escalated or additional permissions through the `sandbox_permissions`, `additional_permissions`, `justification`, and `prefix_rule` arguments.
 
 The first implementation stores the combined process stream in `output` and `stdout`; `stderr` is currently empty because unified exec exposes an aggregated stream to this helper. Full captured output is also written to a temp log path when possible.
+
+`codex.process.start(...)` keeps the child process alive and returns a handle with `poll(...)`, `wait(...)`, and `kill()` methods. Poll and wait calls append new output to `handle.output` and `handle.stdout` while exposing the latest `exit_code`, `timed_out`, `session_id`, and log paths:
+
+```python
+import sys
+
+handle = await codex.process.start(
+    [sys.executable, "-c", "import time; print('ready', flush=True); time.sleep(5)"],
+    yield_time_ms=1000,
+)
+print(handle.running, handle.stdout)
+
+await handle.poll(timeout_ms=250)
+final = await handle.wait(timeout_ms=10_000, poll_ms=1000)
+print(final.exit_code, final.output_path)
+
+await handle.kill()
+```
 
 `codex.process.python(...)` is a convenience wrapper for fresh interpreter runs. It uses the active py_repl interpreter by default, or an explicit `interpreter` path when provided:
 
