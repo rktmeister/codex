@@ -1206,6 +1206,57 @@ async fn py_repl_reset_clears_persisted_state() -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn py_repl_reset_kills_tracked_child_processes() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let mut builder = test_codex().with_config(|config| {
+        config
+            .features
+            .enable(Feature::PyRepl)
+            .expect("test config should allow feature update");
+    });
+    let test = builder.build(&server).await?;
+
+    let started = run_py_repl_turn(
+        &test,
+        &server,
+        "start child before reset",
+        "call-1",
+        "import sys\nhandle = await codex.process.start([sys.executable, '-c', 'import time; time.sleep(30)'], yield_time_ms=100)\nprint('session=' + str(handle.session_id))",
+    )
+    .await?;
+    let (output, success) =
+        custom_tool_output_text_and_success(&started.single_request(), "call-1");
+    assert_ne!(success, Some(false), "py_repl call failed: {output}");
+    let session_id = output
+        .lines()
+        .find_map(|line| line.strip_prefix("session="))
+        .expect("session id line should be present")
+        .parse::<i32>()?;
+
+    let reset = run_py_repl_reset_turn(&test, &server, "reset py_repl", "call-reset").await?;
+    let (reset_output, reset_success) =
+        function_tool_output_text_and_success(&reset.single_request(), "call-reset");
+    assert_ne!(
+        reset_success,
+        Some(false),
+        "py_repl_reset failed unexpectedly: {reset_output}"
+    );
+
+    let kill_old = run_py_repl_turn(
+        &test,
+        &server,
+        "verify reset killed child",
+        "call-2",
+        &format!("await codex.process.kill({session_id})"),
+    )
+    .await?;
+    assert_py_repl_err(&kill_old.single_request(), "call-2", "Unknown process id");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn py_repl_recovers_from_kernel_crash() -> Result<()> {
     skip_if_no_network!(Ok(()));
 

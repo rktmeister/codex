@@ -222,7 +222,7 @@ fn expected_py_repl_instructions(tools_only: bool) -> String {
         "- Use `codex.restart_after_cell()` when imports or native runtime state should not survive into the next cell; py_repl warns if a loaded native extension file changes on disk.\n",
         "- `codex.emit_image(...)` is the canonical image helper. `codex.emitImage(...)` is an alias for compatibility. Supported emitted image formats are PNG, JPEG, GIF, and WebP. Unsupported formats such as SVG are rejected.\n",
         "- `py_repl` resolves local imports from configured search roots plus cwd and should reload managed local modules between execs.\n",
-        "- Use `py_repl_reset` to clear the kernel state.\n",
+        "- Use `py_repl_reset` to clear the kernel state and terminate py_repl-tracked child processes.\n",
     )
     .to_string();
     if tools_only {

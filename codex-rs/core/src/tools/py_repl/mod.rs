@@ -137,6 +137,8 @@ struct ExecContext {
     tmp_dir: PathBuf,
 }
 
+type OwnedProcessMap = Arc<Mutex<HashMap<i32, Arc<Session>>>>;
+
 struct ExecToolCalls {
     in_flight: usize,
     content_items: Vec<FunctionCallOutputContentItem>,
@@ -368,6 +370,7 @@ pub struct PyReplManager {
     kernel: Arc<Mutex<Option<KernelState>>>,
     exec_lock: Arc<tokio::sync::Semaphore>,
     exec_tool_calls: Arc<Mutex<HashMap<String, ExecToolCalls>>>,
+    owned_processes: OwnedProcessMap,
 }
 
 impl PyReplManager {
@@ -389,6 +392,7 @@ impl PyReplManager {
             kernel: Arc::new(Mutex::new(None)),
             exec_lock: Arc::new(tokio::sync::Semaphore::new(1)),
             exec_tool_calls: Arc::new(Mutex::new(HashMap::new())),
+            owned_processes: Arc::new(Mutex::new(HashMap::new())),
         }))
     }
 
@@ -669,6 +673,42 @@ impl PyReplManager {
             state.shutdown.cancel();
             Self::kill_kernel_child(&state.child, "reset").await;
         }
+        Self::terminate_owned_processes(&self.owned_processes, "reset").await;
+    }
+
+    async fn terminate_owned_processes(owned_processes: &OwnedProcessMap, reason: &str) {
+        let processes = {
+            let mut owned = owned_processes.lock().await;
+            owned.drain().collect::<Vec<_>>()
+        };
+        for (process_id, session) in processes {
+            if !session
+                .services
+                .unified_exec_manager
+                .terminate_process(process_id)
+                .await
+            {
+                warn!(
+                    process_id,
+                    reason, "py_repl owned process was already unavailable during cleanup"
+                );
+            }
+        }
+    }
+
+    async fn record_owned_process(
+        owned_processes: &OwnedProcessMap,
+        process_id: i32,
+        session: &Arc<Session>,
+    ) {
+        owned_processes
+            .lock()
+            .await
+            .insert(process_id, Arc::clone(session));
+    }
+
+    async fn forget_owned_process(owned_processes: &OwnedProcessMap, process_id: i32) {
+        owned_processes.lock().await.remove(&process_id);
     }
 
     async fn start_kernel(
@@ -808,6 +848,7 @@ impl PyReplManager {
             Arc::clone(&pending_execs),
             Arc::clone(&exec_contexts),
             Arc::clone(&self.exec_tool_calls),
+            Arc::clone(&self.owned_processes),
             Arc::clone(&stdin_arc),
             shutdown.clone(),
         ));
@@ -949,6 +990,7 @@ impl PyReplManager {
         pending_execs: Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<ExecResultMessage>>>>,
         exec_contexts: Arc<Mutex<HashMap<String, ExecContext>>>,
         exec_tool_calls: Arc<Mutex<HashMap<String, ExecToolCalls>>>,
+        owned_processes: OwnedProcessMap,
         stdin: Arc<Mutex<ChildStdin>>,
         shutdown: CancellationToken,
     ) {
@@ -1225,13 +1267,17 @@ impl PyReplManager {
                     let stdin_clone = Arc::clone(&stdin);
                     let exec_contexts = Arc::clone(&exec_contexts);
                     let exec_tool_calls_for_task = Arc::clone(&exec_tool_calls);
+                    let owned_processes = Arc::clone(&owned_processes);
                     let recent_stderr = Arc::clone(&recent_stderr);
                     tokio::spawn(async move {
                         let exec_id = req.exec_id.clone();
                         let process_call_id = req.id.clone();
                         let context = { exec_contexts.lock().await.get(&exec_id).cloned() };
                         let result = match context {
-                            Some(ctx) => Self::start_process_request(ctx, req, reset_cancel).await,
+                            Some(ctx) => {
+                                Self::start_process_request(ctx, req, reset_cancel, owned_processes)
+                                    .await
+                            }
                             None => RunProcessResult {
                                 id: process_call_id.clone(),
                                 ok: false,
@@ -1285,13 +1331,17 @@ impl PyReplManager {
                     let stdin_clone = Arc::clone(&stdin);
                     let exec_contexts = Arc::clone(&exec_contexts);
                     let exec_tool_calls_for_task = Arc::clone(&exec_tool_calls);
+                    let owned_processes = Arc::clone(&owned_processes);
                     let recent_stderr = Arc::clone(&recent_stderr);
                     tokio::spawn(async move {
                         let exec_id = req.exec_id.clone();
                         let process_call_id = req.id.clone();
                         let context = { exec_contexts.lock().await.get(&exec_id).cloned() };
                         let result = match context {
-                            Some(ctx) => Self::poll_process_request(ctx, req, reset_cancel).await,
+                            Some(ctx) => {
+                                Self::poll_process_request(ctx, req, reset_cancel, owned_processes)
+                                    .await
+                            }
                             None => RunProcessResult {
                                 id: process_call_id.clone(),
                                 ok: false,
@@ -1345,6 +1395,7 @@ impl PyReplManager {
                     let stdin_clone = Arc::clone(&stdin);
                     let exec_contexts = Arc::clone(&exec_contexts);
                     let exec_tool_calls_for_task = Arc::clone(&exec_tool_calls);
+                    let owned_processes = Arc::clone(&owned_processes);
                     let recent_stderr = Arc::clone(&recent_stderr);
                     tokio::spawn(async move {
                         let exec_id = req.exec_id.clone();
@@ -1359,7 +1410,7 @@ impl PyReplManager {
                                         response: None,
                                         error: Some("py_repl execution reset".to_string()),
                                     },
-                                    result = Self::kill_process_request(ctx, req) => result,
+                                    result = Self::kill_process_request(ctx, req, owned_processes) => result,
                                 }
                             }
                             None => RunProcessResult {
@@ -1435,6 +1486,7 @@ impl PyReplManager {
         drop(pending);
 
         if !matches!(end_reason, KernelStreamEnd::Shutdown) {
+            Self::terminate_owned_processes(&owned_processes, end_reason.reason()).await;
             let mut pending_exec_ids = pending_exec_ids;
             pending_exec_ids.sort_unstable();
             let snapshot = Self::kernel_debug_snapshot(&child, &recent_stderr).await;
@@ -1686,6 +1738,7 @@ impl PyReplManager {
         exec: ExecContext,
         req: RunProcessRequest,
         reset_cancel: CancellationToken,
+        owned_processes: OwnedProcessMap,
     ) -> RunProcessResult {
         let started_at = StdInstant::now();
         let yield_time_ms = req
@@ -1721,6 +1774,11 @@ impl PyReplManager {
             }
         };
 
+        let session_id = output.process_id;
+        if let Some(process_id) = session_id {
+            Self::record_owned_process(&owned_processes, process_id, &exec.session).await;
+        }
+
         Self::finish_run_process_request(
             &exec,
             RunProcessCompletion {
@@ -1729,7 +1787,7 @@ impl PyReplManager {
                 output_bytes: std::mem::take(&mut output.raw_output),
                 exit_code: output.exit_code,
                 timed_out: false,
-                session_id: output.process_id,
+                session_id,
             },
         )
         .await
@@ -1739,8 +1797,10 @@ impl PyReplManager {
         exec: ExecContext,
         req: PollProcessRequest,
         reset_cancel: CancellationToken,
+        owned_processes: OwnedProcessMap,
     ) -> RunProcessResult {
         let request_id = req.id;
+        let requested_session_id = req.session_id;
         if req.session_id <= 0 {
             return Self::run_process_error(
                 request_id,
@@ -1768,11 +1828,23 @@ impl PyReplManager {
         };
         let mut output = match poll_output {
             Ok(output) => output,
+            Err(UnifiedExecError::UnknownProcessId { process_id }) => {
+                Self::forget_owned_process(&owned_processes, process_id).await;
+                return Self::run_process_error(
+                    request_id,
+                    UnifiedExecError::UnknownProcessId { process_id }.to_string(),
+                );
+            }
             Err(err) => {
                 return Self::run_process_error(request_id, err.to_string());
             }
         };
         let session_id = output.process_id;
+        if let Some(process_id) = session_id {
+            Self::record_owned_process(&owned_processes, process_id, &exec.session).await;
+        } else {
+            Self::forget_owned_process(&owned_processes, requested_session_id).await;
+        }
 
         Self::finish_run_process_request(
             &exec,
@@ -1788,7 +1860,11 @@ impl PyReplManager {
         .await
     }
 
-    async fn kill_process_request(exec: ExecContext, req: KillProcessRequest) -> RunProcessResult {
+    async fn kill_process_request(
+        exec: ExecContext,
+        req: KillProcessRequest,
+        owned_processes: OwnedProcessMap,
+    ) -> RunProcessResult {
         let request_id = req.id;
         if req.session_id <= 0 {
             return Self::run_process_error(
@@ -1800,11 +1876,13 @@ impl PyReplManager {
         let started_at = StdInstant::now();
         let manager = &exec.session.services.unified_exec_manager;
         if !manager.terminate_process(req.session_id).await {
+            Self::forget_owned_process(&owned_processes, req.session_id).await;
             return Self::run_process_error(
                 request_id,
                 format!("Unknown process id {}", req.session_id),
             );
         }
+        Self::forget_owned_process(&owned_processes, req.session_id).await;
 
         Self::finish_run_process_request(
             &exec,

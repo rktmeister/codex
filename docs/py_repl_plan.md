@@ -42,6 +42,7 @@ The current branch has already landed most of the Phase 0-2 surface:
 - native extension change warnings for loaded `.so`, `.pyd`, `.dll`, and `.dylib` modules
 - cumulative process handle logs with `head(...)`, `tail(...)`, and stable `output_path`
 - default fresh-process interpreter selection via `codex.process.use_python(...)` and `codex.process.use_venv(...)`
+- host-side cleanup of py_repl-owned child processes on reset, timeout, restart, and kernel crash
 
 The remaining work is concentrated in hardening, parity coverage, typed config cleanup, and docs polish. Keep the sequencing below as the source of truth for what is still left to finish.
 

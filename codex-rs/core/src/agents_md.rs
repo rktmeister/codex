@@ -114,7 +114,7 @@ fn render_py_repl_instructions(config: &Config) -> Option<String> {
     section.push_str("- Use `codex.restart_after_cell()` when imports or native runtime state should not survive into the next cell; py_repl warns if a loaded native extension file changes on disk.\n");
     section.push_str("- `codex.emit_image(...)` is the canonical image helper. `codex.emitImage(...)` is an alias for compatibility. Supported emitted image formats are PNG, JPEG, GIF, and WebP. Unsupported formats such as SVG are rejected.\n");
     section.push_str("- `py_repl` resolves local imports from configured search roots plus cwd and should reload managed local modules between execs.\n");
-    section.push_str("- Use `py_repl_reset` to clear the kernel state.\n");
+    section.push_str("- Use `py_repl_reset` to clear the kernel state and terminate py_repl-tracked child processes.\n");
 
     if config.features.enabled(Feature::PyReplToolsOnly) {
         section.push_str("- Do not call tools directly; use `py_repl` + `codex.tool(...)` for all tool calls, including shell commands.\n");

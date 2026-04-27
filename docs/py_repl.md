@@ -81,7 +81,7 @@ py_repl_sys_path = [
   - `# codex-py-repl: timeout_ms=15000 isolated=true`
 - Top-level state persists across calls until reset.
 - Helper calls start immediately and return task-like objects. Unawaited helper work is still drained before the cell finishes.
-- `py_repl_reset` clears the kernel state for the current run.
+- `py_repl_reset` clears the kernel state for the current run and terminates py_repl-tracked child processes.
 
 ## Helper APIs inside the kernel
 
