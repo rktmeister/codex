@@ -79,9 +79,13 @@ class ProcessResult(dict):
 class ProcessHandle:
     def __init__(self, kernel: "PyReplKernel", initial_result: ProcessResult) -> None:
         self._kernel = kernel
+        self._log_path = self._kernel.next_process_log_path()
         self.output = ""
         self.stdout = ""
         self.stderr = ""
+        self.output_path: str | None = None
+        self.stdout_path: str | None = None
+        self.stderr_path: str | None = None
         self.session_id: int | None = None
         self.exit_code: int | None = None
         self.timed_out = False
@@ -119,6 +123,24 @@ class ProcessHandle:
 
     def kill(self) -> BackgroundTask:
         return self._kernel.create_background_task(self._kill())
+
+    def head(self, lines: int = 40) -> str:
+        lines = self._kernel._normalize_optional_positive_int(
+            lines,
+            "lines",
+            helper="codex.process handle.head",
+        )
+        assert lines is not None
+        return "\n".join(self.output.splitlines()[:lines])
+
+    def tail(self, lines: int = 40) -> str:
+        lines = self._kernel._normalize_optional_positive_int(
+            lines,
+            "lines",
+            helper="codex.process handle.tail",
+        )
+        assert lines is not None
+        return "\n".join(self.output.splitlines()[-lines:])
 
     async def _poll(
         self,
@@ -183,6 +205,8 @@ class ProcessHandle:
         output = result.get("output")
         if isinstance(output, str):
             self.output += output
+            if output:
+                self._append_output_log(output)
         stdout = result.get("stdout")
         if isinstance(stdout, str):
             self.stdout += stdout
@@ -206,10 +230,23 @@ class ProcessHandle:
         snapshot["output"] = self.output
         snapshot["stdout"] = self.stdout
         snapshot["stderr"] = self.stderr
+        snapshot["output_path"] = self.output_path
+        snapshot["stdout_path"] = self.stdout_path
+        snapshot["stderr_path"] = self.stderr_path
         snapshot["session_id"] = self.session_id
         snapshot["exit_code"] = self.exit_code
         snapshot["timed_out"] = self.timed_out
         return snapshot
+
+    def _append_output_log(self, output: str) -> None:
+        try:
+            with open(self._log_path, "a", encoding="utf-8") as handle:
+                handle.write(output)
+        except OSError as err:
+            debug(f"failed to write process handle log {self._log_path!r}: {err}")
+            return
+        self.output_path = self._log_path
+        self.stdout_path = self._log_path
 
 
 @dataclass
@@ -318,6 +355,15 @@ class ProcessProxy:
     def kill_all(self) -> BackgroundTask:
         return self._kernel.create_background_task(self._kernel.kill_all_processes())
 
+    def use_python(self, interpreter: str) -> str:
+        return self._kernel.set_default_python_interpreter(interpreter)
+
+    def use_venv(self, path: str) -> str:
+        return self._kernel.set_default_python_venv(path)
+
+    def reset_python(self) -> str:
+        return self._kernel.reset_default_python_interpreter()
+
     def on_failure(self, callback: Any) -> int:
         return self._kernel.register_process_failure_hook(callback)
 
@@ -386,6 +432,8 @@ class PyReplKernel:
         self.process_handles: dict[int, ProcessHandle] = {}
         self.process_failure_hooks: dict[int, Any] = {}
         self.process_failure_hook_counter = 0
+        self.process_handle_counter = 0
+        self.default_python_interpreter = sys.executable
         self.native_extension_fingerprints: dict[str, tuple[int, int]] = {}
         self.restart_after_current_exec = False
         self.cwd = os.getcwd()
@@ -1095,7 +1143,7 @@ class PyReplKernel:
         if not isinstance(code, str) or not code:
             raise PyReplError("codex.process.python code must be a non-empty string")
         if interpreter is None:
-            interpreter = sys.executable
+            interpreter = self.default_python_interpreter
         elif not isinstance(interpreter, str) or not interpreter:
             raise PyReplError("codex.process.python interpreter must be a non-empty string")
 
@@ -1139,7 +1187,36 @@ class PyReplKernel:
             "tmp_dir": self.tmp_dir,
             "sys_path": list(sys.path),
             "managed_roots": self._managed_roots(),
+            "process_python": self.default_python_interpreter,
         }
+
+    def next_process_log_path(self) -> str:
+        handle_id = self.process_handle_counter
+        self.process_handle_counter += 1
+        return os.path.join(self.tmp_dir, f"py_repl_process_{handle_id}.log")
+
+    def set_default_python_interpreter(self, interpreter: str) -> str:
+        if not isinstance(interpreter, str) or not interpreter:
+            raise PyReplError("codex.process.use_python expects a non-empty interpreter path")
+        path = os.path.abspath(interpreter)
+        if not os.path.isfile(path):
+            raise PyReplError(f"codex.process.use_python interpreter does not exist: {path}")
+        self.default_python_interpreter = path
+        return path
+
+    def set_default_python_venv(self, path: str) -> str:
+        if not isinstance(path, str) or not path:
+            raise PyReplError("codex.process.use_venv expects a non-empty venv path")
+        root = os.path.abspath(path)
+        if os.path.isfile(root):
+            return self.set_default_python_interpreter(root)
+        executable = "python.exe" if os.name == "nt" else "python"
+        scripts_dir = "Scripts" if os.name == "nt" else "bin"
+        return self.set_default_python_interpreter(os.path.join(root, scripts_dir, executable))
+
+    def reset_default_python_interpreter(self) -> str:
+        self.default_python_interpreter = sys.executable
+        return self.default_python_interpreter
 
     def _normalize_process_command(
         self,

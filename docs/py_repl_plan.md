@@ -40,6 +40,8 @@ The current branch has already landed most of the Phase 0-2 surface:
 - Python-level failure cleanup hooks via `codex.process.on_failure(callback)`
 - restart controls via `codex.restart_after_cell()` and the `isolated=true` pragma
 - native extension change warnings for loaded `.so`, `.pyd`, `.dll`, and `.dylib` modules
+- cumulative process handle logs with `head(...)`, `tail(...)`, and stable `output_path`
+- default fresh-process interpreter selection via `codex.process.use_python(...)` and `codex.process.use_venv(...)`
 
 The remaining work is concentrated in hardening, parity coverage, typed config cleanup, and docs polish. Keep the sequencing below as the source of truth for what is still left to finish.
 
@@ -76,6 +78,8 @@ The remaining work is concentrated in hardening, parity coverage, typed config c
   - `codex.process.kill(session_id)`
   - `codex.process.kill_all()`
   - `codex.process.on_failure(callback)`
+  - `codex.process.use_python(path)`
+  - `codex.process.use_venv(path)`
   - `codex.process.python(code, ...)`
   - `codex.tool(name, args=None)`
   - `codex.emit_image(image_like)`

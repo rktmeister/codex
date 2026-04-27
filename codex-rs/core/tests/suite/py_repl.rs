@@ -359,12 +359,12 @@ async fn py_repl_runtime_info_exposes_interpreter_and_paths() -> Result<()> {
         &server,
         "inspect py_repl runtime info",
         "call-1",
-        "info = codex.runtime_info()\nprint(bool(info['python']))\nprint(info['cwd'] == codex.cwd)\nprint(isinstance(info['sys_path'], list))\nprint(info['tmp_dir'] == codex.tmp_dir)",
+        "import sys\ninfo = codex.runtime_info()\nprint(bool(info['python']))\nprint(info['cwd'] == codex.cwd)\nprint(isinstance(info['sys_path'], list))\nprint(info['tmp_dir'] == codex.tmp_dir)\nprint(info['process_python'] == sys.executable)",
     )
     .await?;
 
     let req = mock.single_request();
-    assert_py_repl_ok(&req, "call-1", "True\nTrue\nTrue\nTrue");
+    assert_py_repl_ok(&req, "call-1", "True\nTrue\nTrue\nTrue\nTrue");
     Ok(())
 }
 
@@ -589,6 +589,85 @@ async fn py_repl_process_failure_hooks_can_cleanup_tracked_children() -> Result<
     assert_py_repl_ok(&inspected_req, "call-2", "listed=[]");
     assert_py_repl_ok(&inspected_req, "call-2", "running=False");
     assert_py_repl_ok(&inspected_req, "call-2", "removed=True");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn py_repl_process_handles_expose_cumulative_logs_and_head_tail() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let mut builder = test_codex().with_config(|config| {
+        config
+            .features
+            .enable(Feature::PyRepl)
+            .expect("test config should allow feature update");
+    });
+    let test = builder.build(&server).await?;
+
+    let mock = run_py_repl_turn(
+        &test,
+        &server,
+        "inspect process handle logs",
+        "call-1",
+        concat!(
+            "import pathlib, sys\n",
+            "code = \"import time\\nfor i in range(5):\\n print(f'line-{i}', flush=True); time.sleep(0.05)\"\n",
+            "handle = await codex.process.start([sys.executable, '-c', code], yield_time_ms=50)\n",
+            "final = await handle.wait(timeout_ms=3000, poll_ms=100)\n",
+            "print('exit=' + str(final.exit_code))\n",
+            "print('path=' + str(pathlib.Path(handle.output_path).exists()))\n",
+            "print('same_path=' + str(final.output_path == handle.output_path))\n",
+            "print('head=' + handle.head(2).replace('\\n', '|'))\n",
+            "print('tail=' + handle.tail(2).replace('\\n', '|'))",
+        ),
+    )
+    .await?;
+
+    let req = mock.single_request();
+    assert_py_repl_ok(&req, "call-1", "exit=0");
+    assert_py_repl_ok(&req, "call-1", "path=True");
+    assert_py_repl_ok(&req, "call-1", "same_path=True");
+    assert_py_repl_ok(&req, "call-1", "head=line-0|line-1");
+    assert_py_repl_ok(&req, "call-1", "tail=line-3|line-4");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn py_repl_process_python_default_interpreter_can_be_selected() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let mut builder = test_codex().with_config(|config| {
+        config
+            .features
+            .enable(Feature::PyRepl)
+            .expect("test config should allow feature update");
+    });
+    let test = builder.build(&server).await?;
+
+    let mock = run_py_repl_turn(
+        &test,
+        &server,
+        "select default process python interpreter",
+        "call-1",
+        concat!(
+            "import sys\n",
+            "selected = codex.process.use_python(sys.executable)\n",
+            "result = await codex.process.python('import sys; print(sys.executable)', timeout_ms=5000)\n",
+            "print('selected=' + str(selected == sys.executable))\n",
+            "print('child=' + str(result.stdout.strip() == sys.executable))\n",
+            "print('info=' + str(codex.runtime_info()['process_python'] == sys.executable))\n",
+            "print('reset=' + str(codex.process.reset_python() == sys.executable))",
+        ),
+    )
+    .await?;
+
+    let req = mock.single_request();
+    assert_py_repl_ok(&req, "call-1", "selected=True");
+    assert_py_repl_ok(&req, "call-1", "child=True");
+    assert_py_repl_ok(&req, "call-1", "info=True");
+    assert_py_repl_ok(&req, "call-1", "reset=True");
     Ok(())
 }
 

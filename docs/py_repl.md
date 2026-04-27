@@ -100,6 +100,9 @@ py_repl_sys_path = [
 - `codex.process.on_failure(callback)`
 - `codex.process.remove_failure_hook(hook_id)`
 - `codex.process.clear_failure_hooks()`
+- `codex.process.use_python(path)`
+- `codex.process.use_venv(path)`
+- `codex.process.reset_python()`
 - `codex.process.python(code, *, args=None, interpreter=None, cwd=None, env=None, timeout_ms=None, max_output_tokens=None, sandbox_permissions="use_default", additional_permissions=None, justification=None, prefix_rule=None)`
 - `codex.tool(name, args=None)`
 - `codex.emit_image(image_like)`
@@ -107,7 +110,7 @@ py_repl_sys_path = [
 
 `codex.emit_image(...)` is the canonical spelling for Python docs and examples.
 
-`codex.runtime_info()` returns the active interpreter, Python version, cwd, tmp dir, `sys.path`, and managed import roots.
+`codex.runtime_info()` returns the active interpreter, default fresh-process interpreter, Python version, cwd, tmp dir, `sys.path`, and managed import roots.
 
 `codex.restart_after_cell()` asks the host to reset the persistent kernel after the current cell result is returned. Use `isolated=true` in the pragma to run a cell in a fresh kernel and reset it again afterward. Both are intended for imports or native runtime state that should not survive into later cells.
 
@@ -152,6 +155,8 @@ print(final.exit_code, final.output_path)
 await handle.kill()
 ```
 
+Process handles keep a cumulative log at `handle.output_path` and expose `handle.head(lines=40)` / `handle.tail(lines=40)` for quick inspection without reparsing the full output in every cell.
+
 Use `codex.process.list()` to inspect children started by this kernel, `await codex.process.kill(session_id)` to terminate a specific tracked or known child, and `await codex.process.kill_all()` to terminate every tracked child.
 
 Use `codex.process.on_failure(callback)` to register cleanup code that runs when a cell fails. The callback may be sync or async and receives a context dict with `exec_id`, `error`, `output`, and current tracked `processes`. It runs while the cell's helper context is still active, so it can call host-mediated helpers such as `await codex.process.kill_all()`.
@@ -166,6 +171,8 @@ result = await codex.process.python(
     timeout_ms=5000,
 )
 ```
+
+Use `codex.process.use_python(path)` or `codex.process.use_venv(path)` to set the default interpreter for later `codex.process.python(...)` calls. `codex.process.reset_python()` restores the active py_repl interpreter as that default.
 
 `codex.tool(...)` starts a nested Codex tool call and returns an awaitable task-like object. The awaited value is the raw tool response item dict; nested tool outputs stay inside Python unless you print or emit them.
 
