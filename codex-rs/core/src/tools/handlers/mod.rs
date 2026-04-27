@@ -146,13 +146,13 @@ pub(crate) fn normalize_and_validate_additional_permissions(
     }
 }
 
-pub(super) struct EffectiveAdditionalPermissions {
+pub(crate) struct EffectiveAdditionalPermissions {
     pub sandbox_permissions: SandboxPermissions,
     pub additional_permissions: Option<AdditionalPermissionProfile>,
     pub permissions_preapproved: bool,
 }
 
-pub(super) fn implicit_granted_permissions(
+pub(crate) fn implicit_granted_permissions(
     sandbox_permissions: SandboxPermissions,
     additional_permissions: Option<&AdditionalPermissionProfile>,
     effective_additional_permissions: &EffectiveAdditionalPermissions,
@@ -169,7 +169,7 @@ pub(super) fn implicit_granted_permissions(
     }
 }
 
-pub(super) async fn apply_granted_turn_permissions(
+pub(crate) async fn apply_granted_turn_permissions(
     session: &Session,
     cwd: &std::path::Path,
     sandbox_permissions: SandboxPermissions,

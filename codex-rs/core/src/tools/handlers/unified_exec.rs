@@ -37,6 +37,7 @@ use codex_tools::UnifiedExecShellMode;
 use codex_utils_output_truncation::TruncationPolicy;
 use codex_utils_output_truncation::approx_token_count;
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -57,6 +58,8 @@ pub(crate) struct ExecCommandArgs {
     yield_time_ms: u64,
     #[serde(default)]
     max_output_tokens: Option<usize>,
+    #[serde(default)]
+    env: HashMap<String, String>,
     #[serde(default)]
     sandbox_permissions: SandboxPermissions,
     #[serde(default)]
@@ -234,6 +237,7 @@ impl ToolHandler for UnifiedExecHandler {
                     tty,
                     yield_time_ms,
                     max_output_tokens,
+                    env,
                     sandbox_permissions,
                     additional_permissions,
                     justification,
@@ -340,6 +344,7 @@ impl ToolHandler for UnifiedExecHandler {
                             yield_time_ms,
                             max_output_tokens: Some(max_output_tokens),
                             workdir,
+                            env,
                             network: context.turn.network.clone(),
                             tty,
                             sandbox_permissions: effective_additional_permissions

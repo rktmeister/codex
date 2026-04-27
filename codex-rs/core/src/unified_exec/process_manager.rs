@@ -216,6 +216,20 @@ impl UnifiedExecProcessManager {
         }
     }
 
+    pub(crate) async fn terminate_process(&self, process_id: i32) -> bool {
+        let removed = {
+            let mut store = self.process_store.lock().await;
+            store.remove(process_id)
+        };
+        let Some(entry) = removed else {
+            return false;
+        };
+
+        Self::unregister_network_approval_for_entry(&entry).await;
+        entry.process.terminate();
+        true
+    }
+
     async fn unregister_network_approval_for_entry(entry: &ProcessEntry) {
         if let Some(network_approval_id) = entry.network_approval_id.as_deref()
             && let Some(session) = entry.session.upgrade()
@@ -779,6 +793,8 @@ impl UnifiedExecProcessManager {
             context.session.conversation_id.to_string(),
         );
         let env = apply_unified_exec_env(env);
+        let mut env = env;
+        env.extend(request.env.clone());
         let exec_server_env_config = ExecServerEnvConfig {
             policy: exec_env_policy_from_shell_policy(&context.turn.shell_environment_policy),
             local_policy_env,
@@ -812,7 +828,11 @@ impl UnifiedExecProcessManager {
             cwd,
             env,
             exec_server_env_config: Some(exec_server_env_config),
-            explicit_env_overrides: context.turn.shell_environment_policy.r#set.clone(),
+            explicit_env_overrides: {
+                let mut overrides = context.turn.shell_environment_policy.r#set.clone();
+                overrides.extend(request.env.clone());
+                overrides
+            },
             network: request.network.clone(),
             tty: request.tty,
             sandbox_permissions: request.sandbox_permissions,

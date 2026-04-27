@@ -68,16 +68,72 @@ class BackgroundTask:
         return getattr(self._task, name)
 
 
+class ProcessResult(dict):
+    def __getattr__(self, name: str) -> Any:
+        try:
+            return self[name]
+        except KeyError as err:
+            raise AttributeError(name) from err
+
+
 @dataclass
 class ExecState:
     exec_id: str
     background_tasks: set[BackgroundTask] = field(default_factory=set)
 
 
+class ProcessProxy:
+    def __init__(self, kernel: "PyReplKernel") -> None:
+        self._kernel = kernel
+
+    def run(
+        self,
+        command: Any,
+        *,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+        timeout_ms: int | None = None,
+        max_output_tokens: int | None = None,
+        sandbox_permissions: str = "use_default",
+        additional_permissions: dict[str, Any] | None = None,
+        justification: str | None = None,
+        prefix_rule: list[str] | None = None,
+    ) -> BackgroundTask:
+        return self._kernel.create_background_task(
+            self._kernel.run_process(
+                command,
+                cwd=cwd,
+                env=env,
+                timeout_ms=timeout_ms,
+                max_output_tokens=max_output_tokens,
+                sandbox_permissions=sandbox_permissions,
+                additional_permissions=additional_permissions,
+                justification=justification,
+                prefix_rule=prefix_rule,
+            )
+        )
+
+
 class CodexProxy:
     def __init__(self, kernel: "PyReplKernel") -> None:
         self._kernel = kernel
-        self.tmp_dir = kernel.tmp_dir
+        self.process = ProcessProxy(kernel)
+
+    @property
+    def cwd(self) -> str:
+        return os.getcwd()
+
+    @property
+    def home_dir(self) -> str:
+        return os.path.expanduser("~")
+
+    @property
+    def homeDir(self) -> str:
+        return self.home_dir
+
+    @property
+    def tmp_dir(self) -> str:
+        return self._kernel.tmp_dir
 
     def tool(self, name: str, args: Any = None) -> BackgroundTask:
         return self._kernel.create_background_task(self._kernel.run_tool(name, args))
@@ -88,6 +144,9 @@ class CodexProxy:
     def emitImage(self, image_like: Any) -> BackgroundTask:
         return self.emit_image(image_like)
 
+    def runtime_info(self) -> dict[str, Any]:
+        return self._kernel.runtime_info()
+
 
 class PyReplKernel:
     def __init__(self) -> None:
@@ -97,9 +156,11 @@ class PyReplKernel:
         self.send_lock = threading.Lock()
         self.exec_queue: "queue.Queue[dict[str, Any] | None]" = queue.Queue()
         self.pending_tool_results: dict[str, asyncio.Future[Any]] = {}
+        self.pending_process_results: dict[str, asyncio.Future[Any]] = {}
         self.pending_emit_results: dict[str, asyncio.Future[None]] = {}
         self.current_exec: ExecState | None = None
         self.tool_counter = 0
+        self.process_counter = 0
         self.emit_counter = 0
         self.cell_counter = 0
         self.cwd = os.getcwd()
@@ -155,7 +216,7 @@ class PyReplKernel:
             message_type = message.get("type")
             if message_type == "exec":
                 self.exec_queue.put(message)
-            elif message_type in {"run_tool_result", "emit_image_result"}:
+            elif message_type in {"run_tool_result", "run_process_result", "emit_image_result"}:
                 self.loop.call_soon_threadsafe(self._resolve_host_message, message)
             else:
                 debug(f"ignoring unsupported host message type: {message_type!r}")
@@ -349,6 +410,8 @@ class PyReplKernel:
         message_type = message.get("type")
         if message_type == "run_tool_result":
             self._finish_future(self.pending_tool_results, message, "tool failed")
+        elif message_type == "run_process_result":
+            self._finish_future(self.pending_process_results, message, "process failed")
         elif message_type == "emit_image_result":
             self._finish_future(self.pending_emit_results, message, "emit_image failed")
         else:
@@ -376,10 +439,15 @@ class PyReplKernel:
             future.set_result(message.get("response"))
         else:
             error = message.get("error")
-            future.set_exception(PyReplError(error if isinstance(error, str) and error else default_error))
+            message_text = error if isinstance(error, str) and error else default_error
+            future.set_exception(PyReplError(message_text))
 
     def _fail_pending_futures(self, reason: str) -> None:
-        for pending in (self.pending_tool_results, self.pending_emit_results):
+        for pending in (
+            self.pending_tool_results,
+            self.pending_process_results,
+            self.pending_emit_results,
+        ):
             for future in pending.values():
                 if not future.done():
                     future.set_exception(PyReplError(reason))
@@ -416,6 +484,61 @@ class PyReplKernel:
         )
         return await future
 
+    async def run_process(
+        self,
+        command: Any,
+        *,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+        timeout_ms: int | None = None,
+        max_output_tokens: int | None = None,
+        sandbox_permissions: str = "use_default",
+        additional_permissions: dict[str, Any] | None = None,
+        justification: str | None = None,
+        prefix_rule: list[str] | None = None,
+    ) -> ProcessResult:
+        exec_state = self._require_active_exec()
+        command_list = self._normalize_process_command(command)
+        env_map = self._normalize_string_map(env, "env")
+        if cwd is not None and not isinstance(cwd, str):
+            raise PyReplError("codex.process.run cwd must be a string")
+        timeout_value = self._normalize_optional_positive_int(timeout_ms, "timeout_ms")
+        max_output_tokens_value = self._normalize_optional_positive_int(
+            max_output_tokens, "max_output_tokens"
+        )
+        if not isinstance(sandbox_permissions, str) or not sandbox_permissions:
+            raise PyReplError("codex.process.run sandbox_permissions must be a non-empty string")
+        if additional_permissions is not None and not isinstance(additional_permissions, dict):
+            raise PyReplError("codex.process.run additional_permissions must be a dict")
+        if justification is not None and not isinstance(justification, str):
+            raise PyReplError("codex.process.run justification must be a string")
+        prefix_rule_value = self._normalize_string_list(prefix_rule, "prefix_rule")
+
+        request_id = f"{exec_state.exec_id}-process-{self.process_counter}"
+        self.process_counter += 1
+        future: asyncio.Future[Any] = self.loop.create_future()
+        self.pending_process_results[request_id] = future
+        self._send(
+            {
+                "type": "run_process",
+                "id": request_id,
+                "exec_id": exec_state.exec_id,
+                "command": command_list,
+                "cwd": cwd,
+                "env": env_map,
+                "timeout_ms": timeout_value,
+                "max_output_tokens": max_output_tokens_value,
+                "sandbox_permissions": sandbox_permissions,
+                "additional_permissions": additional_permissions,
+                "justification": justification,
+                "prefix_rule": prefix_rule_value,
+            }
+        )
+        response = await future
+        if not isinstance(response, dict):
+            raise PyReplError("codex.process.run received a malformed host response")
+        return ProcessResult(response)
+
     async def emit_image(self, image_like: Any) -> None:
         exec_state = self._require_active_exec()
         normalized = self._normalize_emit_image_value(await self._maybe_await(image_like))
@@ -433,6 +556,73 @@ class PyReplKernel:
             }
         )
         await future
+
+    def runtime_info(self) -> dict[str, Any]:
+        return {
+            "python": sys.executable,
+            "version": sys.version,
+            "cwd": os.getcwd(),
+            "home_dir": os.path.expanduser("~"),
+            "tmp_dir": self.tmp_dir,
+            "sys_path": list(sys.path),
+            "managed_roots": self._managed_roots(),
+        }
+
+    def _normalize_process_command(self, command: Any) -> list[str]:
+        if isinstance(command, str):
+            if not command:
+                raise PyReplError("codex.process.run command string must be non-empty")
+            if os.name == "nt":
+                return ["cmd", "/C", command]
+            return ["/bin/sh", "-lc", command]
+
+        if not isinstance(command, (list, tuple)):
+            raise PyReplError(
+                "codex.process.run command must be a string or sequence of strings"
+            )
+        if not command:
+            raise PyReplError("codex.process.run command list must be non-empty")
+
+        normalized: list[str] = []
+        for part in command:
+            if not isinstance(part, str) or not part:
+                raise PyReplError("codex.process.run command entries must be non-empty strings")
+            normalized.append(part)
+        return normalized
+
+    def _normalize_string_map(self, value: Any, name: str) -> dict[str, str]:
+        if value is None:
+            return {}
+        if not isinstance(value, dict):
+            raise PyReplError(f"codex.process.run {name} must be a dict")
+
+        normalized: dict[str, str] = {}
+        for key, item in value.items():
+            if not isinstance(key, str) or not key:
+                raise PyReplError(f"codex.process.run {name} keys must be non-empty strings")
+            if not isinstance(item, str):
+                raise PyReplError(f"codex.process.run {name} values must be strings")
+            normalized[key] = item
+        return normalized
+
+    def _normalize_string_list(self, value: Any, name: str) -> list[str] | None:
+        if value is None:
+            return None
+        if not isinstance(value, (list, tuple)):
+            raise PyReplError(f"codex.process.run {name} must be a sequence of strings")
+        normalized: list[str] = []
+        for item in value:
+            if not isinstance(item, str) or not item:
+                raise PyReplError(f"codex.process.run {name} entries must be non-empty strings")
+            normalized.append(item)
+        return normalized
+
+    def _normalize_optional_positive_int(self, value: Any, name: str) -> int | None:
+        if value is None:
+            return None
+        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+            raise PyReplError(f"codex.process.run {name} must be a positive integer")
+        return value
 
     def _serialize_tool_args(self, args: Any) -> str:
         if isinstance(args, str):

@@ -342,6 +342,119 @@ async fn py_repl_can_invoke_builtin_tools() -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn py_repl_runtime_info_exposes_interpreter_and_paths() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let mut builder = test_codex().with_config(|config| {
+        config
+            .features
+            .enable(Feature::PyRepl)
+            .expect("test config should allow feature update");
+    });
+    let test = builder.build(&server).await?;
+
+    let mock = run_py_repl_turn(
+        &test,
+        &server,
+        "inspect py_repl runtime info",
+        "call-1",
+        "info = codex.runtime_info()\nprint(bool(info['python']))\nprint(info['cwd'] == codex.cwd)\nprint(isinstance(info['sys_path'], list))\nprint(info['tmp_dir'] == codex.tmp_dir)",
+    )
+    .await?;
+
+    let req = mock.single_request();
+    assert_py_repl_ok(&req, "call-1", "True\nTrue\nTrue\nTrue");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn py_repl_process_run_uses_child_env_without_mutating_kernel_env() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let mut builder = test_codex().with_config(|config| {
+        config
+            .features
+            .enable(Feature::PyRepl)
+            .expect("test config should allow feature update");
+    });
+    let test = builder.build(&server).await?;
+
+    let mock = run_py_repl_turn(
+        &test,
+        &server,
+        "run an isolated child process",
+        "call-1",
+        "import os, pathlib, sys\nresult = await codex.process.run([sys.executable, '-c', \"import os; print(os.environ.get('PY_REPL_CHILD_ENV', 'missing'))\"], env={'PY_REPL_CHILD_ENV': 'child-value'}, timeout_ms=5000)\nprint(f'exit={result.exit_code}')\nprint(f'stdout={result.stdout.strip()}')\nprint(f'env={os.environ.get(\"PY_REPL_CHILD_ENV\", \"missing\")}')\nprint('path=' + str(bool(result.output_path) and pathlib.Path(result.output_path).exists()))",
+    )
+    .await?;
+
+    let req = mock.single_request();
+    assert_py_repl_ok(&req, "call-1", "exit=0");
+    assert_py_repl_ok(&req, "call-1", "stdout=child-value");
+    assert_py_repl_ok(&req, "call-1", "env=missing");
+    assert_py_repl_ok(&req, "call-1", "path=True");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn py_repl_process_run_returns_nonzero_exit_without_failing_cell() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let mut builder = test_codex().with_config(|config| {
+        config
+            .features
+            .enable(Feature::PyRepl)
+            .expect("test config should allow feature update");
+    });
+    let test = builder.build(&server).await?;
+
+    let mock = run_py_repl_turn(
+        &test,
+        &server,
+        "run a failing child process",
+        "call-1",
+        "import sys\nresult = await codex.process.run([sys.executable, '-c', 'import sys; sys.exit(7)'], timeout_ms=5000)\nprint(f'exit={result.exit_code}')\nprint(f'timed_out={result.timed_out}')",
+    )
+    .await?;
+
+    let req = mock.single_request();
+    assert_py_repl_ok(&req, "call-1", "exit=7");
+    assert_py_repl_ok(&req, "call-1", "timed_out=False");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn py_repl_process_run_times_out_and_kills_child() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let mut builder = test_codex().with_config(|config| {
+        config
+            .features
+            .enable(Feature::PyRepl)
+            .expect("test config should allow feature update");
+    });
+    let test = builder.build(&server).await?;
+
+    let mock = run_py_repl_turn(
+        &test,
+        &server,
+        "run a timed out child process",
+        "call-1",
+        "import sys\nresult = await codex.process.run([sys.executable, '-c', 'import time; time.sleep(2)'], timeout_ms=300)\nprint(f'timed_out={result.timed_out}')\nprint(f'session={result.session_id}')",
+    )
+    .await?;
+
+    let req = mock.single_request();
+    assert_py_repl_ok(&req, "call-1", "timed_out=True");
+    assert_py_repl_ok(&req, "call-1", "session=None");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn py_repl_drains_unawaited_tool_calls_before_cell_completion() -> Result<()> {
     skip_if_no_network!(Ok(()));
 

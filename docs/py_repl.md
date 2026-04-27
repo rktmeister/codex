@@ -87,13 +87,40 @@ py_repl_sys_path = [
 `py_repl` exposes:
 
 - `codex.tmp_dir`
+- `codex.cwd`
+- `codex.home_dir`
+- `codex.runtime_info()`
+- `codex.process.run(command, *, cwd=None, env=None, timeout_ms=None, max_output_tokens=None, sandbox_permissions="use_default", additional_permissions=None, justification=None, prefix_rule=None)`
 - `codex.tool(name, args=None)`
 - `codex.emit_image(image_like)`
 - `codex.emitImage(image_like)` as a compatibility alias
 
 `codex.emit_image(...)` is the canonical spelling for Python docs and examples.
 
-`codex.tool(...)` starts a nested Codex tool call and returns an awaitable task-like object. Nested tool outputs stay inside Python unless you print or emit them.
+`codex.runtime_info()` returns the active interpreter, Python version, cwd, tmp dir, `sys.path`, and managed import roots.
+
+`codex.process.run(...)` starts a host-mediated subprocess and returns a task-like object; await it to get a dict-like result with `exit_code`, `timed_out`, `elapsed_ms`, `output`, `stdout`, `stderr`, `output_path`, `stdout_path`, `stderr_path`, `session_id`, and `original_token_count`.
+
+Use an argv list when shell parsing is not needed:
+
+```python
+import sys
+
+result = await codex.process.run(
+    [sys.executable, "-c", "import os; print(os.environ['PROBE'])"],
+    env={"PROBE": "child-only"},
+    timeout_ms=5000,
+)
+print(result.exit_code, result.stdout.strip(), result.output_path)
+```
+
+String commands are run through the platform shell (`/bin/sh -lc` on Unix, `cmd /C` on Windows).
+
+The `env` map is an overlay for that subprocess only. It does not mutate `os.environ` in the persistent kernel. Process execution uses the same Codex approval and sandbox pipeline as `exec_command`; request escalated or additional permissions through the `sandbox_permissions`, `additional_permissions`, `justification`, and `prefix_rule` arguments.
+
+The first implementation stores the combined process stream in `output` and `stdout`; `stderr` is currently empty because unified exec exposes an aggregated stream to this helper. Full captured output is also written to a temp log path when possible.
+
+`codex.tool(...)` starts a nested Codex tool call and returns an awaitable task-like object. The awaited value is the raw tool response item dict; nested tool outputs stay inside Python unless you print or emit them.
 
 `codex.emit_image(...)` accepts:
 
@@ -117,5 +144,8 @@ The current first pass blocks direct process escape paths such as:
 - `os.popen`
 - `os.spawn*`
 - `os.exec*`
+
+Use `codex.process.run(...)` for subprocesses that need Codex sandboxing,
+approval, per-call env, timeout, and output capture.
 
 `py_repl` also rejects recursive `py_repl` / `py_repl_reset` tool calls and continues to run inside the normal Codex sandbox pipeline.
