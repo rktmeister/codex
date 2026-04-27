@@ -38,6 +38,8 @@ The current branch has already landed most of the Phase 0-2 surface:
 - long-running process handles via `codex.process.start(...)` with `poll(...)`, `wait(...)`, and `kill()`
 - tracked process cleanup via `codex.process.list()`, `codex.process.kill(session_id)`, and `codex.process.kill_all()`
 - Python-level failure cleanup hooks via `codex.process.on_failure(callback)`
+- restart controls via `codex.restart_after_cell()` and the `isolated=true` pragma
+- native extension change warnings for loaded `.so`, `.pyd`, `.dll`, and `.dylib` modules
 
 The remaining work is concentrated in hardening, parity coverage, typed config cleanup, and docs polish. Keep the sequencing below as the source of truth for what is still left to finish.
 
@@ -67,6 +69,7 @@ The remaining work is concentrated in hardening, parity coverage, typed config c
 - Python helper API:
   - `codex.tmp_dir`
   - `codex.runtime_info()`
+  - `codex.restart_after_cell()`
   - `codex.process.run(command, ...)`
   - `codex.process.start(command, ...)`
   - `codex.process.list()`

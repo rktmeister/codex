@@ -361,6 +361,12 @@ class CodexProxy:
     def runtime_info(self) -> dict[str, Any]:
         return self._kernel.runtime_info()
 
+    def restart_after_cell(self) -> None:
+        self._kernel.request_restart_after_cell()
+
+    def restartAfterCell(self) -> None:
+        self.restart_after_cell()
+
 
 class PyReplKernel:
     def __init__(self) -> None:
@@ -380,6 +386,8 @@ class PyReplKernel:
         self.process_handles: dict[int, ProcessHandle] = {}
         self.process_failure_hooks: dict[int, Any] = {}
         self.process_failure_hook_counter = 0
+        self.native_extension_fingerprints: dict[str, tuple[int, int]] = {}
+        self.restart_after_current_exec = False
         self.cwd = os.getcwd()
         self.tmp_dir = os.environ.get("CODEX_PY_REPL_TMP_DIR", self.cwd)
         self.original_import = builtins.__import__
@@ -458,11 +466,15 @@ class PyReplKernel:
         return self.loop.run_until_complete(self._execute(exec_id, code))
 
     async def _execute(self, exec_id: str, code: str) -> dict[str, Any]:
-        self._prepare_for_exec()
+        self.restart_after_current_exec = False
+        warnings = self._prepare_for_exec()
         exec_state = ExecState(exec_id=exec_id)
         self.current_exec = exec_state
         buffer = io.StringIO()
         error_text: str | None = None
+        for warning in warnings:
+            buffer.write(warning)
+            buffer.write("\n")
 
         try:
             filename = os.path.join(self.cwd, f".codex_py_repl_cell_{self.cell_counter}.py")
@@ -500,7 +512,14 @@ class PyReplKernel:
         output = buffer.getvalue()
         if error_text is not None:
             return self._exec_error(exec_id, output, error_text)
-        return {"type": "exec_result", "id": exec_id, "ok": True, "output": output, "error": None}
+        return {
+            "type": "exec_result",
+            "id": exec_id,
+            "ok": True,
+            "output": output,
+            "error": None,
+            "restart_after": self.restart_after_current_exec,
+        }
 
     async def _drain_background_tasks(self, exec_state: ExecState) -> str | None:
         if not exec_state.background_tasks:
@@ -597,10 +616,45 @@ class PyReplKernel:
             task.cancel()
         await asyncio.gather(*pending, return_exceptions=True)
 
-    def _prepare_for_exec(self) -> None:
+    def _prepare_for_exec(self) -> list[str]:
         self._refresh_sys_path()
         importlib.invalidate_caches()
+        warnings = self._native_extension_warnings()
         self._evict_managed_modules()
+        return warnings
+
+    def _native_extension_warnings(self) -> list[str]:
+        warnings: list[str] = []
+        for _name, module in list(sys.modules.items()):
+            if module is None:
+                continue
+            module_path = self._module_path(module)
+            if module_path is None or not self._is_native_extension_path(module_path):
+                continue
+            fingerprint = self._file_fingerprint(module_path)
+            if fingerprint is None:
+                continue
+            previous = self.native_extension_fingerprints.get(module_path)
+            if previous is None:
+                self.native_extension_fingerprints[module_path] = fingerprint
+                continue
+            if previous != fingerprint:
+                warnings.append(
+                    "py_repl warning: native extension changed on disk after it was loaded: "
+                    f"{module_path}. Restart the kernel with codex.restart_after_cell() or "
+                    "py_repl_reset before importing it again."
+                )
+        return warnings
+
+    def _is_native_extension_path(self, path: str) -> bool:
+        return path.endswith((".so", ".pyd", ".dll", ".dylib"))
+
+    def _file_fingerprint(self, path: str) -> tuple[int, int] | None:
+        try:
+            stat = os.stat(path)
+        except OSError:
+            return None
+        return (stat.st_mtime_ns, stat.st_size)
 
     def _refresh_sys_path(self) -> None:
         current_roots = self._managed_roots()
@@ -1020,6 +1074,9 @@ class PyReplKernel:
     def clear_process_failure_hooks(self) -> None:
         self.process_failure_hooks.clear()
 
+    def request_restart_after_cell(self) -> None:
+        self.restart_after_current_exec = True
+
     async def run_python(
         self,
         code: str,
@@ -1340,6 +1397,7 @@ class PyReplKernel:
             "ok": False,
             "output": output,
             "error": error,
+            "restart_after": self.restart_after_current_exec,
         }
 
     def _canonicalize_path(self, path: str) -> str:

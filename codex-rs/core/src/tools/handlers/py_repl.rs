@@ -221,6 +221,7 @@ fn parse_freeform_args(input: &str) -> Result<PyReplArgs, FunctionCallError> {
     let mut args = PyReplArgs {
         code: input.to_string(),
         timeout_ms: None,
+        isolated: false,
     };
 
     let mut lines = input.splitn(2, '\n');
@@ -233,12 +234,14 @@ fn parse_freeform_args(input: &str) -> Result<PyReplArgs, FunctionCallError> {
     };
 
     let mut timeout_ms: Option<u64> = None;
+    let mut isolated = false;
+    let mut isolated_seen = false;
     let directive = pragma.trim();
     if !directive.is_empty() {
         for token in directive.split_whitespace() {
             let (key, value) = token.split_once('=').ok_or_else(|| {
                 FunctionCallError::RespondToModel(format!(
-                    "py_repl pragma expects space-separated key=value pairs (supported keys: timeout_ms); got `{token}`"
+                    "py_repl pragma expects space-separated key=value pairs (supported keys: timeout_ms, isolated); got `{token}`"
                 ))
             })?;
             match key {
@@ -255,9 +258,26 @@ fn parse_freeform_args(input: &str) -> Result<PyReplArgs, FunctionCallError> {
                     })?;
                     timeout_ms = Some(parsed);
                 }
+                "isolated" => {
+                    if isolated_seen {
+                        return Err(FunctionCallError::RespondToModel(
+                            "py_repl pragma specifies isolated more than once".to_string(),
+                        ));
+                    }
+                    isolated = match value {
+                        "true" => true,
+                        "false" => false,
+                        _ => {
+                            return Err(FunctionCallError::RespondToModel(format!(
+                                "py_repl pragma isolated must be true or false; got `{value}`"
+                            )));
+                        }
+                    };
+                    isolated_seen = true;
+                }
                 _ => {
                     return Err(FunctionCallError::RespondToModel(format!(
-                        "py_repl pragma only supports timeout_ms; got `{key}`"
+                        "py_repl pragma only supports timeout_ms and isolated; got `{key}`"
                     )));
                 }
             }
@@ -273,6 +293,7 @@ fn parse_freeform_args(input: &str) -> Result<PyReplArgs, FunctionCallError> {
     reject_json_or_quoted_source(rest)?;
     args.code = rest.to_string();
     args.timeout_ms = timeout_ms;
+    args.isolated = isolated;
     Ok(args)
 }
 
@@ -312,14 +333,16 @@ mod tests {
         let args = parse_freeform_args("print('ok')").expect("parse args");
         assert_eq!(args.code, "print('ok')");
         assert_eq!(args.timeout_ms, None);
+        assert!(!args.isolated);
     }
 
     #[test]
     fn parse_freeform_args_with_pragma() {
-        let input = "# codex-py-repl: timeout_ms=15000\nprint('ok')";
+        let input = "# codex-py-repl: timeout_ms=15000 isolated=true\nprint('ok')";
         let args = parse_freeform_args(input).expect("parse args");
         assert_eq!(args.code, "print('ok')");
         assert_eq!(args.timeout_ms, Some(15_000));
+        assert!(args.isolated);
     }
 
     #[test]
@@ -328,7 +351,7 @@ mod tests {
             .expect_err("expected error");
         assert_eq!(
             err.to_string(),
-            "py_repl pragma only supports timeout_ms; got `nope`"
+            "py_repl pragma only supports timeout_ms and isolated; got `nope`"
         );
     }
 

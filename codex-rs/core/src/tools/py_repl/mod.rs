@@ -109,6 +109,8 @@ pub struct PyReplArgs {
     pub code: String,
     #[serde(default)]
     pub timeout_ms: Option<u64>,
+    #[serde(default)]
+    pub isolated: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -401,6 +403,10 @@ impl PyReplManager {
         let _permit = self.exec_lock.clone().acquire_owned().await.map_err(|_| {
             FunctionCallError::RespondToModel("py_repl execution unavailable".to_string())
         })?;
+        let isolated = args.isolated;
+        if isolated {
+            self.reset_kernel().await;
+        }
 
         let (stdin, pending_execs, exec_contexts, child, recent_stderr) = {
             let mut kernel = self.kernel.lock().await;
@@ -514,16 +520,30 @@ impl PyReplManager {
             }
         };
 
-        match response {
+        let (result, restart_after) = match response {
             ExecResultMessage::Ok {
                 output,
                 content_items,
-            } => Ok(PyExecResult {
-                output,
-                content_items,
-            }),
-            ExecResultMessage::Err { message } => Err(FunctionCallError::RespondToModel(message)),
+                restart_after,
+            } => (
+                Ok(PyExecResult {
+                    output,
+                    content_items,
+                }),
+                restart_after,
+            ),
+            ExecResultMessage::Err {
+                message,
+                restart_after,
+            } => (
+                Err(FunctionCallError::RespondToModel(message)),
+                restart_after,
+            ),
+        };
+        if isolated || restart_after {
+            self.reset_kernel().await;
         }
+        result
     }
 
     pub(crate) async fn reset(&self) -> Result<(), FunctionCallError> {
@@ -957,6 +977,7 @@ impl PyReplManager {
                     ok,
                     output,
                     error,
+                    restart_after,
                 } => {
                     Self::wait_for_exec_tool_calls_map(&exec_tool_calls, &id).await;
                     let content_items = {
@@ -972,16 +993,23 @@ impl PyReplManager {
                             ExecResultMessage::Ok {
                                 output,
                                 content_items,
+                                restart_after,
                             }
                         } else {
                             ExecResultMessage::Err {
                                 message: format_exec_failure_message(output, error),
+                                restart_after,
                             }
                         };
                         let _ = tx.send(payload);
                     }
                     exec_contexts.lock().await.remove(&id);
                     Self::clear_exec_tool_calls_map(&exec_tool_calls, &id).await;
+                    if restart_after {
+                        shutdown.cancel();
+                        Self::kill_kernel_child(&child, "restart_after_cell").await;
+                        break KernelStreamEnd::Shutdown;
+                    }
                 }
                 KernelToHost::EmitImage(req) => {
                     let exec_id = req.exec_id.clone();
@@ -1401,6 +1429,7 @@ impl PyReplManager {
         for (_id, tx) in pending.drain() {
             let _ = tx.send(ExecResultMessage::Err {
                 message: kernel_exit_message.clone(),
+                restart_after: false,
             });
         }
         drop(pending);
@@ -2045,6 +2074,8 @@ enum KernelToHost {
         output: String,
         #[serde(default)]
         error: Option<String>,
+        #[serde(default)]
+        restart_after: bool,
     },
     RunTool(RunToolRequest),
     RunProcess(RunProcessRequest),
@@ -2195,9 +2226,11 @@ enum ExecResultMessage {
     Ok {
         output: String,
         content_items: Vec<FunctionCallOutputContentItem>,
+        restart_after: bool,
     },
     Err {
         message: String,
+        restart_after: bool,
     },
 }
 

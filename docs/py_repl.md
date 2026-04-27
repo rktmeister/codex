@@ -78,6 +78,7 @@ py_repl_sys_path = [
 - Prefer `py_repl` over shelling out to `python - <<'PY'` when you do not need a fresh interpreter or capabilities blocked by the REPL sandbox.
 - Optional first-line pragma:
   - `# codex-py-repl: timeout_ms=15000`
+  - `# codex-py-repl: timeout_ms=15000 isolated=true`
 - Top-level state persists across calls until reset.
 - Helper calls start immediately and return task-like objects. Unawaited helper work is still drained before the cell finishes.
 - `py_repl_reset` clears the kernel state for the current run.
@@ -90,6 +91,7 @@ py_repl_sys_path = [
 - `codex.cwd`
 - `codex.home_dir`
 - `codex.runtime_info()`
+- `codex.restart_after_cell()`
 - `codex.process.run(command, *, cwd=None, env=None, timeout_ms=None, max_output_tokens=None, sandbox_permissions="use_default", additional_permissions=None, justification=None, prefix_rule=None)`
 - `codex.process.start(command, *, cwd=None, env=None, yield_time_ms=None, timeout_ms=None, max_output_tokens=None, sandbox_permissions="use_default", additional_permissions=None, justification=None, prefix_rule=None)`
 - `codex.process.list()`
@@ -106,6 +108,10 @@ py_repl_sys_path = [
 `codex.emit_image(...)` is the canonical spelling for Python docs and examples.
 
 `codex.runtime_info()` returns the active interpreter, Python version, cwd, tmp dir, `sys.path`, and managed import roots.
+
+`codex.restart_after_cell()` asks the host to reset the persistent kernel after the current cell result is returned. Use `isolated=true` in the pragma to run a cell in a fresh kernel and reset it again afterward. Both are intended for imports or native runtime state that should not survive into later cells.
+
+If a loaded native extension (`.so`, `.pyd`, `.dll`, or `.dylib`) changes on disk, `py_repl` emits a warning before the next cell runs because Python cannot safely reload those modules in-place.
 
 `codex.process.run(...)` starts a host-mediated subprocess and returns a task-like object; await it to get a dict-like result with `exit_code`, `timed_out`, `elapsed_ms`, `output`, `stdout`, `stderr`, `output_path`, `stdout_path`, `stderr_path`, `session_id`, and `original_token_count`.
 

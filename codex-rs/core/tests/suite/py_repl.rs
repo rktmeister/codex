@@ -593,6 +593,154 @@ async fn py_repl_process_failure_hooks_can_cleanup_tracked_children() -> Result<
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn py_repl_restart_after_cell_resets_kernel_after_result() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let mut builder = test_codex().with_config(|config| {
+        config
+            .features
+            .enable(Feature::PyRepl)
+            .expect("test config should allow feature update");
+    });
+    let test = builder.build(&server).await?;
+
+    let seeded = run_py_repl_turn(
+        &test,
+        &server,
+        "seed py_repl state",
+        "call-1",
+        "value = 41\nprint(value)",
+    )
+    .await?;
+    assert_py_repl_ok(&seeded.single_request(), "call-1", "41");
+
+    let restart = run_py_repl_turn(
+        &test,
+        &server,
+        "restart after this cell",
+        "call-2",
+        "print(value)\ncodex.restart_after_cell()",
+    )
+    .await?;
+    assert_py_repl_ok(&restart.single_request(), "call-2", "41");
+
+    let fresh = run_py_repl_turn(
+        &test,
+        &server,
+        "verify restarted kernel",
+        "call-3",
+        "try:\n    print(value)\nexcept NameError:\n    print('fresh')",
+    )
+    .await?;
+    assert_py_repl_ok(&fresh.single_request(), "call-3", "fresh");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn py_repl_isolated_pragma_uses_fresh_kernel_and_discards_state() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let mut builder = test_codex().with_config(|config| {
+        config
+            .features
+            .enable(Feature::PyRepl)
+            .expect("test config should allow feature update");
+    });
+    let test = builder.build(&server).await?;
+
+    let seeded = run_py_repl_turn(
+        &test,
+        &server,
+        "seed py_repl state before isolated cell",
+        "call-1",
+        "value = 41\nprint(value)",
+    )
+    .await?;
+    assert_py_repl_ok(&seeded.single_request(), "call-1", "41");
+
+    let isolated = run_py_repl_turn(
+        &test,
+        &server,
+        "run isolated py_repl cell",
+        "call-2",
+        "# codex-py-repl: isolated=true\ntry:\n    print(value)\nexcept NameError:\n    print('isolated')\ninner = 1",
+    )
+    .await?;
+    assert_py_repl_ok(&isolated.single_request(), "call-2", "isolated");
+
+    let fresh = run_py_repl_turn(
+        &test,
+        &server,
+        "verify isolated cell reset",
+        "call-3",
+        "for name in ['value', 'inner']:\n    print(name + '=' + str(name in globals()))",
+    )
+    .await?;
+    let req = fresh.single_request();
+    assert_py_repl_ok(&req, "call-3", "value=False");
+    assert_py_repl_ok(&req, "call-3", "inner=False");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn py_repl_warns_when_loaded_native_extension_changes_on_disk() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let mut builder = test_codex().with_config(|config| {
+        config
+            .features
+            .enable(Feature::PyRepl)
+            .expect("test config should allow feature update");
+    });
+    let test = builder.build(&server).await?;
+
+    let loaded = run_py_repl_turn(
+        &test,
+        &server,
+        "register a fake loaded native extension",
+        "call-1",
+        concat!(
+            "import pathlib, sys, types\n",
+            "native_path = pathlib.Path(codex.tmp_dir) / 'fake_native.so'\n",
+            "native_path.write_bytes(b'one')\n",
+            "fake_native = types.ModuleType('fake_native')\n",
+            "fake_native.__file__ = str(native_path)\n",
+            "sys.modules['fake_native'] = fake_native\n",
+            "print('loaded')",
+        ),
+    )
+    .await?;
+    assert_py_repl_ok(&loaded.single_request(), "call-1", "loaded");
+
+    let changed = run_py_repl_turn(
+        &test,
+        &server,
+        "change the fake loaded native extension",
+        "call-2",
+        "native_path.write_bytes(b'two')\nprint('changed')",
+    )
+    .await?;
+    assert_py_repl_ok(&changed.single_request(), "call-2", "changed");
+
+    let warned = run_py_repl_turn(
+        &test,
+        &server,
+        "detect changed native extension",
+        "call-3",
+        "print('after-change')",
+    )
+    .await?;
+    let req = warned.single_request();
+    assert_py_repl_ok(&req, "call-3", "native extension changed on disk");
+    assert_py_repl_ok(&req, "call-3", "fake_native.so");
+    assert_py_repl_ok(&req, "call-3", "after-change");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn py_repl_process_run_returns_nonzero_exit_without_failing_cell() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
