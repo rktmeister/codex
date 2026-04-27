@@ -113,6 +113,37 @@ class ProcessProxy:
             )
         )
 
+    def python(
+        self,
+        code: str,
+        *,
+        args: list[str] | None = None,
+        interpreter: str | None = None,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+        timeout_ms: int | None = None,
+        max_output_tokens: int | None = None,
+        sandbox_permissions: str = "use_default",
+        additional_permissions: dict[str, Any] | None = None,
+        justification: str | None = None,
+        prefix_rule: list[str] | None = None,
+    ) -> BackgroundTask:
+        return self._kernel.create_background_task(
+            self._kernel.run_python(
+                code,
+                args=args,
+                interpreter=interpreter,
+                cwd=cwd,
+                env=env,
+                timeout_ms=timeout_ms,
+                max_output_tokens=max_output_tokens,
+                sandbox_permissions=sandbox_permissions,
+                additional_permissions=additional_permissions,
+                justification=justification,
+                prefix_rule=prefix_rule,
+            )
+        )
+
 
 class CodexProxy:
     def __init__(self, kernel: "PyReplKernel") -> None:
@@ -539,6 +570,41 @@ class PyReplKernel:
             raise PyReplError("codex.process.run received a malformed host response")
         return ProcessResult(response)
 
+    async def run_python(
+        self,
+        code: str,
+        *,
+        args: list[str] | None = None,
+        interpreter: str | None = None,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+        timeout_ms: int | None = None,
+        max_output_tokens: int | None = None,
+        sandbox_permissions: str = "use_default",
+        additional_permissions: dict[str, Any] | None = None,
+        justification: str | None = None,
+        prefix_rule: list[str] | None = None,
+    ) -> ProcessResult:
+        if not isinstance(code, str) or not code:
+            raise PyReplError("codex.process.python code must be a non-empty string")
+        if interpreter is None:
+            interpreter = sys.executable
+        elif not isinstance(interpreter, str) or not interpreter:
+            raise PyReplError("codex.process.python interpreter must be a non-empty string")
+
+        args_list = self._normalize_string_list(args, "args", helper="codex.process.python") or []
+        return await self.run_process(
+            [interpreter, "-c", code, *args_list],
+            cwd=cwd,
+            env=env,
+            timeout_ms=timeout_ms,
+            max_output_tokens=max_output_tokens,
+            sandbox_permissions=sandbox_permissions,
+            additional_permissions=additional_permissions,
+            justification=justification,
+            prefix_rule=prefix_rule,
+        )
+
     async def emit_image(self, image_like: Any) -> None:
         exec_state = self._require_active_exec()
         normalized = self._normalize_emit_image_value(await self._maybe_await(image_like))
@@ -590,38 +656,56 @@ class PyReplKernel:
             normalized.append(part)
         return normalized
 
-    def _normalize_string_map(self, value: Any, name: str) -> dict[str, str]:
+    def _normalize_string_map(
+        self,
+        value: Any,
+        name: str,
+        *,
+        helper: str = "codex.process.run",
+    ) -> dict[str, str]:
         if value is None:
             return {}
         if not isinstance(value, dict):
-            raise PyReplError(f"codex.process.run {name} must be a dict")
+            raise PyReplError(f"{helper} {name} must be a dict")
 
         normalized: dict[str, str] = {}
         for key, item in value.items():
             if not isinstance(key, str) or not key:
-                raise PyReplError(f"codex.process.run {name} keys must be non-empty strings")
+                raise PyReplError(f"{helper} {name} keys must be non-empty strings")
             if not isinstance(item, str):
-                raise PyReplError(f"codex.process.run {name} values must be strings")
+                raise PyReplError(f"{helper} {name} values must be strings")
             normalized[key] = item
         return normalized
 
-    def _normalize_string_list(self, value: Any, name: str) -> list[str] | None:
+    def _normalize_string_list(
+        self,
+        value: Any,
+        name: str,
+        *,
+        helper: str = "codex.process.run",
+    ) -> list[str] | None:
         if value is None:
             return None
         if not isinstance(value, (list, tuple)):
-            raise PyReplError(f"codex.process.run {name} must be a sequence of strings")
+            raise PyReplError(f"{helper} {name} must be a sequence of strings")
         normalized: list[str] = []
         for item in value:
             if not isinstance(item, str) or not item:
-                raise PyReplError(f"codex.process.run {name} entries must be non-empty strings")
+                raise PyReplError(f"{helper} {name} entries must be non-empty strings")
             normalized.append(item)
         return normalized
 
-    def _normalize_optional_positive_int(self, value: Any, name: str) -> int | None:
+    def _normalize_optional_positive_int(
+        self,
+        value: Any,
+        name: str,
+        *,
+        helper: str = "codex.process.run",
+    ) -> int | None:
         if value is None:
             return None
         if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
-            raise PyReplError(f"codex.process.run {name} must be a positive integer")
+            raise PyReplError(f"{helper} {name} must be a positive integer")
         return value
 
     def _serialize_tool_args(self, args: Any) -> str:

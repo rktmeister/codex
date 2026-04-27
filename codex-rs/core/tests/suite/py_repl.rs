@@ -399,6 +399,51 @@ async fn py_repl_process_run_uses_child_env_without_mutating_kernel_env() -> Res
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn py_repl_process_python_runs_fresh_interpreter_with_args_and_env() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let mut builder = test_codex().with_config(|config| {
+        config
+            .features
+            .enable(Feature::PyRepl)
+            .expect("test config should allow feature update");
+    });
+    let test = builder.build(&server).await?;
+
+    let mock = run_py_repl_turn(
+        &test,
+        &server,
+        "run a fresh python child process",
+        "call-1",
+        concat!(
+            "import os, sys\n",
+            "os.environ['PY_REPL_PARENT_ONLY'] = 'parent'\n",
+            "code = \"import os, sys; print(sys.executable); print(sys.argv[1]); print(os.environ.get('PY_REPL_CHILD_ENV', 'missing')); print(os.environ.get('PY_REPL_PARENT_ONLY', 'missing'))\"\n",
+            "result = await codex.process.python(code, args=['arg-1'], env={'PY_REPL_CHILD_ENV': 'child-value'}, timeout_ms=5000)\n",
+            "explicit = await codex.process.python('import sys; print(sys.executable)', interpreter=sys.executable, timeout_ms=5000)\n",
+            "lines = result.stdout.strip().splitlines()\n",
+            "print(f'exit={result.exit_code}')\n",
+            "print('same=' + str(lines[0] == sys.executable))\n",
+            "print('arg=' + lines[1])\n",
+            "print('child=' + lines[2])\n",
+            "print('parent=' + lines[3])\n",
+            "print('explicit=' + str(explicit.stdout.strip() == sys.executable))",
+        ),
+    )
+    .await?;
+
+    let req = mock.single_request();
+    assert_py_repl_ok(&req, "call-1", "exit=0");
+    assert_py_repl_ok(&req, "call-1", "same=True");
+    assert_py_repl_ok(&req, "call-1", "arg=arg-1");
+    assert_py_repl_ok(&req, "call-1", "child=child-value");
+    assert_py_repl_ok(&req, "call-1", "parent=missing");
+    assert_py_repl_ok(&req, "call-1", "explicit=True");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn py_repl_process_run_returns_nonzero_exit_without_failing_cell() -> Result<()> {
     skip_if_no_network!(Ok(()));
 

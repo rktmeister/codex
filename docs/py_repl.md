@@ -91,6 +91,7 @@ py_repl_sys_path = [
 - `codex.home_dir`
 - `codex.runtime_info()`
 - `codex.process.run(command, *, cwd=None, env=None, timeout_ms=None, max_output_tokens=None, sandbox_permissions="use_default", additional_permissions=None, justification=None, prefix_rule=None)`
+- `codex.process.python(code, *, args=None, interpreter=None, cwd=None, env=None, timeout_ms=None, max_output_tokens=None, sandbox_permissions="use_default", additional_permissions=None, justification=None, prefix_rule=None)`
 - `codex.tool(name, args=None)`
 - `codex.emit_image(image_like)`
 - `codex.emitImage(image_like)` as a compatibility alias
@@ -119,6 +120,17 @@ String commands are run through the platform shell (`/bin/sh -lc` on Unix, `cmd 
 The `env` map is an overlay for that subprocess only. It does not mutate `os.environ` in the persistent kernel. Process execution uses the same Codex approval and sandbox pipeline as `exec_command`; request escalated or additional permissions through the `sandbox_permissions`, `additional_permissions`, `justification`, and `prefix_rule` arguments.
 
 The first implementation stores the combined process stream in `output` and `stdout`; `stderr` is currently empty because unified exec exposes an aggregated stream to this helper. Full captured output is also written to a temp log path when possible.
+
+`codex.process.python(...)` is a convenience wrapper for fresh interpreter runs. It uses the active py_repl interpreter by default, or an explicit `interpreter` path when provided:
+
+```python
+result = await codex.process.python(
+    "import os, sys; print(sys.executable); print(sys.argv[1:]); print(os.environ['PROBE'])",
+    args=["batch-1"],
+    env={"PROBE": "child-only"},
+    timeout_ms=5000,
+)
+```
 
 `codex.tool(...)` starts a nested Codex tool call and returns an awaitable task-like object. The awaited value is the raw tool response item dict; nested tool outputs stay inside Python unless you print or emit them.
 
