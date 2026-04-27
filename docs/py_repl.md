@@ -92,6 +92,9 @@ py_repl_sys_path = [
 - `codex.runtime_info()`
 - `codex.process.run(command, *, cwd=None, env=None, timeout_ms=None, max_output_tokens=None, sandbox_permissions="use_default", additional_permissions=None, justification=None, prefix_rule=None)`
 - `codex.process.start(command, *, cwd=None, env=None, yield_time_ms=None, timeout_ms=None, max_output_tokens=None, sandbox_permissions="use_default", additional_permissions=None, justification=None, prefix_rule=None)`
+- `codex.process.list()`
+- `codex.process.kill(session_id)`
+- `codex.process.kill_all()`
 - `codex.process.python(code, *, args=None, interpreter=None, cwd=None, env=None, timeout_ms=None, max_output_tokens=None, sandbox_permissions="use_default", additional_permissions=None, justification=None, prefix_rule=None)`
 - `codex.tool(name, args=None)`
 - `codex.emit_image(image_like)`
@@ -139,6 +142,8 @@ print(final.exit_code, final.output_path)
 
 await handle.kill()
 ```
+
+Use `codex.process.list()` to inspect children started by this kernel, `await codex.process.kill(session_id)` to terminate a specific tracked or known child, and `await codex.process.kill_all()` to terminate every tracked child.
 
 `codex.process.python(...)` is a convenience wrapper for fresh interpreter runs. It uses the active py_repl interpreter by default, or an explicit `interpreter` path when provided:
 

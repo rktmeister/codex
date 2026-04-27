@@ -178,6 +178,7 @@ class ProcessHandle:
         return self._record(result)
 
     def _record(self, result: ProcessResult) -> ProcessResult:
+        previous_session_id = self.session_id
         self.last_result = ProcessResult(result)
         output = result.get("output")
         if isinstance(output, str):
@@ -194,6 +195,10 @@ class ProcessHandle:
         exit_code = result.get("exit_code")
         self.exit_code = exit_code if isinstance(exit_code, int) else None
         self.timed_out = bool(result.get("timed_out"))
+        self._kernel._update_process_handle_registration(
+            self,
+            previous_session_id=previous_session_id,
+        )
         return self._snapshot(result)
 
     def _snapshot(self, result: ProcessResult | None = None) -> ProcessResult:
@@ -304,6 +309,15 @@ class ProcessProxy:
             )
         )
 
+    def list(self) -> list[ProcessResult]:
+        return self._kernel.list_processes()
+
+    def kill(self, session_id: int) -> BackgroundTask:
+        return self._kernel.create_background_task(self._kernel.kill_process_by_id(session_id))
+
+    def kill_all(self) -> BackgroundTask:
+        return self._kernel.create_background_task(self._kernel.kill_all_processes())
+
 
 class CodexProxy:
     def __init__(self, kernel: "PyReplKernel") -> None:
@@ -354,6 +368,7 @@ class PyReplKernel:
         self.process_counter = 0
         self.emit_counter = 0
         self.cell_counter = 0
+        self.process_handles: dict[int, ProcessHandle] = {}
         self.cwd = os.getcwd()
         self.tmp_dir = os.environ.get("CODEX_PY_REPL_TMP_DIR", self.cwd)
         self.original_import = builtins.__import__
@@ -872,6 +887,43 @@ class PyReplKernel:
         if not isinstance(response, dict):
             raise PyReplError("codex.process handle.kill received a malformed host response")
         return ProcessResult(response)
+
+    def list_processes(self) -> list[ProcessResult]:
+        return [
+            handle._snapshot()
+            for _session_id, handle in sorted(self.process_handles.items())
+            if handle.running
+        ]
+
+    async def kill_process_by_id(self, session_id: int) -> ProcessResult:
+        session_id = self._normalize_session_id(session_id, helper="codex.process.kill")
+        handle = self.process_handles.get(session_id)
+        result = await self.kill_process(session_id)
+        if handle is not None:
+            return handle._record(result)
+        return result
+
+    async def kill_all_processes(self) -> list[ProcessResult]:
+        session_ids = sorted(self.process_handles)
+        results: list[ProcessResult] = []
+        for session_id in session_ids:
+            if session_id not in self.process_handles:
+                continue
+            results.append(await self.kill_process_by_id(session_id))
+        return results
+
+    def _update_process_handle_registration(
+        self,
+        handle: ProcessHandle,
+        *,
+        previous_session_id: int | None,
+    ) -> None:
+        if previous_session_id is not None and previous_session_id != handle.session_id:
+            existing = self.process_handles.get(previous_session_id)
+            if existing is handle:
+                self.process_handles.pop(previous_session_id, None)
+        if handle.session_id is not None:
+            self.process_handles[handle.session_id] = handle
 
     async def run_python(
         self,

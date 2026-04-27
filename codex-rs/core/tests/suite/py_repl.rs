@@ -490,6 +490,55 @@ async fn py_repl_process_start_waits_and_kills_session() -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn py_repl_process_list_and_kill_cleanup_surface_tracks_started_processes() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let mut builder = test_codex().with_config(|config| {
+        config
+            .features
+            .enable(Feature::PyRepl)
+            .expect("test config should allow feature update");
+    });
+    let test = builder.build(&server).await?;
+
+    let mock = run_py_repl_turn(
+        &test,
+        &server,
+        "list and cleanup py_repl processes",
+        "call-1",
+        concat!(
+            "import sys\n",
+            "first = await codex.process.start([sys.executable, '-c', 'import time; time.sleep(5)'], yield_time_ms=100)\n",
+            "print('listed=' + str([item.session_id for item in codex.process.list()] == [first.session_id]))\n",
+            "direct = await codex.process.kill(first.session_id)\n",
+            "print('direct_session=' + str(direct.session_id))\n",
+            "print('first_running=' + str(first.running))\n",
+            "print('after_direct=' + str(codex.process.list()))\n",
+            "second = await codex.process.start([sys.executable, '-c', 'import time; time.sleep(5)'], yield_time_ms=100)\n",
+            "third = await codex.process.start([sys.executable, '-c', 'import time; time.sleep(5)'], yield_time_ms=100)\n",
+            "print('before_all=' + str(len(codex.process.list())))\n",
+            "all_killed = await codex.process.kill_all()\n",
+            "print('all_killed=' + str(len(all_killed)))\n",
+            "print('after_all=' + str(codex.process.list()))\n",
+            "print('running=' + str(second.running or third.running))",
+        ),
+    )
+    .await?;
+
+    let req = mock.single_request();
+    assert_py_repl_ok(&req, "call-1", "listed=True");
+    assert_py_repl_ok(&req, "call-1", "direct_session=None");
+    assert_py_repl_ok(&req, "call-1", "first_running=False");
+    assert_py_repl_ok(&req, "call-1", "after_direct=[]");
+    assert_py_repl_ok(&req, "call-1", "before_all=2");
+    assert_py_repl_ok(&req, "call-1", "all_killed=2");
+    assert_py_repl_ok(&req, "call-1", "after_all=[]");
+    assert_py_repl_ok(&req, "call-1", "running=False");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn py_repl_process_run_returns_nonzero_exit_without_failing_cell() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
