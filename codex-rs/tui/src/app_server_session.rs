@@ -34,6 +34,7 @@ use codex_app_server_protocol::ReviewStartParams;
 use codex_app_server_protocol::ReviewStartResponse;
 use codex_app_server_protocol::SkillsListParams;
 use codex_app_server_protocol::SkillsListResponse;
+use codex_app_server_protocol::SortDirection;
 use codex_app_server_protocol::Thread;
 use codex_app_server_protocol::ThreadApproveGuardianDeniedActionParams;
 use codex_app_server_protocol::ThreadApproveGuardianDeniedActionResponse;
@@ -81,6 +82,8 @@ use codex_app_server_protocol::ThreadShellCommandResponse;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
 use codex_app_server_protocol::ThreadStartSource;
+use codex_app_server_protocol::ThreadTurnsListParams;
+use codex_app_server_protocol::ThreadTurnsListResponse;
 use codex_app_server_protocol::ThreadUnsubscribeParams;
 use codex_app_server_protocol::ThreadUnsubscribeResponse;
 use codex_app_server_protocol::Turn;
@@ -117,6 +120,8 @@ use color_eyre::eyre::Result;
 use color_eyre::eyre::WrapErr;
 use std::collections::HashMap;
 use std::path::PathBuf;
+
+const REMOTE_THREAD_TURNS_PAGE_LIMIT: u32 = 25;
 
 /// Data collected during the TUI bootstrap phase that the main event loop
 /// needs to configure the UI, telemetry, and initial rate-limit prefetch.
@@ -184,6 +189,10 @@ impl ThreadParamsMode {
             Self::Embedded => Some(config.model_provider_id.clone()),
             Self::Remote => None,
         }
+    }
+
+    fn pages_restored_turns(self) -> bool {
+        matches!(self, Self::Remote)
     }
 }
 
@@ -376,6 +385,7 @@ impl AppServerSession {
         config: Config,
         thread_id: ThreadId,
     ) -> Result<AppServerStartedThread> {
+        let page_restored_turns = self.thread_params_mode().pages_restored_turns();
         let request_id = self.next_request_id();
         let response: ThreadResumeResponse = self
             .client
@@ -394,6 +404,9 @@ impl AppServerSession {
             .fork_parent_title_from_app_server(response.thread.forked_from_id.as_deref())
             .await;
         let mut started = started_thread_from_resume_response(response, &config).await?;
+        if page_restored_turns {
+            started.turns = self.load_thread_turns(thread_id).await?;
+        }
         started.session.fork_parent_title = fork_parent_title;
         Ok(started)
     }
@@ -403,6 +416,7 @@ impl AppServerSession {
         config: Config,
         thread_id: ThreadId,
     ) -> Result<AppServerStartedThread> {
+        let page_restored_turns = self.thread_params_mode().pages_restored_turns();
         let request_id = self.next_request_id();
         let response: ThreadForkResponse = self
             .client
@@ -421,6 +435,10 @@ impl AppServerSession {
             .fork_parent_title_from_app_server(response.thread.forked_from_id.as_deref())
             .await;
         let mut started = started_thread_from_fork_response(response, &config).await?;
+        let forked_thread_id = started.session.thread_id;
+        if page_restored_turns {
+            started.turns = self.load_thread_turns(forked_thread_id).await?;
+        }
         started.session.fork_parent_title = fork_parent_title;
         Ok(started)
     }
@@ -502,6 +520,39 @@ impl AppServerSession {
             .await
             .wrap_err("thread/read failed during TUI session lookup")?;
         Ok(response.thread)
+    }
+
+    async fn thread_turns_list(
+        &mut self,
+        params: ThreadTurnsListParams,
+    ) -> Result<ThreadTurnsListResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::ThreadTurnsList { request_id, params })
+            .await
+            .wrap_err("thread/turns/list failed during TUI session lookup")
+    }
+
+    async fn load_thread_turns(&mut self, thread_id: ThreadId) -> Result<Vec<Turn>> {
+        let mut turns = Vec::new();
+        let mut cursor = None;
+        loop {
+            let response = self
+                .thread_turns_list(ThreadTurnsListParams {
+                    thread_id: thread_id.to_string(),
+                    cursor,
+                    limit: Some(REMOTE_THREAD_TURNS_PAGE_LIMIT),
+                    sort_direction: Some(SortDirection::Asc),
+                })
+                .await?;
+
+            turns.extend(response.data);
+            match response.next_cursor {
+                Some(next_cursor) => cursor = Some(next_cursor),
+                None => break,
+            }
+        }
+        Ok(turns)
     }
 
     pub(crate) async fn thread_inject_items(
@@ -1182,6 +1233,7 @@ fn thread_resume_params_from_config(
         sandbox,
         permission_profile,
         config: config_request_overrides_from_config(&config),
+        exclude_turns: thread_params_mode.pages_restored_turns(),
         persist_extended_history: true,
         ..ThreadResumeParams::default()
     }
@@ -1211,6 +1263,7 @@ fn thread_fork_params_from_config(
         base_instructions: config.base_instructions.clone(),
         developer_instructions: config.developer_instructions.clone(),
         ephemeral: config.ephemeral,
+        exclude_turns: thread_params_mode.pages_restored_turns(),
         persist_extended_history: true,
         ..ThreadForkParams::default()
     }
@@ -1556,6 +1609,8 @@ mod tests {
         assert_eq!(start.permission_profile, None);
         assert_eq!(resume.permission_profile, None);
         assert_eq!(fork.permission_profile, None);
+        assert!(resume.exclude_turns);
+        assert!(fork.exclude_turns);
     }
 
     #[tokio::test]
@@ -1598,6 +1653,31 @@ mod tests {
         assert_eq!(start.permission_profile, None);
         assert_eq!(resume.permission_profile, None);
         assert_eq!(fork.permission_profile, None);
+        assert!(resume.exclude_turns);
+        assert!(fork.exclude_turns);
+    }
+
+    #[tokio::test]
+    async fn thread_lifecycle_params_include_turns_for_embedded_resume_and_fork() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let config = build_config(&temp_dir).await;
+        let thread_id = ThreadId::new();
+
+        let resume = thread_resume_params_from_config(
+            config.clone(),
+            thread_id,
+            ThreadParamsMode::Embedded,
+            /*remote_cwd_override*/ None,
+        );
+        let fork = thread_fork_params_from_config(
+            config,
+            thread_id,
+            ThreadParamsMode::Embedded,
+            /*remote_cwd_override*/ None,
+        );
+
+        assert!(!resume.exclude_turns);
+        assert!(!fork.exclude_turns);
     }
 
     #[test]
