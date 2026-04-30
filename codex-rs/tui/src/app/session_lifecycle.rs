@@ -502,11 +502,6 @@ impl App {
         started: AppServerStartedThread,
         initial_user_message: Option<crate::chatwidget::UserMessage>,
     ) -> Result<()> {
-        let AppServerStartedThread {
-            session,
-            turns,
-            replay_warning,
-        } = started;
         // Initial messages are for freshly attached primary threads only. Thread switches and
         // resume/fork flows pass `None` so they cannot replay old history and then auto-submit a new
         // user turn by accident.
@@ -517,10 +512,8 @@ impl App {
             initial_user_message,
         );
         self.replace_chat_widget(ChatWidget::new_with_app_event(init));
-        self.enqueue_primary_thread_session(session, turns).await?;
-        if let Some(warning) = replay_warning {
-            self.chat_widget.add_info_message(warning, /*hint*/ None);
-        }
+        self.enqueue_primary_thread_session(started.session, started.turns)
+            .await?;
         self.backfill_loaded_subagent_threads(app_server).await;
         Ok(())
     }

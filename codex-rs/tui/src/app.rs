@@ -921,15 +921,8 @@ impl App {
             pending_plugin_enabled_writes: HashMap::new(),
         };
         if let Some(started) = initial_started_thread {
-            let crate::app_server_session::AppServerStartedThread {
-                session,
-                turns,
-                replay_warning,
-            } = started;
-            app.enqueue_primary_thread_session(session, turns).await?;
-            if let Some(warning) = replay_warning {
-                app.chat_widget.add_info_message(warning, /*hint*/ None);
-            }
+            app.enqueue_primary_thread_session(started.session, started.turns)
+                .await?;
         }
 
         // On startup, if Agent mode (workspace-write) or ReadOnly is active, warn about world-writable dirs on Windows.
