@@ -243,6 +243,9 @@ impl ChatWidget {
             SlashCommand::Permissions => {
                 self.open_permissions_popup();
             }
+            SlashCommand::Keymap => {
+                self.open_keymap_picker();
+            }
             SlashCommand::ElevateSandbox => {
                 #[cfg(target_os = "windows")]
                 {
@@ -300,6 +303,9 @@ impl ChatWidget {
             }
             SlashCommand::Experimental => {
                 self.open_experimental_popup();
+            }
+            SlashCommand::AutoReview => {
+                self.open_auto_review_denials_popup();
             }
             SlashCommand::Memories => {
                 self.open_memories_popup();
@@ -614,7 +620,7 @@ impl ChatWidget {
                 let control_command = match trimmed.to_ascii_lowercase().as_str() {
                     "clear" => Some(GoalControlCommand::Clear),
                     "pause" => Some(GoalControlCommand::SetStatus(AppThreadGoalStatus::Paused)),
-                    "unpause" => Some(GoalControlCommand::SetStatus(AppThreadGoalStatus::Active)),
+                    "resume" => Some(GoalControlCommand::SetStatus(AppThreadGoalStatus::Active)),
                     _ => None,
                 };
                 if let Some(command) = control_command {
@@ -860,6 +866,7 @@ impl ChatWidget {
             | SlashCommand::Goal
             | SlashCommand::Collab
             | SlashCommand::Side
+            | SlashCommand::Keymap
             | SlashCommand::Agent
             | SlashCommand::MultiAgents
             | SlashCommand::Approvals
@@ -867,6 +874,7 @@ impl ChatWidget {
             | SlashCommand::ElevateSandbox
             | SlashCommand::SandboxReadRoot
             | SlashCommand::Experimental
+            | SlashCommand::AutoReview
             | SlashCommand::Memories
             | SlashCommand::Quit
             | SlashCommand::Exit
