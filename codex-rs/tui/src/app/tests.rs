@@ -4523,6 +4523,7 @@ async fn refreshed_snapshot_session_persists_resumed_turns() {
         AppServerStartedThread {
             session: resumed_session.clone(),
             turns: resumed_turns.clone(),
+            replay_warning: None,
         },
         &mut snapshot,
     )

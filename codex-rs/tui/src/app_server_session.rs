@@ -121,7 +121,7 @@ use color_eyre::eyre::WrapErr;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-const REMOTE_THREAD_TURNS_PAGE_LIMIT: u32 = 25;
+const REMOTE_THREAD_TURNS_RESTORE_LIMIT: u32 = 25;
 
 /// Data collected during the TUI bootstrap phase that the main event loop
 /// needs to configure the UI, telemetry, and initial rate-limit prefetch.
@@ -199,6 +199,12 @@ impl ThreadParamsMode {
 pub(crate) struct AppServerStartedThread {
     pub(crate) session: ThreadSessionState,
     pub(crate) turns: Vec<Turn>,
+    pub(crate) replay_warning: Option<String>,
+}
+
+struct RestoredTurns {
+    turns: Vec<Turn>,
+    warning: Option<String>,
 }
 
 impl AppServerSession {
@@ -405,7 +411,9 @@ impl AppServerSession {
             .await;
         let mut started = started_thread_from_resume_response(response, &config).await?;
         if page_restored_turns {
-            started.turns = self.load_thread_turns(thread_id).await?;
+            let restored = self.load_recent_thread_turns_for_replay(thread_id).await;
+            started.turns = restored.turns;
+            started.replay_warning = restored.warning;
         }
         started.session.fork_parent_title = fork_parent_title;
         Ok(started)
@@ -437,7 +445,11 @@ impl AppServerSession {
         let mut started = started_thread_from_fork_response(response, &config).await?;
         let forked_thread_id = started.session.thread_id;
         if page_restored_turns {
-            started.turns = self.load_thread_turns(forked_thread_id).await?;
+            let restored = self
+                .load_recent_thread_turns_for_replay(forked_thread_id)
+                .await;
+            started.turns = restored.turns;
+            started.replay_warning = restored.warning;
         }
         started.session.fork_parent_title = fork_parent_title;
         Ok(started)
@@ -533,26 +545,43 @@ impl AppServerSession {
             .wrap_err("thread/turns/list failed during TUI session lookup")
     }
 
-    async fn load_thread_turns(&mut self, thread_id: ThreadId) -> Result<Vec<Turn>> {
-        let mut turns = Vec::new();
-        let mut cursor = None;
-        loop {
-            let response = self
-                .thread_turns_list(ThreadTurnsListParams {
-                    thread_id: thread_id.to_string(),
-                    cursor,
-                    limit: Some(REMOTE_THREAD_TURNS_PAGE_LIMIT),
-                    sort_direction: Some(SortDirection::Asc),
-                })
-                .await?;
-
-            turns.extend(response.data);
-            match response.next_cursor {
-                Some(next_cursor) => cursor = Some(next_cursor),
-                None => break,
+    async fn load_recent_thread_turns_for_replay(&mut self, thread_id: ThreadId) -> RestoredTurns {
+        match self.load_recent_thread_turns(thread_id).await {
+            Ok(restored) => restored,
+            Err(err) => {
+                tracing::warn!(
+                    thread_id = %thread_id,
+                    error = %err,
+                    "failed to load remote thread turns for resume replay"
+                );
+                RestoredTurns {
+                    turns: Vec::new(),
+                    warning: Some(format!(
+                        "Remote transcript replay failed: {err}. The session is attached, but previous turns were not rendered."
+                    )),
+                }
             }
         }
-        Ok(turns)
+    }
+
+    async fn load_recent_thread_turns(&mut self, thread_id: ThreadId) -> Result<RestoredTurns> {
+        let response = self
+            .thread_turns_list(ThreadTurnsListParams {
+                thread_id: thread_id.to_string(),
+                cursor: None,
+                limit: Some(REMOTE_THREAD_TURNS_RESTORE_LIMIT),
+                sort_direction: Some(SortDirection::Desc),
+            })
+            .await?;
+        let is_truncated = response.next_cursor.is_some();
+        let mut turns = response.data;
+        turns.reverse();
+        let warning = is_truncated.then(|| {
+            format!(
+                "Remote transcript replay was limited to the most recent {REMOTE_THREAD_TURNS_RESTORE_LIMIT} turns so the session can open over the remote connection. The full conversation is still available to the resumed agent context."
+            )
+        });
+        Ok(RestoredTurns { turns, warning })
     }
 
     pub(crate) async fn thread_inject_items(
@@ -1292,6 +1321,7 @@ async fn started_thread_from_start_response(
     Ok(AppServerStartedThread {
         session,
         turns: response.thread.turns,
+        replay_warning: None,
     })
 }
 
@@ -1305,6 +1335,7 @@ async fn started_thread_from_resume_response(
     Ok(AppServerStartedThread {
         session,
         turns: response.thread.turns,
+        replay_warning: None,
     })
 }
 
@@ -1318,6 +1349,7 @@ async fn started_thread_from_fork_response(
     Ok(AppServerStartedThread {
         session,
         turns: response.thread.turns,
+        replay_warning: None,
     })
 }
 
