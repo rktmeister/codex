@@ -859,14 +859,14 @@ fn create_seatbelt_args_with_read_only_git_and_codex_subpaths() {
         "expected cwd metadata carveouts in policy:\n{policy_text}",
     );
     assert!(
-        policy_text.contains("WRITABLE_ROOT_0_EXCLUDED_1")
-            && policy_text.contains("WRITABLE_ROOT_0_EXCLUDED_2"),
-        "expected symbolic cwd .git/.agents carveouts in policy:\n{policy_text}",
+        policy_text.contains("WRITABLE_ROOT_0_EXCLUDED_1"),
+        "expected symbolic cwd .agents/.codex carveouts in policy:\n{policy_text}",
     );
     assert!(
         policy_text.contains("WRITABLE_ROOT_1_EXCLUDED_0")
-            && policy_text.contains("WRITABLE_ROOT_1_EXCLUDED_1"),
-        "expected explicit writable root .git/.codex carveouts in policy:\n{policy_text}",
+            && policy_text.contains("WRITABLE_ROOT_1_EXCLUDED_1")
+            && policy_text.contains("WRITABLE_ROOT_1_EXCLUDED_2"),
+        "expected explicit writable root git config/hooks/.codex carveouts in policy:\n{policy_text}",
     );
     assert!(
         policy_text.contains(&seatbelt_protected_metadata_name_requirements(
@@ -898,21 +898,14 @@ fn create_seatbelt_args_with_read_only_git_and_codex_subpaths() {
             "-DWRITABLE_ROOT_0_EXCLUDED_0={}",
             cwd.canonicalize()
                 .expect("canonicalize cwd")
-                .join(".codex")
+                .join(".agents")
                 .display()
         ),
         format!(
             "-DWRITABLE_ROOT_0_EXCLUDED_1={}",
             cwd.canonicalize()
                 .expect("canonicalize cwd")
-                .join(".git")
-                .display()
-        ),
-        format!(
-            "-DWRITABLE_ROOT_0_EXCLUDED_2={}",
-            cwd.canonicalize()
-                .expect("canonicalize cwd")
-                .join(".agents")
+                .join(".codex")
                 .display()
         ),
         format!(
@@ -921,10 +914,14 @@ fn create_seatbelt_args_with_read_only_git_and_codex_subpaths() {
         ),
         format!(
             "-DWRITABLE_ROOT_1_EXCLUDED_0={}",
-            dot_git_canonical.to_string_lossy()
+            dot_git_canonical.join("config").to_string_lossy()
         ),
         format!(
             "-DWRITABLE_ROOT_1_EXCLUDED_1={}",
+            dot_git_canonical.join("hooks").to_string_lossy()
+        ),
+        format!(
+            "-DWRITABLE_ROOT_1_EXCLUDED_2={}",
             dot_codex_canonical.to_string_lossy()
         ),
         format!(
@@ -1282,13 +1279,13 @@ fn create_seatbelt_args_for_cwd_as_git_repo() {
         args.contains(&expected_root),
         "missing {expected_root}: {args:#?}"
     );
-    let expected_dot_git = format!(
+    let expected_dot_agents = format!(
         "-DWRITABLE_ROOT_0_EXCLUDED_0={}",
-        dot_git_canonical.to_string_lossy()
+        dot_agents_canonical.to_string_lossy()
     );
     assert!(
-        args.contains(&expected_dot_git),
-        "missing {expected_dot_git}: {args:#?}"
+        args.contains(&expected_dot_agents),
+        "missing {expected_dot_agents}: {args:#?}"
     );
     let expected_dot_codex = format!(
         "-DWRITABLE_ROOT_0_EXCLUDED_1={}",
@@ -1298,13 +1295,21 @@ fn create_seatbelt_args_for_cwd_as_git_repo() {
         args.contains(&expected_dot_codex),
         "missing {expected_dot_codex}: {args:#?}"
     );
-    let unexpected_dot_agents = format!(
-        "-DWRITABLE_ROOT_0_EXCLUDED_1={}",
-        dot_agents_canonical.to_string_lossy()
+    let expected_git_config = format!(
+        "-DWRITABLE_ROOT_0_EXCLUDED_2={}",
+        dot_git_canonical.join("config").to_string_lossy()
     );
     assert!(
-        !args.contains(&unexpected_dot_agents),
-        "missing .agents should be handled by regex rather than materialized as a path param: {args:#?}"
+        args.contains(&expected_git_config),
+        "missing {expected_git_config}: {args:#?}"
+    );
+    let expected_git_hooks = format!(
+        "-DWRITABLE_ROOT_0_EXCLUDED_3={}",
+        dot_git_canonical.join("hooks").to_string_lossy()
+    );
+    assert!(
+        args.contains(&expected_git_hooks),
+        "missing {expected_git_hooks}: {args:#?}"
     );
     let expected_slash_tmp = format!("-DWRITABLE_ROOT_1={}", slash_tmp.to_string_lossy());
     assert!(

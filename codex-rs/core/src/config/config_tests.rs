@@ -1325,6 +1325,7 @@ async fn default_permissions_can_select_builtin_profile_without_permissions_tabl
 -> std::io::Result<()> {
     let codex_home = TempDir::new()?;
     let cwd = TempDir::new()?;
+    std::fs::create_dir_all(cwd.path().join(".git/hooks"))?;
 
     let config = Config::load_from_base_config_with_overrides(
         ConfigToml {
@@ -1353,8 +1354,16 @@ async fn default_permissions_can_select_builtin_profile_without_permissions_tabl
         "expected :workspace to allow writing the project root, policy: {policy:?}"
     );
     assert!(
-        !policy.can_write_path_with_cwd(&cwd.path().join(".git"), cwd.path()),
-        "expected :workspace to protect project metadata, policy: {policy:?}"
+        policy.can_write_path_with_cwd(&cwd.path().join(".git/index"), cwd.path()),
+        "expected :workspace to allow Git index writes, policy: {policy:?}"
+    );
+    assert!(
+        !policy.can_write_path_with_cwd(&cwd.path().join(".git/config"), cwd.path()),
+        "expected :workspace to protect Git config, policy: {policy:?}"
+    );
+    assert!(
+        !policy.can_write_path_with_cwd(&cwd.path().join(".git/hooks/pre-commit"), cwd.path()),
+        "expected :workspace to protect Git hooks, policy: {policy:?}"
     );
     Ok(())
 }
@@ -1569,7 +1578,8 @@ async fn implicit_builtin_workspace_profile_preserves_add_dir_metadata_carveouts
     let codex_home = TempDir::new()?;
     let cwd = TempDir::new()?;
     let extra_root = TempDir::new()?;
-    for subpath in [".git", ".agents", ".codex"] {
+    std::fs::create_dir_all(extra_root.path().join(".git/hooks"))?;
+    for subpath in [".agents", ".codex"] {
         std::fs::create_dir_all(extra_root.path().join(subpath))?;
     }
     let project_key = cwd.path().to_string_lossy().to_string();
@@ -1603,7 +1613,22 @@ async fn implicit_builtin_workspace_profile_preserves_add_dir_metadata_carveouts
         policy.can_write_path_with_cwd(extra_root.as_path(), cwd.path()),
         "expected implicit :workspace to preserve additional writable roots, policy: {policy:?}"
     );
-    for subpath in [".git", ".agents", ".codex"] {
+    assert!(
+        policy.can_write_path_with_cwd(&extra_root.join(".git/index"), cwd.path()),
+        "expected implicit :workspace to allow Git index writes under an additional root, \
+         policy: {policy:?}"
+    );
+    assert!(
+        !policy.can_write_path_with_cwd(&extra_root.join(".git/config"), cwd.path()),
+        "expected implicit :workspace to protect Git config under an additional root, \
+         policy: {policy:?}"
+    );
+    assert!(
+        !policy.can_write_path_with_cwd(&extra_root.join(".git/hooks/pre-commit"), cwd.path()),
+        "expected implicit :workspace to protect Git hooks under an additional root, \
+         policy: {policy:?}"
+    );
+    for subpath in [".agents", ".codex"] {
         assert!(
             !policy.can_write_path_with_cwd(&extra_root.join(subpath), cwd.path()),
             "expected implicit :workspace to preserve legacy metadata carveout for {subpath}, \
@@ -2435,7 +2460,7 @@ exclude_slash_tmp = true
                             access: FileSystemAccessMode::Write,
                         })
                 );
-                for subpath in [".git", ".agents", ".codex"] {
+                for subpath in [".agents", ".codex"] {
                     assert!(
                         file_system_policy
                             .entries

@@ -4,6 +4,7 @@
 //! between user and agent.
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fmt;
 use std::ops::Mul;
 use std::path::Path;
@@ -86,6 +87,7 @@ pub use crate::permissions::FileSystemSandboxPolicy;
 pub use crate::permissions::FileSystemSpecialPath;
 pub use crate::permissions::NetworkSandboxPolicy;
 use crate::permissions::default_read_only_subpaths_for_writable_root;
+use crate::permissions::git_admin_roots_for_writable_root;
 pub use crate::request_permissions::RequestPermissionsArgs;
 pub use crate::request_user_input::RequestUserInputEvent;
 
@@ -1080,7 +1082,7 @@ pub enum SandboxPolicy {
 /// A writable root path accompanied by a list of subpaths that should remain
 /// read‑only even when the root is writable. This is primarily used to ensure
 /// that folders containing files that could be modified to escalate the
-/// privileges of the agent (e.g. `.codex`, `.git`, notably `.git/hooks`) under
+/// privileges of the agent (e.g. `.codex`, `.git/config`, `.git/hooks`) under
 /// a writable root are not modified by the agent.
 #[derive(Debug, Clone, PartialEq, Eq, JsonSchema)]
 pub struct WritableRoot {
@@ -1089,9 +1091,9 @@ pub struct WritableRoot {
     /// By construction, these subpaths are all under `root`.
     pub read_only_subpaths: Vec<AbsolutePathBuf>,
 
-    /// Workspace metadata path names that must not be created or replaced under
-    /// `root` unless the policy grants an explicit write rule for that metadata
-    /// path.
+    /// Workspace metadata directory names that must not be created or replaced
+    /// under `root` unless the policy grants an explicit write rule for that
+    /// metadata path.
     pub protected_metadata_names: Vec<String>,
 }
 
@@ -1268,6 +1270,21 @@ impl SandboxPolicy {
                     }
                 }
 
+                // For linked worktrees (`.git` pointer file), include the
+                // resolved Git admin directories as writable roots so Git can
+                // update refs and lockfiles while config/hooks stay read-only.
+                let mut git_admin_roots = Vec::new();
+                for writable_root in &roots {
+                    git_admin_roots.extend(git_admin_roots_for_writable_root(writable_root));
+                }
+                roots.extend(git_admin_roots.iter().cloned());
+                let git_admin_root_set: HashSet<PathBuf> = git_admin_roots
+                    .iter()
+                    .map(|path| path.as_path().to_path_buf())
+                    .collect();
+                let mut seen_roots = HashSet::new();
+                roots.retain(|root| seen_roots.insert(root.as_path().to_path_buf()));
+
                 // For each root, compute subpaths that should remain read-only.
                 let cwd_root = AbsolutePathBuf::from_absolute_path(cwd).ok();
                 roots
@@ -1280,6 +1297,7 @@ impl SandboxPolicy {
                             read_only_subpaths: default_read_only_subpaths_for_writable_root(
                                 &writable_root,
                                 protect_missing_dot_codex,
+                                git_admin_root_set.contains(writable_root.as_path()),
                             ),
                             protected_metadata_names: Vec::new(),
                             root: writable_root,
