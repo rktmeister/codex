@@ -148,9 +148,9 @@ impl ToolsConfig {
         let include_py_repl = features.enabled(Feature::PyRepl);
         let include_py_repl_tools_only =
             include_py_repl && features.enabled(Feature::PyReplToolsOnly);
-        let include_collab_tools = features.enabled(Feature::Collab);
         let include_goal_tools = features.enabled(Feature::Goals);
         let include_multi_agent_v2 = features.enabled(Feature::MultiAgentV2);
+        let include_collab_tools = include_multi_agent_v2 || features.enabled(Feature::Collab);
         let include_agent_jobs = features.enabled(Feature::SpawnCsv);
         let include_search_tool =
             model_info.supports_search_tool && features.enabled(Feature::ToolSearch);

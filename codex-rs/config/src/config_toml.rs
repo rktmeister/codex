@@ -433,7 +433,6 @@ pub enum ThreadStoreToml {
     Remote {
         endpoint: String,
     },
-    #[cfg(debug_assertions)]
     #[schemars(skip)]
     InMemory {
         id: String,
