@@ -1769,15 +1769,20 @@ fn protected_metadata_names_for_writable_root(
             .iter()
             .map(|raw_root| raw_root.join(PROTECTED_METADATA_GIT_PATH_NAME)),
     );
-    if git_metadata_paths.iter().all(|git_path| {
-        !git_path.as_path().exists()
-            && !has_explicit_write_entry_for_metadata_path(
-                policy,
-                git_path,
-                git_path.as_path(),
-                cwd,
-            )
-    }) {
+    let root_is_cwd = AbsolutePathBuf::from_absolute_path(cwd)
+        .ok()
+        .is_some_and(|cwd| normalize_effective_absolute_path(cwd) == *root);
+    if root_is_cwd
+        && git_metadata_paths.iter().all(|git_path| {
+            !git_path.as_path().exists()
+                && !has_explicit_write_entry_for_metadata_path(
+                    policy,
+                    git_path,
+                    git_path.as_path(),
+                    cwd,
+                )
+        })
+    {
         protected_names.push(PROTECTED_METADATA_GIT_PATH_NAME.to_string());
     }
 
@@ -2056,6 +2061,51 @@ mod tests {
         assert!(!writable_roots[0].is_path_writable(repo_root.join(".git/config").as_path()));
         assert!(
             !writable_roots[0].is_path_writable(repo_root.join(".git/hooks/pre-commit").as_path())
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn additional_writable_cache_root_does_not_require_git_metadata() {
+        let tmp = TempDir::new().expect("tempdir");
+        let cwd = tmp.path().join("workspace");
+        let cache_root = tmp.path().join("cache");
+        fs::create_dir_all(&cwd).expect("create workspace");
+        fs::create_dir_all(&cache_root).expect("create cache");
+
+        let cwd =
+            AbsolutePathBuf::from_absolute_path(cwd.canonicalize().expect("canonicalize cwd"))
+                .expect("absolute cwd");
+        let cache_root = AbsolutePathBuf::from_absolute_path(
+            cache_root.canonicalize().expect("canonicalize cache"),
+        )
+        .expect("absolute cache");
+
+        let policy = FileSystemSandboxPolicy::restricted(vec![
+            FileSystemSandboxEntry {
+                path: FileSystemPath::Path { path: cwd.clone() },
+                access: FileSystemAccessMode::Write,
+            },
+            FileSystemSandboxEntry {
+                path: FileSystemPath::Path {
+                    path: cache_root.clone(),
+                },
+                access: FileSystemAccessMode::Write,
+            },
+        ]);
+
+        let writable_roots = policy.get_writable_roots_with_cwd(cwd.as_path());
+        let cache_writable_root = writable_roots
+            .iter()
+            .find(|root| root.root == cache_root)
+            .expect("cache root should be writable");
+
+        assert!(cache_writable_root.read_only_subpaths.is_empty());
+        assert!(
+            cache_writable_root
+                .protected_metadata_names
+                .iter()
+                .all(|name| name != PROTECTED_METADATA_GIT_PATH_NAME)
         );
     }
 
