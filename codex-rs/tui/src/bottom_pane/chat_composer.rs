@@ -121,7 +121,6 @@
 //! overall state machine, since it affects which transitions are even possible from a given UI
 //! state.
 //!
-use crate::bottom_pane::footer::goal_status_indicator_line;
 use crate::key_hint;
 use crate::key_hint::KeyBinding;
 use crate::key_hint::has_ctrl_or_alt;
@@ -167,7 +166,6 @@ use super::footer::footer_hint_items_width;
 use super::footer::footer_line_width;
 use super::footer::inset_footer_hint_area;
 use super::footer::max_left_width_for_right;
-use super::footer::mode_indicator_line as collaboration_mode_indicator_line;
 use super::footer::passive_footer_status_line;
 use super::footer::render_context_right;
 use super::footer::render_footer_from_props;
@@ -176,6 +174,7 @@ use super::footer::render_footer_line;
 use super::footer::reset_mode_after_activity;
 use super::footer::side_conversation_context_line;
 use super::footer::single_line_footer_layout;
+use super::footer::status_line_right_indicator_line;
 use super::footer::toggle_shortcut_mode;
 use super::footer::uses_passive_footer_status_layout;
 use super::paste_burst::CharDecision;
@@ -191,6 +190,7 @@ use crate::keymap::EditorKeymap;
 use crate::keymap::RuntimeKeymap;
 use crate::keymap::VimNormalKeymap;
 use crate::keymap::primary_binding;
+use crate::onboarding::mark_underlined_hyperlink;
 use crate::render::Insets;
 use crate::render::RectExt;
 use crate::render::renderable::Renderable;
@@ -385,6 +385,7 @@ pub(crate) struct ChatComposer {
     config: ChatComposerConfig,
     collaboration_mode_indicator: Option<CollaborationModeIndicator>,
     goal_status_indicator: Option<GoalStatusIndicator>,
+    ide_context_active: bool,
     connectors_enabled: bool,
     plugins_command_enabled: bool,
     fast_command_enabled: bool,
@@ -396,6 +397,7 @@ pub(crate) struct ChatComposer {
     side_conversation_active: bool,
     is_zellij: bool,
     status_line_value: Option<Line<'static>>,
+    status_line_hyperlink_url: Option<String>,
     status_line_enabled: bool,
     side_conversation_context_label: Option<String>,
     // Agent label injected into the footer's contextual row when multi-agent mode is active.
@@ -565,6 +567,7 @@ impl ChatComposer {
             config,
             collaboration_mode_indicator: None,
             goal_status_indicator: None,
+            ide_context_active: false,
             connectors_enabled: false,
             plugins_command_enabled: false,
             fast_command_enabled: false,
@@ -579,6 +582,7 @@ impl ChatComposer {
                 Some(codex_terminal_detection::Multiplexer::Zellij {})
             ),
             status_line_value: None,
+            status_line_hyperlink_url: None,
             status_line_enabled: false,
             side_conversation_context_label: None,
             active_agent_label: None,
@@ -722,6 +726,10 @@ impl ChatComposer {
 
     pub fn set_goal_status_indicator(&mut self, indicator: Option<GoalStatusIndicator>) {
         self.goal_status_indicator = indicator;
+    }
+
+    pub fn set_ide_context_active(&mut self, active: bool) {
+        self.ide_context_active = active;
     }
 
     pub fn set_personality_command_enabled(&mut self, enabled: bool) {
@@ -1083,14 +1091,16 @@ impl ChatComposer {
         if let Some(vim_mode) = self.vim_mode_indicator_span() {
             spans.push(vim_mode);
         }
-        if let Some(collab) =
-            collaboration_mode_indicator_line(self.collaboration_mode_indicator, show_cycle_hint)
-                .or_else(|| goal_status_indicator_line(self.goal_status_indicator.as_ref()))
-        {
+        if let Some(indicators) = status_line_right_indicator_line(
+            self.collaboration_mode_indicator,
+            self.goal_status_indicator.as_ref(),
+            self.ide_context_active,
+            show_cycle_hint,
+        ) {
             if !spans.is_empty() {
                 spans.push(" | ".dim());
             }
-            spans.extend(collab.spans);
+            spans.extend(indicators.spans);
         }
         if spans.is_empty() {
             None
@@ -4030,6 +4040,14 @@ impl ChatComposer {
         true
     }
 
+    pub(crate) fn set_status_line_hyperlink(&mut self, url: Option<String>) -> bool {
+        if self.status_line_hyperlink_url == url {
+            return false;
+        }
+        self.status_line_hyperlink_url = url;
+        true
+    }
+
     pub(crate) fn set_status_line_enabled(&mut self, enabled: bool) -> bool {
         if self.status_line_enabled == enabled {
             return false;
@@ -4433,6 +4451,11 @@ impl ChatComposer {
                     }
                     if show_right && let Some(line) = &right_line {
                         render_context_right(hint_rect, buf, line);
+                    }
+                    if status_line_active
+                        && let Some(url) = self.status_line_hyperlink_url.as_deref()
+                    {
+                        mark_underlined_hyperlink(buf, hint_rect, url);
                     }
                 }
             }
@@ -5012,6 +5035,39 @@ mod tests {
         assert_eq!(
             buf[(shell_label_x as u16, footer_y)].style().fg,
             Some(Color::LightRed)
+        );
+    }
+
+    #[test]
+    fn status_line_hyperlink_marks_pr_number_cells() {
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            /*has_input_focus*/ true,
+            sender,
+            /*enhanced_keys_supported*/ true,
+            "Ask Codex to do anything".to_string(),
+            /*disable_paste_burst*/ false,
+        );
+        let url = "https://github.com/openai/codex/pull/20252";
+        composer.set_status_line_enabled(/*enabled*/ true);
+        composer.set_status_line(Some(Line::from(Span::styled(
+            "PR #20252",
+            Style::default().cyan().underlined(),
+        ))));
+        composer.set_status_line_hyperlink(Some(url.to_string()));
+
+        let area = Rect::new(0, 0, 40, 6);
+        let mut buf = Buffer::empty(area);
+        composer.render(area, &mut buf);
+
+        let marked_cells = (area.top()..area.bottom())
+            .flat_map(|y| (area.left()..area.right()).map(move |x| (x, y)))
+            .filter(|&(x, y)| buf[(x, y)].symbol().contains(url))
+            .count();
+        assert_eq!(
+            marked_cells,
+            "PR #20252".chars().filter(|ch| !ch.is_whitespace()).count()
         );
     }
 

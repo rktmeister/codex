@@ -325,6 +325,8 @@ use self::goal_status::GoalStatusState;
 #[cfg(test)]
 use self::goal_status::goal_status_indicator_from_app_goal;
 mod goal_menu;
+mod ide_context;
+use self::ide_context::IdeContextState;
 mod interrupts;
 use self::interrupts::InterruptManager;
 mod keymap_picker;
@@ -352,11 +354,13 @@ use self::status_surfaces::TerminalTitleStatusKind;
 mod user_messages;
 use self::user_messages::PendingSteerCompareKey;
 use self::user_messages::UserMessageDisplay;
+pub(crate) use crate::branch_summary::StatusLineGitSummary;
 use crate::streaming::chunking::AdaptiveChunkingPolicy;
 use crate::streaming::commit_tick::CommitTickScope;
 use crate::streaming::commit_tick::run_commit_tick;
 use crate::streaming::controller::PlanStreamController;
 use crate::streaming::controller::StreamController;
+use crate::workspace_command::WorkspaceCommandRunner;
 
 use chrono::Local;
 use codex_app_server_protocol::AskForApproval;
@@ -557,6 +561,11 @@ pub(crate) struct ChatWidgetInit {
     pub(crate) config: Config,
     pub(crate) frame_requester: FrameRequester,
     pub(crate) app_event_tx: AppEventSender,
+    /// App-server-backed runner used by status surfaces for workspace metadata probes.
+    ///
+    /// Tests that do not exercise git status-line refreshes may leave this unset. Production TUI
+    /// construction provides a runner for the active app-server session.
+    pub(crate) workspace_command_runner: Option<WorkspaceCommandRunner>,
     pub(crate) initial_user_message: Option<UserMessage>,
     pub(crate) enhanced_keys_supported: bool,
     pub(crate) has_chatgpt_account: bool,
@@ -843,6 +852,7 @@ pub(crate) struct ChatWidget {
     connectors_partial_snapshot: Option<ConnectorsSnapshot>,
     connectors_prefetch_in_flight: bool,
     connectors_force_refetch_pending: bool,
+    ide_context: IdeContextState,
     plugins_cache: PluginsCacheState,
     plugins_fetch_state: PluginListFetchState,
     plugin_install_apps_needing_auth: Vec<AppSummary>,
@@ -974,6 +984,8 @@ pub(crate) struct ChatWidget {
     current_rollout_path: Option<PathBuf>,
     // Current working directory (if known)
     current_cwd: Option<PathBuf>,
+    // App-server-backed command runner for status-line workspace metadata lookups.
+    workspace_command_runner: Option<WorkspaceCommandRunner>,
     // Instruction source files loaded for the current session, supplied by app-server.
     instruction_source_paths: Vec<AbsolutePathBuf>,
     // Runtime network proxy bind addresses from SessionConfigured.
@@ -1012,6 +1024,14 @@ pub(crate) struct ChatWidget {
     status_line_branch_diff_pending: bool,
     // True once we've attempted a branch-diff lookup for the current CWD.
     status_line_branch_diff_lookup_complete: bool,
+    // Cached PR and branch-change summary for the active status-line cwd.
+    status_line_git_summary: Option<StatusLineGitSummary>,
+    // CWD used to resolve the cached Git summary; change resets summary state.
+    status_line_git_summary_cwd: Option<PathBuf>,
+    // True while an async Git summary lookup is in flight.
+    status_line_git_summary_pending: bool,
+    // True once we've attempted a Git summary lookup for the current CWD.
+    status_line_git_summary_lookup_complete: bool,
     // Current thread-goal status shown in the status line when plan mode is inactive.
     current_goal_status_indicator: Option<GoalStatusIndicator>,
     current_goal_status: Option<GoalStatusState>,
@@ -1149,6 +1169,7 @@ pub(crate) struct ThreadInputState {
     composer: Option<ThreadComposerState>,
     pending_steers: VecDeque<UserMessage>,
     pending_steer_history_records: VecDeque<UserMessageHistoryRecord>,
+    pending_steer_compare_keys: VecDeque<PendingSteerCompareKey>,
     rejected_steers_queue: VecDeque<UserMessage>,
     rejected_steer_history_records: VecDeque<UserMessageHistoryRecord>,
     queued_user_messages: VecDeque<QueuedUserMessage>,
@@ -1462,16 +1483,16 @@ fn user_message_display_for_history(
     history_record: &UserMessageHistoryRecord,
 ) -> UserMessageDisplay {
     let message = user_message_for_restore(message, history_record);
-    UserMessageDisplay {
-        message: message.text,
-        remote_image_urls: message.remote_image_urls,
-        local_images: message
+    ChatWidget::user_message_display_from_parts(
+        message.text,
+        message.text_elements,
+        message
             .local_images
             .into_iter()
             .map(|image| image.path)
             .collect(),
-        text_elements: message.text_elements,
-    }
+        message.remote_image_urls,
+    )
 }
 
 fn merge_user_messages_with_history_record(
@@ -1838,6 +1859,11 @@ impl ChatWidget {
         self.bottom_pane.set_status_line(status_line);
     }
 
+    /// Sets the terminal hyperlink target for the currently rendered footer status line.
+    pub(crate) fn set_status_line_hyperlink(&mut self, url: Option<String>) {
+        self.bottom_pane.set_status_line_hyperlink(url);
+    }
+
     /// Forwards the contextual active-agent label into the bottom-pane footer pipeline.
     ///
     /// `ChatWidget` stays a pass-through here so `App` remains the owner of "which thread is the
@@ -1945,6 +1971,22 @@ impl ChatWidget {
         self.status_line_branch_diff = diff;
         self.status_line_branch_diff_pending = false;
         self.status_line_branch_diff_lookup_complete = true;
+        self.refresh_status_surfaces();
+    }
+
+    /// Stores async Git summary lookup results for the current status-line cwd.
+    pub(crate) fn set_status_line_git_summary(
+        &mut self,
+        cwd: PathBuf,
+        summary: StatusLineGitSummary,
+    ) {
+        if self.status_line_git_summary_cwd.as_ref() != Some(&cwd) {
+            self.status_line_git_summary_pending = false;
+            return;
+        }
+        self.status_line_git_summary = Some(summary);
+        self.status_line_git_summary_pending = false;
+        self.status_line_git_summary_lookup_complete = true;
         self.refresh_status_surfaces();
     }
 
@@ -2518,6 +2560,7 @@ impl ChatWidget {
             self.needs_final_message_separator = false;
             self.had_work_activity = false;
             self.request_status_line_branch_refresh();
+            self.request_status_line_git_summary_refresh();
         }
         // Mark task stopped and request redraw now that all content is in history.
         self.pending_status_indicator_restore = false;
@@ -2957,6 +3000,12 @@ impl ChatWidget {
     fn finalize_turn(&mut self) {
         // Ensure any spinner is replaced by a red ✗ and flushed into history.
         self.finalize_active_cell_as_failed();
+        // Turn-scoped hook rows are transient live state; once the turn is over,
+        // do not leave an orphaned running row behind if no matching completion
+        // event arrived before cancellation.
+        if self.active_hook_cell.take().is_some() {
+            self.bump_active_cell_revision();
+        }
         // Reset running state and clear streaming buffers.
         self.user_turn_pending_start = false;
         self.agent_turn_running = false;
@@ -2973,6 +3022,7 @@ impl ChatWidget {
         self.plan_stream_controller = None;
         self.pending_status_indicator_restore = false;
         self.request_status_line_branch_refresh();
+        self.request_status_line_git_summary_refresh();
         self.maybe_show_pending_rate_limit_prompt();
     }
 
@@ -3258,6 +3308,11 @@ impl ChatWidget {
                 .iter()
                 .map(|pending| pending.history_record.clone())
                 .collect(),
+            pending_steer_compare_keys: self
+                .pending_steers
+                .iter()
+                .map(|pending| pending.compare_key.clone())
+                .collect(),
             rejected_steers_queue: self.rejected_steers_queue.clone(),
             rejected_steer_history_records: self.rejected_steer_history_records.clone(),
             queued_user_messages: self.queued_user_messages.clone(),
@@ -3311,16 +3366,19 @@ impl ChatWidget {
                 input_state.pending_steers.len(),
                 UserMessageHistoryRecord::UserMessageText,
             );
+            let mut pending_steer_compare_keys = input_state.pending_steer_compare_keys;
             self.pending_steers = input_state
                 .pending_steers
                 .into_iter()
                 .zip(pending_steer_history_records)
                 .map(|(user_message, history_record)| PendingSteer {
-                    compare_key: PendingSteerCompareKey {
-                        message: user_message.text.clone(),
-                        image_count: user_message.local_images.len()
-                            + user_message.remote_image_urls.len(),
-                    },
+                    compare_key: pending_steer_compare_keys.pop_front().unwrap_or_else(|| {
+                        PendingSteerCompareKey {
+                            message: user_message.text.clone(),
+                            image_count: user_message.local_images.len()
+                                + user_message.remote_image_urls.len(),
+                        }
+                    }),
                     history_record,
                     user_message,
                 })
@@ -4773,6 +4831,7 @@ impl ChatWidget {
             config,
             frame_requester,
             app_event_tx,
+            workspace_command_runner,
             initial_user_message,
             enhanced_keys_supported,
             has_chatgpt_account,
@@ -4906,6 +4965,7 @@ impl ChatWidget {
             connectors_partial_snapshot: None,
             connectors_prefetch_in_flight: false,
             connectors_force_refetch_pending: false,
+            ide_context: IdeContextState::default(),
             plugins_cache: PluginsCacheState::default(),
             plugins_fetch_state: PluginListFetchState::default(),
             plugin_install_apps_needing_auth: Vec::new(),
@@ -4964,6 +5024,7 @@ impl ChatWidget {
             feedback,
             current_rollout_path: None,
             current_cwd,
+            workspace_command_runner,
             instruction_source_paths: Vec::new(),
             session_network_proxy: None,
             status_line_invalid_items_warned,
@@ -4980,6 +5041,10 @@ impl ChatWidget {
             status_line_branch_diff: None,
             status_line_branch_diff_pending: false,
             status_line_branch_diff_lookup_complete: false,
+            status_line_git_summary: None,
+            status_line_git_summary_cwd: None,
+            status_line_git_summary_pending: false,
+            status_line_git_summary_lookup_complete: false,
             current_goal_status_indicator: None,
             current_goal_status: None,
             goal_status_active_turn_started_at: None,
@@ -5045,6 +5110,7 @@ impl ChatWidget {
                 } if modifiers.contains(KeyModifiers::CONTROL) && c.eq_ignore_ascii_case(&'c')
             )
             && !key_hint::ctrl(KeyCode::Char('r')).is_press(key_event)
+            && !key_hint::ctrl(KeyCode::Char('u')).is_press(key_event)
         {
             self.bottom_pane.handle_key_event(key_event);
             if self.bottom_pane.no_modal_or_popup_active() {
@@ -5802,6 +5868,9 @@ impl ChatWidget {
             ));
             return (false, None);
         }
+
+        self.maybe_apply_ide_context(&mut items);
+
         let collaboration_mode = if self.collaboration_modes_enabled() {
             self.active_collaboration_mask
                 .as_ref()
@@ -6379,6 +6448,8 @@ impl ChatWidget {
             | ServerNotification::ThreadUnarchived(_)
             | ServerNotification::RawResponseItemCompleted(_)
             | ServerNotification::CommandExecOutputDelta(_)
+            | ServerNotification::ProcessOutputDelta(_)
+            | ServerNotification::ProcessExited(_)
             | ServerNotification::FileChangePatchUpdated(_)
             | ServerNotification::McpToolCallProgress(_)
             | ServerNotification::McpServerOauthLoginCompleted(_)
@@ -6637,6 +6708,7 @@ impl ChatWidget {
         self.last_rendered_user_message_display = Some(display.clone());
         if !display.message.trim().is_empty()
             || !display.text_elements.is_empty()
+            || !display.local_images.is_empty()
             || !display.remote_image_urls.is_empty()
         {
             self.record_visible_user_turn_for_copy();
@@ -8179,7 +8251,7 @@ impl ChatWidget {
             .send(AppEvent::PersistModelSelection { model, effort });
     }
 
-    /// Open the permissions popup (alias for /permissions).
+    /// Open the permissions popup.
     pub(crate) fn open_approvals_popup(&mut self) {
         self.open_permissions_popup();
     }
@@ -8752,8 +8824,8 @@ impl ChatWidget {
         // new permission profile, so downstream policy-change hooks don't
         // re-trigger the warning.
         let mut accept_actions: Vec<SelectionAction> = Vec::new();
-        // Suppress the immediate re-scan only when a preset will be applied (i.e., via /approvals or
-        // /permissions), to avoid duplicate warnings from the ensuing policy change.
+        // Suppress the immediate re-scan only when a preset will be applied via
+        // /permissions, to avoid duplicate warnings from the ensuing policy change.
         if preset.is_some() {
             accept_actions.push(Box::new(|tx| {
                 tx.send(AppEvent::SkipNextWorldWritableScan);
@@ -9326,6 +9398,12 @@ impl ChatWidget {
         self.config.features.enabled(Feature::FastMode)
     }
 
+    pub(crate) fn can_toggle_fast_mode_from_keybinding(&self) -> bool {
+        self.fast_mode_enabled()
+            && !self.is_user_turn_pending_or_running()
+            && self.bottom_pane.no_modal_or_popup_active()
+    }
+
     pub(crate) fn set_realtime_audio_device(
         &mut self,
         kind: RealtimeAudioDeviceKind,
@@ -9378,6 +9456,15 @@ impl ChatWidget {
             )));
         self.app_event_tx
             .send(AppEvent::PersistServiceTierSelection { service_tier });
+    }
+
+    pub(crate) fn toggle_fast_mode_from_ui(&mut self) {
+        let next_tier = if matches!(self.current_service_tier(), Some(ServiceTier::Fast)) {
+            None
+        } else {
+            Some(ServiceTier::Fast)
+        };
+        self.set_service_tier_selection(next_tier);
     }
 
     pub(crate) fn current_model(&self) -> &str {
@@ -10587,6 +10674,9 @@ impl ChatWidget {
         &mut self,
         plugins: Option<Vec<PluginCapabilitySummary>>,
     ) {
+        if self.bottom_pane.plugins() == plugins.as_ref() {
+            return;
+        }
         self.bottom_pane.set_plugin_mentions(plugins);
     }
 

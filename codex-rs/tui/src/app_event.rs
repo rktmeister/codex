@@ -15,6 +15,7 @@ use codex_app_server_protocol::AddCreditsNudgeEmailStatus;
 use codex_app_server_protocol::AppInfo;
 use codex_app_server_protocol::MarketplaceAddResponse;
 use codex_app_server_protocol::MarketplaceRemoveResponse;
+use codex_app_server_protocol::MarketplaceUpgradeResponse;
 use codex_app_server_protocol::McpServerStatus;
 use codex_app_server_protocol::McpServerStatusDetail;
 use codex_app_server_protocol::PluginInstallResponse;
@@ -362,6 +363,23 @@ pub(crate) enum AppEvent {
         result: Result<MarketplaceRemoveResponse, String>,
     },
 
+    /// Replace the plugins popup with a marketplace-upgrade loading state.
+    OpenMarketplaceUpgradeLoading {
+        marketplace_name: Option<String>,
+    },
+
+    /// Upgrade configured Git marketplaces.
+    FetchMarketplaceUpgrade {
+        cwd: PathBuf,
+        marketplace_name: Option<String>,
+    },
+
+    /// Result of upgrading configured Git marketplaces.
+    MarketplaceUpgradeLoaded {
+        cwd: PathBuf,
+        result: Result<MarketplaceUpgradeResponse, String>,
+    },
+
     /// Replace the plugins popup with a plugin-detail loading state.
     OpenPluginDetailLoading {
         plugin_display_name: String,
@@ -474,6 +492,10 @@ pub(crate) enum AppEvent {
 
     /// Begin buffering initial resume replay rows before they are written to scrollback.
     BeginInitialHistoryReplayBuffer,
+
+    /// Begin buffering thread-switch replay cells so the final scrollback write can reuse the
+    /// resize-reflow tail renderer.
+    BeginThreadSwitchHistoryReplayBuffer,
 
     InsertHistoryCell(Box<dyn HistoryCell>),
 
@@ -818,6 +840,11 @@ pub(crate) enum AppEvent {
         cwd: PathBuf,
         diff: Option<GitLineStats>,
     },
+    /// Async update of Git summary fields for status line rendering.
+    StatusLineGitSummaryUpdated {
+        cwd: PathBuf,
+        summary: crate::chatwidget::StatusLineGitSummary,
+    },
     /// Apply a user-confirmed status-line item ordering/selection.
     StatusLineSetup {
         items: Vec<StatusLineItem>,
@@ -863,6 +890,9 @@ pub(crate) enum AppEvent {
         action: String,
         intent: KeymapEditIntent,
     },
+
+    /// Open the keymap keypress inspector.
+    OpenKeymapDebug,
 
     /// Apply a captured key to the selected keymap action.
     KeymapCaptured {

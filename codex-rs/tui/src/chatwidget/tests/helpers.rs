@@ -249,6 +249,7 @@ pub(super) async fn make_chatwidget_manual(
         newly_installed_marketplace_tab_id: None,
         connectors_prefetch_in_flight: false,
         connectors_force_refetch_pending: false,
+        ide_context: super::super::ide_context::IdeContextState::default(),
         plugins_cache: PluginsCacheState::default(),
         plugins_fetch_state: PluginListFetchState::default(),
         interrupts: InterruptManager::new(),
@@ -301,6 +302,7 @@ pub(super) async fn make_chatwidget_manual(
         feedback: codex_feedback::CodexFeedback::new(),
         current_rollout_path: None,
         current_cwd: None,
+        workspace_command_runner: None,
         instruction_source_paths: Vec::new(),
         session_network_proxy: None,
         status_line_invalid_items_warned: Arc::new(AtomicBool::new(false)),
@@ -317,6 +319,10 @@ pub(super) async fn make_chatwidget_manual(
         status_line_branch_diff: None,
         status_line_branch_diff_pending: false,
         status_line_branch_diff_lookup_complete: false,
+        status_line_git_summary: None,
+        status_line_git_summary_cwd: None,
+        status_line_git_summary_pending: false,
+        status_line_git_summary_lookup_complete: false,
         current_goal_status_indicator: None,
         current_goal_status: None,
         goal_status_active_turn_started_at: None,
@@ -656,6 +662,7 @@ pub(super) fn handle_agent_reasoning_final(chat: &mut ChatWidget) {
                 .last_turn_id
                 .clone()
                 .unwrap_or_else(|| "turn-1".to_string()),
+            completed_at_ms: 0,
             item: AppServerThreadItem::Reasoning {
                 id: "reasoning-1".to_string(),
                 summary: Vec::new(),
@@ -674,6 +681,7 @@ pub(super) fn handle_entered_review_mode(chat: &mut ChatWidget, review: impl Int
                 .last_turn_id
                 .clone()
                 .unwrap_or_else(|| "turn-1".to_string()),
+            started_at_ms: 0,
             item: AppServerThreadItem::EnteredReviewMode {
                 id: "review-start".to_string(),
                 review: review.into(),
@@ -702,6 +710,7 @@ pub(super) fn handle_exited_review_mode(chat: &mut ChatWidget) {
                 .last_turn_id
                 .clone()
                 .unwrap_or_else(|| "turn-1".to_string()),
+            completed_at_ms: 0,
             item: AppServerThreadItem::ExitedReviewMode {
                 id: "review-end".to_string(),
                 review: String::new(),
@@ -758,6 +767,7 @@ pub(super) fn handle_patch_apply_begin(
         ServerNotification::ItemStarted(ItemStartedNotification {
             thread_id: thread_id(chat),
             turn_id: turn_id.into(),
+            started_at_ms: 0,
             item: AppServerThreadItem::FileChange {
                 id: call_id.into(),
                 changes: file_update_changes_from_tui(changes),
@@ -779,6 +789,7 @@ pub(super) fn handle_patch_apply_end(
         ServerNotification::ItemCompleted(ItemCompletedNotification {
             thread_id: thread_id(chat),
             turn_id: turn_id.into(),
+            completed_at_ms: 0,
             item: AppServerThreadItem::FileChange {
                 id: call_id.into(),
                 changes: file_update_changes_from_tui(changes),
@@ -798,6 +809,7 @@ pub(super) fn handle_view_image_tool_call(
         ServerNotification::ItemCompleted(ItemCompletedNotification {
             thread_id: thread_id(chat),
             turn_id: "turn-1".to_string(),
+            completed_at_ms: 0,
             item: AppServerThreadItem::ImageView {
                 id: call_id.into(),
                 path,
@@ -817,6 +829,7 @@ pub(super) fn handle_image_generation_end(
         ServerNotification::ItemCompleted(ItemCompletedNotification {
             thread_id: thread_id(chat),
             turn_id: "turn-1".to_string(),
+            completed_at_ms: 0,
             item: AppServerThreadItem::ImageGeneration {
                 id: call_id.into(),
                 status: "completed".to_string(),
@@ -974,6 +987,7 @@ pub(super) fn handle_exec_begin(chat: &mut ChatWidget, item: AppServerThreadItem
                 .last_turn_id
                 .clone()
                 .unwrap_or_else(|| "turn-1".to_string()),
+            started_at_ms: 0,
             item,
         }),
         /*replay_kind*/ None,
@@ -1013,6 +1027,7 @@ pub(super) fn complete_assistant_message(
         ServerNotification::ItemCompleted(ItemCompletedNotification {
             thread_id: chat.thread_id.map(|id| id.to_string()).unwrap_or_default(),
             turn_id: "turn-1".to_string(),
+            completed_at_ms: 0,
             item: AppServerThreadItem::AgentMessage {
                 id: item_id.to_string(),
                 text: text.to_string(),
@@ -1055,6 +1070,7 @@ pub(super) fn complete_user_message_for_inputs(
         ServerNotification::ItemCompleted(ItemCompletedNotification {
             thread_id: chat.thread_id.map(|id| id.to_string()).unwrap_or_default(),
             turn_id: "turn-1".to_string(),
+            completed_at_ms: 0,
             item: AppServerThreadItem::UserMessage {
                 id: item_id.to_string(),
                 content,
@@ -1196,6 +1212,7 @@ pub(super) fn handle_exec_end(chat: &mut ChatWidget, item: AppServerThreadItem) 
                 .last_turn_id
                 .clone()
                 .unwrap_or_else(|| "turn-1".to_string()),
+            completed_at_ms: 0,
             item,
         }),
         /*replay_kind*/ None,

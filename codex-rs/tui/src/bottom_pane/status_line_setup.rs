@@ -71,6 +71,12 @@ pub(crate) enum StatusLineItem {
     /// Current git branch name (if in a repository).
     GitBranch,
 
+    /// Open pull request number for the current branch.
+    PullRequestNumber,
+
+    /// Committed branch diff stats relative to the default branch.
+    BranchChanges,
+
     /// Compact runtime run-state text.
     #[strum(to_string = "run-state", serialize = "status")]
     Status,
@@ -139,6 +145,12 @@ impl StatusLineItem {
             StatusLineItem::BranchLinesRemoved => {
                 "Lines removed in current branch relative to default branch (omitted when unavailable)"
             }
+            StatusLineItem::PullRequestNumber => {
+                "Open pull request number for the current branch (omitted when unavailable)"
+            }
+            StatusLineItem::BranchChanges => {
+                "Committed branch changes against the default branch (omitted when unavailable)"
+            }
             StatusLineItem::Status => "Compact session run-state text (Ready, Working, Thinking)",
             StatusLineItem::ContextRemaining => {
                 "Percentage of context window remaining (omitted when unknown)"
@@ -179,6 +191,8 @@ impl StatusLineItem {
             StatusLineItem::GitBranch => StatusSurfacePreviewItem::GitBranch,
             StatusLineItem::BranchLinesAdded => StatusSurfacePreviewItem::BranchLinesAdded,
             StatusLineItem::BranchLinesRemoved => StatusSurfacePreviewItem::BranchLinesRemoved,
+            StatusLineItem::PullRequestNumber => StatusSurfacePreviewItem::PullRequestNumber,
+            StatusLineItem::BranchChanges => StatusSurfacePreviewItem::BranchChanges,
             StatusLineItem::Status => StatusSurfacePreviewItem::Status,
             StatusLineItem::ContextRemaining => StatusSurfacePreviewItem::ContextRemaining,
             StatusLineItem::ContextUsed => StatusSurfacePreviewItem::ContextUsed,
@@ -420,6 +434,18 @@ mod tests {
         assert_eq!(
             "status".parse::<StatusLineItem>(),
             Ok(StatusLineItem::Status)
+        );
+    }
+
+    #[test]
+    fn git_summary_items_are_selectable_ids() {
+        assert_eq!(
+            "pull-request-number".parse::<StatusLineItem>(),
+            Ok(StatusLineItem::PullRequestNumber)
+        );
+        assert_eq!(
+            "branch-changes".parse::<StatusLineItem>(),
+            Ok(StatusLineItem::BranchChanges)
         );
     }
 

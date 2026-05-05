@@ -4,8 +4,7 @@ use crate::codex_thread::CodexThread;
 use crate::config::Config;
 use crate::config::ThreadStoreConfig;
 use crate::environment_selection::default_thread_environment_selections;
-use crate::environment_selection::selected_primary_environment;
-use crate::environment_selection::validate_environment_selections;
+use crate::environment_selection::resolve_environment_selections;
 use crate::file_watcher::FileWatcher;
 use crate::mcp::McpManager;
 use crate::rollout::RolloutRecorder;
@@ -51,6 +50,7 @@ use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::TurnAbortedEvent;
 use codex_protocol::protocol::TurnEnvironmentSelection;
 use codex_protocol::protocol::W3cTraceContext;
+use codex_rollout::state_db::StateDbHandle;
 use codex_state::DirectionalThreadSpawnEdgeStatus;
 use codex_thread_store::InMemoryThreadStore;
 use codex_thread_store::LocalThreadStore;
@@ -249,6 +249,7 @@ pub(crate) struct ThreadManagerState {
     thread_store: Arc<dyn ThreadStore>,
     session_source: SessionSource,
     analytics_events_client: Option<AnalyticsEventsClient>,
+    state_db: Option<StateDbHandle>,
     // Captures submitted ops for testing purpose when test mode is enabled.
     ops_log: Option<SharedCapturedOps>,
 }
@@ -264,10 +265,14 @@ pub fn build_models_manager(
     )
 }
 
-pub fn thread_store_from_config(config: &Config) -> Arc<dyn ThreadStore> {
+pub fn thread_store_from_config(
+    config: &Config,
+    state_db: Option<StateDbHandle>,
+) -> Arc<dyn ThreadStore> {
     match &config.experimental_thread_store {
         ThreadStoreConfig::Local => Arc::new(LocalThreadStore::new(
             LocalThreadStoreConfig::from_config(config),
+            state_db,
         )),
         ThreadStoreConfig::Remote { endpoint } => Arc::new(RemoteThreadStore::new(endpoint)),
         ThreadStoreConfig::InMemory { id } => InMemoryThreadStore::for_id(id),
@@ -282,6 +287,7 @@ impl ThreadManager {
         environment_manager: Arc<EnvironmentManager>,
         analytics_events_client: Option<AnalyticsEventsClient>,
         thread_store: Arc<dyn ThreadStore>,
+        state_db: Option<StateDbHandle>,
     ) -> Self {
         let codex_home = config.codex_home.clone();
         let restriction_product = session_source.restriction_product();
@@ -311,6 +317,7 @@ impl ThreadManager {
                 auth_manager,
                 session_source,
                 analytics_events_client,
+                state_db,
                 ops_log: should_use_test_thread_manager_behavior()
                     .then(|| Arc::new(std::sync::Mutex::new(Vec::new()))),
             }),
@@ -349,6 +356,22 @@ impl ThreadManager {
         codex_home: PathBuf,
         environment_manager: Arc<EnvironmentManager>,
     ) -> Self {
+        Self::with_models_provider_home_and_state_for_tests(
+            auth,
+            provider,
+            codex_home,
+            environment_manager,
+            /*state_db*/ None,
+        )
+    }
+
+    pub(crate) fn with_models_provider_home_and_state_for_tests(
+        auth: CodexAuth,
+        provider: ModelProviderInfo,
+        codex_home: PathBuf,
+        environment_manager: Arc<EnvironmentManager>,
+        state_db: Option<StateDbHandle>,
+    ) -> Self {
         set_thread_manager_test_mode_for_tests(/*enabled*/ true);
         let auth_manager = AuthManager::from_auth_for_testing(auth);
         let skills_codex_home = match AbsolutePathBuf::from_absolute_path_checked(&codex_home) {
@@ -370,12 +393,14 @@ impl ThreadManager {
         let skills_watcher = build_skills_watcher(Arc::clone(&skills_manager));
         // This test constructor has no Config input. Tests that need a non-local
         // process store should construct ThreadManager::new with an explicit store.
-        let thread_store: Arc<dyn ThreadStore> =
-            Arc::new(LocalThreadStore::new(LocalThreadStoreConfig {
+        let thread_store: Arc<dyn ThreadStore> = Arc::new(LocalThreadStore::new(
+            LocalThreadStoreConfig {
                 codex_home: codex_home.clone(),
                 sqlite_home: codex_home.clone(),
                 default_model_provider_id: OPENAI_PROVIDER_ID.to_string(),
-            }));
+            },
+            state_db.clone(),
+        ));
         Self {
             state: Arc::new(ThreadManagerState {
                 threads: Arc::new(RwLock::new(HashMap::new())),
@@ -391,6 +416,7 @@ impl ThreadManager {
                 auth_manager,
                 session_source: SessionSource::Exec,
                 analytics_events_client: None,
+                state_db,
                 ops_log: should_use_test_thread_manager_behavior()
                     .then(|| Arc::new(std::sync::Mutex::new(Vec::new()))),
             }),
@@ -433,7 +459,8 @@ impl ThreadManager {
         &self,
         environments: &[TurnEnvironmentSelection],
     ) -> CodexResult<()> {
-        validate_environment_selections(self.state.environment_manager.as_ref(), environments)
+        resolve_environment_selections(self.state.environment_manager.as_ref(), environments)
+            .map(|_| ())
     }
 
     pub fn get_models_manager(&self) -> SharedModelsManager {
@@ -837,6 +864,10 @@ impl ThreadManager {
 }
 
 impl ThreadManagerState {
+    pub(crate) fn state_db(&self) -> Option<StateDbHandle> {
+        self.state_db.clone()
+    }
+
     pub(crate) async fn list_thread_ids(&self) -> Vec<ThreadId> {
         self.threads
             .read()
@@ -1098,16 +1129,16 @@ impl ThreadManagerState {
                 threads.remove(&resumed.conversation_id);
             }
         }
-        let environment =
-            selected_primary_environment(self.environment_manager.as_ref(), &environments)?;
-        let watch_registration = match environment.as_ref() {
-            Some(environment) if !environment.is_remote() => {
+        let environment_selections =
+            resolve_environment_selections(self.environment_manager.as_ref(), &environments)?;
+        let watch_registration = match environment_selections.primary() {
+            Some(turn_environment) if !turn_environment.environment.is_remote() => {
                 self.skills_watcher
                     .register_config(
                         &config,
                         self.skills_manager.as_ref(),
                         self.plugins_manager.as_ref(),
-                        Some(environment.get_filesystem()),
+                        Some(turn_environment.environment.get_filesystem()),
                     )
                     .await
             }
@@ -1139,7 +1170,7 @@ impl ThreadManagerState {
             parent_rollout_thread_trace,
             user_shell_override,
             parent_trace,
-            environments,
+            environment_selections,
             analytics_events_client: self.analytics_events_client.clone(),
             thread_store: Arc::clone(&self.thread_store),
         })

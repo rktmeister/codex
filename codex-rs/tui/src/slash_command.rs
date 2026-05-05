@@ -14,7 +14,7 @@ pub enum SlashCommand {
     // more frequently used commands should be listed first.
     Model,
     Fast,
-    Approvals,
+    Ide,
     Permissions,
     Keymap,
     Vim,
@@ -23,7 +23,7 @@ pub enum SlashCommand {
     #[strum(serialize = "sandbox-add-read-dir")]
     SandboxReadRoot,
     Experimental,
-    #[strum(to_string = "autoreview")]
+    #[strum(to_string = "approve")]
     AutoReview,
     Memories,
     Skills,
@@ -109,6 +109,9 @@ impl SlashCommand {
             SlashCommand::Fast => {
                 "toggle Fast mode to enable fastest inference with increased plan usage"
             }
+            SlashCommand::Ide => {
+                "include current selection, open files, and other context from your IDE"
+            }
             SlashCommand::Personality => "choose a communication style for Codex",
             SlashCommand::Realtime => "toggle realtime voice mode (experimental)",
             SlashCommand::Settings => "configure realtime microphone/speaker",
@@ -117,7 +120,6 @@ impl SlashCommand {
             SlashCommand::Collab => "change collaboration mode (experimental)",
             SlashCommand::Agent | SlashCommand::MultiAgents => "switch the active agent thread",
             SlashCommand::Side => "start a side conversation in an ephemeral fork",
-            SlashCommand::Approvals => "choose what Codex is allowed to do",
             SlashCommand::Permissions => "choose what Codex is allowed to do",
             SlashCommand::Keymap => "remap TUI shortcuts",
             SlashCommand::Vim => "toggle Vim mode for the composer",
@@ -152,6 +154,8 @@ impl SlashCommand {
                 | SlashCommand::Plan
                 | SlashCommand::Goal
                 | SlashCommand::Fast
+                | SlashCommand::Ide
+                | SlashCommand::Keymap
                 | SlashCommand::Mcp
                 | SlashCommand::Side
                 | SlashCommand::Resume
@@ -163,7 +167,11 @@ impl SlashCommand {
     pub fn available_in_side_conversation(self) -> bool {
         matches!(
             self,
-            SlashCommand::Copy | SlashCommand::Diff | SlashCommand::Mention | SlashCommand::Status
+            SlashCommand::Copy
+                | SlashCommand::Diff
+                | SlashCommand::Mention
+                | SlashCommand::Status
+                | SlashCommand::Ide
         )
     }
 
@@ -178,7 +186,6 @@ impl SlashCommand {
             | SlashCommand::Model
             | SlashCommand::Fast
             | SlashCommand::Personality
-            | SlashCommand::Approvals
             | SlashCommand::Permissions
             | SlashCommand::Keymap
             | SlashCommand::Vim
@@ -211,6 +218,7 @@ impl SlashCommand {
             | SlashCommand::Statusline
             | SlashCommand::AutoReview
             | SlashCommand::Feedback
+            | SlashCommand::Ide
             | SlashCommand::Quit
             | SlashCommand::Exit
             | SlashCommand::Side => true,
@@ -262,15 +270,16 @@ mod tests {
     #[test]
     fn certain_commands_are_available_during_task() {
         assert!(SlashCommand::Goal.available_during_task());
+        assert!(SlashCommand::Ide.available_during_task());
         assert!(SlashCommand::Title.available_during_task());
         assert!(SlashCommand::Statusline.available_during_task());
     }
 
     #[test]
-    fn auto_review_command_is_autoreview() {
-        assert_eq!(SlashCommand::AutoReview.command(), "autoreview");
+    fn auto_review_command_is_approve() {
+        assert_eq!(SlashCommand::AutoReview.command(), "approve");
         assert_eq!(
-            SlashCommand::from_str("autoreview"),
+            SlashCommand::from_str("approve"),
             Ok(SlashCommand::AutoReview)
         );
     }

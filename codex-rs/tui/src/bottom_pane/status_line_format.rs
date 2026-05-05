@@ -41,6 +41,8 @@ fn status_line_segment(item: StatusLineItem, value: String) -> Vec<Span<'static>
         StatusLineItem::GitBranch => vec![" ".green(), Span::from(value).green()],
         StatusLineItem::BranchLinesAdded => vec![Span::from(format!("+{value}")).green()],
         StatusLineItem::BranchLinesRemoved => vec![Span::from(format!("-{value}")).red()],
+        StatusLineItem::PullRequestNumber => vec![Span::from(value).green().underlined()],
+        StatusLineItem::BranchChanges => vec![Span::from(value).green()],
         StatusLineItem::Status => vec![Span::from(value).bold()],
         StatusLineItem::ContextRemaining => percent_segment("◔", value, true),
         StatusLineItem::ContextUsed => percent_segment("◔", value, false),
