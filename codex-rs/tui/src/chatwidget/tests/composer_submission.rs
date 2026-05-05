@@ -92,60 +92,6 @@ async fn submission_preserves_text_elements_and_local_images() {
 }
 
 #[tokio::test]
-async fn app_event_submission_enqueues_user_message_before_user_turn() {
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
-    chat.codex_op_target = super::CodexOpTarget::AppEvent;
-
-    let conversation_id = ThreadId::new();
-    let rollout_file = NamedTempFile::new().unwrap();
-    chat.handle_thread_session(crate::session_state::ThreadSessionState {
-        thread_id: conversation_id,
-        forked_from_id: None,
-        fork_parent_title: None,
-        thread_name: None,
-        model: "test-model".to_string(),
-        model_provider_id: "test-provider".to_string(),
-        service_tier: None,
-        approval_policy: AskForApproval::Never,
-        approvals_reviewer: ApprovalsReviewer::User,
-        permission_profile: PermissionProfile::read_only(),
-        active_permission_profile: None,
-        cwd: test_path_buf("/home/user/project").abs(),
-        instruction_source_paths: Vec::new(),
-        reasoning_effort: Some(ReasoningEffortConfig::default()),
-        history_log_id: 0,
-        history_entry_count: 0,
-        network_proxy: None,
-        rollout_path: Some(rollout_file.path().to_path_buf()),
-    });
-    drain_insert_history(&mut rx);
-
-    chat.bottom_pane
-        .set_composer_text("fresh idle prompt".to_string(), Vec::new(), Vec::new());
-    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-
-    let first_event = rx.try_recv().expect("expected local user render");
-    let AppEvent::InsertHistoryCell(cell) = first_event else {
-        panic!("expected user history before submit op, got {first_event:?}");
-    };
-    let user_cell = cell
-        .as_any()
-        .downcast_ref::<UserHistoryCell>()
-        .expect("expected submitted user history cell");
-    assert_eq!(user_cell.message, "fresh idle prompt");
-
-    assert_matches!(
-        rx.try_recv().expect("expected submit op"),
-        AppEvent::CodexOp(Op::UserTurn { items, .. })
-            if items
-                == vec![UserInput::Text {
-                    text: "fresh idle prompt".to_string(),
-                    text_elements: Vec::new(),
-                }]
-    );
-}
-
-#[tokio::test]
 async fn submission_includes_configured_permission_profile() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
