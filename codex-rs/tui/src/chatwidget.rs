@@ -5845,6 +5845,23 @@ impl ChatWidget {
             personality,
         );
 
+        let display_user_message = render_in_history.then(|| {
+            user_message_display_for_history(
+                UserMessage {
+                    text: text.clone(),
+                    local_images: local_images.clone(),
+                    remote_image_urls: remote_image_urls.clone(),
+                    text_elements: text_elements.clone(),
+                    mention_bindings: mention_bindings.clone(),
+                },
+                &history_record,
+            )
+        });
+        let render_before_submit = matches!(self.codex_op_target, CodexOpTarget::AppEvent);
+        if render_before_submit && let Some(display_user_message) = display_user_message.clone() {
+            self.on_user_message_display(display_user_message);
+        }
+
         if !self.submit_op(op.clone()) {
             return (false, None);
         }
@@ -5883,61 +5900,8 @@ impl ChatWidget {
         }
 
         // Show replayable user content in conversation history.
-        let display_user_message = render_in_history.then(|| {
-            user_message_for_restore(
-                UserMessage {
-                    text,
-                    local_images,
-                    remote_image_urls,
-                    text_elements,
-                    mention_bindings,
-                },
-                &history_record,
-            )
-        });
-        if let Some(display_user_message) = display_user_message {
-            let UserMessage {
-                text,
-                local_images,
-                remote_image_urls,
-                text_elements,
-                mention_bindings: _,
-            } = display_user_message;
-            if !text.is_empty() {
-                let local_image_paths = local_images
-                    .into_iter()
-                    .map(|img| img.path)
-                    .collect::<Vec<_>>();
-                self.last_rendered_user_message_display =
-                    Some(Self::user_message_display_from_parts(
-                        text.clone(),
-                        text_elements.clone(),
-                        local_image_paths.clone(),
-                        remote_image_urls.clone(),
-                    ));
-                self.add_to_history(history_cell::new_user_prompt(
-                    text,
-                    text_elements,
-                    local_image_paths,
-                    remote_image_urls,
-                ));
-                self.record_visible_user_turn_for_copy();
-            } else if !remote_image_urls.is_empty() {
-                self.last_rendered_user_message_display =
-                    Some(Self::user_message_display_from_parts(
-                        String::new(),
-                        Vec::new(),
-                        Vec::new(),
-                        remote_image_urls.clone(),
-                    ));
-                self.add_to_history(history_cell::new_user_prompt(
-                    String::new(),
-                    Vec::new(),
-                    Vec::new(),
-                    remote_image_urls,
-                ));
-                self.record_visible_user_turn_for_copy();
-            }
+        if !render_before_submit && let Some(display_user_message) = display_user_message {
+            self.on_user_message_display(display_user_message);
         }
 
         self.needs_final_message_separator = false;
