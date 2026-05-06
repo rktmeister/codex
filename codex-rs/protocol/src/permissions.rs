@@ -1559,11 +1559,9 @@ fn default_git_read_only_subpaths_for_writable_root(
     // This applies to typical repos (directory .git), worktrees/submodules
     // (file .git with gitdir pointer), and linked-worktree git admin roots
     // discovered separately.
-    let top_level_git_is_file = top_level_git.as_path().is_file();
-    let top_level_git_is_dir = top_level_git.as_path().is_dir();
-    if top_level_git_is_dir {
+    if is_git_directory(&top_level_git) {
         protect_high_risk_git_subpaths(&mut subpaths, &top_level_git);
-    } else if top_level_git_is_file {
+    } else if is_git_pointer_file(&top_level_git) {
         push_read_only_subpath(&mut subpaths, top_level_git);
     }
 
@@ -1854,6 +1852,12 @@ fn has_explicit_write_entry_for_metadata_path(
 fn is_git_pointer_file(path: &AbsolutePathBuf) -> bool {
     path.as_path().is_file()
         && path.as_path().file_name() == Some(OsStr::new(PROTECTED_METADATA_GIT_PATH_NAME))
+        && std::fs::read_to_string(path.as_path())
+            .is_ok_and(|contents| contents.trim_start().starts_with("gitdir:"))
+}
+
+fn is_git_directory(path: &AbsolutePathBuf) -> bool {
+    path.as_path().is_dir() && path.join("HEAD").as_path().is_file()
 }
 
 fn resolve_gitdir_from_file(dot_git: &AbsolutePathBuf) -> Option<AbsolutePathBuf> {
@@ -2038,6 +2042,11 @@ mod tests {
         let tmp = TempDir::new().expect("tempdir");
         let repo_root = tmp.path().join("repo");
         fs::create_dir_all(repo_root.join(".git").join("hooks")).expect("create git hooks");
+        fs::write(
+            repo_root.join(".git").join("HEAD"),
+            "ref: refs/heads/main\n",
+        )
+        .expect("write git HEAD");
 
         let repo_root = AbsolutePathBuf::from_absolute_path(
             repo_root.canonicalize().expect("canonicalize repo"),
@@ -2072,6 +2081,53 @@ mod tests {
         let cache_root = tmp.path().join("cache");
         fs::create_dir_all(&cwd).expect("create workspace");
         fs::create_dir_all(&cache_root).expect("create cache");
+
+        let cwd =
+            AbsolutePathBuf::from_absolute_path(cwd.canonicalize().expect("canonicalize cwd"))
+                .expect("absolute cwd");
+        let cache_root = AbsolutePathBuf::from_absolute_path(
+            cache_root.canonicalize().expect("canonicalize cache"),
+        )
+        .expect("absolute cache");
+
+        let policy = FileSystemSandboxPolicy::restricted(vec![
+            FileSystemSandboxEntry {
+                path: FileSystemPath::Path { path: cwd.clone() },
+                access: FileSystemAccessMode::Write,
+            },
+            FileSystemSandboxEntry {
+                path: FileSystemPath::Path {
+                    path: cache_root.clone(),
+                },
+                access: FileSystemAccessMode::Write,
+            },
+        ]);
+
+        let writable_roots = policy.get_writable_roots_with_cwd(cwd.as_path());
+        let cache_writable_root = writable_roots
+            .iter()
+            .find(|root| root.root == cache_root)
+            .expect("cache root should be writable");
+
+        assert!(cache_writable_root.read_only_subpaths.is_empty());
+        assert!(
+            cache_writable_root
+                .protected_metadata_names
+                .iter()
+                .all(|name| name != PROTECTED_METADATA_GIT_PATH_NAME)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn additional_writable_cache_root_ignores_empty_git_placeholder() {
+        let tmp = TempDir::new().expect("tempdir");
+        let cwd = tmp.path().join("workspace");
+        let cache_root = tmp.path().join("cache");
+        fs::create_dir_all(&cwd).expect("create workspace");
+        fs::create_dir_all(cache_root.join(".git")).expect("create placeholder .git");
+        fs::write(cache_root.join(".git").join("config"), "").expect("write placeholder config");
+        fs::write(cache_root.join(".git").join("hooks"), "").expect("write placeholder hooks");
 
         let cwd =
             AbsolutePathBuf::from_absolute_path(cwd.canonicalize().expect("canonicalize cwd"))
@@ -2301,6 +2357,11 @@ mod tests {
     fn filesystem_policy_blocks_protected_metadata_path_writes_by_default() {
         let cwd = TempDir::new().expect("tempdir");
         fs::create_dir_all(cwd.path().join(".git").join("hooks")).expect("create .git/hooks");
+        fs::write(
+            cwd.path().join(".git").join("HEAD"),
+            "ref: refs/heads/main\n",
+        )
+        .expect("write git HEAD");
         let dot_git_config = cwd.path().join(".git").join("config");
         let dot_git_hook = cwd.path().join(".git").join("hooks").join("pre-commit");
         let dot_git_index = cwd.path().join(".git").join("index");
@@ -3131,6 +3192,7 @@ mod tests {
         let extra = AbsolutePathBuf::from_absolute_path(temp_dir.path().join("extra"))
             .expect("resolve extra root");
         std::fs::create_dir_all(extra.join(".git/hooks")).expect("create .git/hooks");
+        std::fs::write(extra.join(".git/HEAD"), "ref: refs/heads/main\n").expect("write git HEAD");
         let policy = FileSystemSandboxPolicy::restricted(vec![FileSystemSandboxEntry {
             path: FileSystemPath::Special {
                 value: FileSystemSpecialPath::project_roots(/*subpath*/ None),
