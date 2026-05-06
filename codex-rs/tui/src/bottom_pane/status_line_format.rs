@@ -55,6 +55,7 @@ fn status_line_segment(item: StatusLineItem, value: String) -> Vec<Span<'static>
         StatusLineItem::TotalOutputTokens => directional_segment("↓", value, Color::Red, " out"),
         StatusLineItem::SessionId => vec!["# ".dim(), Span::from(value).dim()],
         StatusLineItem::FastMode => fast_mode_segment(value),
+        StatusLineItem::RawOutput => vec![Span::from(value).dim()],
         StatusLineItem::ThreadTitle => vec![value.into()],
         StatusLineItem::TaskProgress => vec![Span::from(value).dim()],
     }

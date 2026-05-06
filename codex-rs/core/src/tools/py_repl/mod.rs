@@ -1927,6 +1927,14 @@ impl PyReplManager {
         let hook_command = codex_shell_command::parse_command::shlex_join(&req.command);
         let manager = &exec.session.services.unified_exec_manager;
         let process_id = manager.allocate_process_id().await;
+        let Some(turn_environment) = exec.turn.environments.primary() else {
+            manager.release_process_id(process_id).await;
+            return Err(Self::run_process_error(
+                request_id,
+                "unified exec is unavailable in this session",
+            ));
+        };
+        let environment = Arc::clone(&turn_environment.environment);
 
         let exec_permission_approvals_enabled = exec
             .session
@@ -1999,7 +2007,8 @@ impl PyReplManager {
             process_id,
             yield_time_ms,
             max_output_tokens: req.max_output_tokens,
-            workdir: Some(cwd),
+            cwd,
+            environment,
             env: req.env,
             network: exec.turn.network.clone(),
             tty: false,

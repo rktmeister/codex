@@ -23,6 +23,7 @@ use codex_protocol::exec_output::ExecToolCallOutput;
 use codex_protocol::exec_output::StreamOutput;
 use codex_protocol::models::FunctionCallOutputContentItem;
 use codex_protocol::protocol::ExecCommandSource;
+use codex_tools::ToolName;
 
 pub struct PyReplHandler;
 pub struct PyReplResetHandler;
@@ -92,6 +93,10 @@ async fn emit_py_repl_exec_end(
 
 impl ToolHandler for PyReplHandler {
     type Output = FunctionToolOutput;
+
+    fn tool_name(&self) -> ToolName {
+        ToolName::plain("py_repl")
+    }
 
     fn kind(&self) -> ToolKind {
         ToolKind::Function
@@ -189,6 +194,10 @@ impl ToolHandler for PyReplHandler {
 
 impl ToolHandler for PyReplResetHandler {
     type Output = FunctionToolOutput;
+
+    fn tool_name(&self) -> ToolName {
+        ToolName::plain("py_repl_reset")
+    }
 
     fn kind(&self) -> ToolKind {
         ToolKind::Function

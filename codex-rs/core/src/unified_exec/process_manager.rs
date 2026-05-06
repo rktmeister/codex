@@ -385,10 +385,7 @@ impl UnifiedExecProcessManager {
         request: ExecCommandRequest,
         context: &UnifiedExecContext,
     ) -> Result<ExecCommandToolOutput, UnifiedExecError> {
-        let cwd = request
-            .workdir
-            .clone()
-            .unwrap_or_else(|| context.turn.cwd.clone());
+        let cwd = request.cwd.clone();
         let process = self
             .open_session_with_sandbox(&request, cwd.clone(), context)
             .await;
@@ -1028,7 +1025,7 @@ impl UnifiedExecProcessManager {
                 approval_policy: context.turn.approval_policy.value(),
                 permission_profile: context.turn.permission_profile(),
                 file_system_sandbox_policy: &file_system_sandbox_policy,
-                sandbox_cwd: context.turn.cwd.as_path(),
+                sandbox_cwd: cwd.as_path(),
                 sandbox_permissions: if request.additional_permissions_preapproved {
                     crate::sandboxing::SandboxPermissions::UseDefault
                 } else {
@@ -1042,6 +1039,7 @@ impl UnifiedExecProcessManager {
             hook_command: request.hook_command.clone(),
             process_id: request.process_id,
             cwd,
+            environment: Arc::clone(&request.environment),
             env,
             exec_server_env_config: Some(exec_server_env_config),
             explicit_env_overrides: {
