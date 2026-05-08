@@ -1,4 +1,5 @@
 use serde_json::Value as JsonValue;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
@@ -23,10 +24,29 @@ use codex_protocol::exec_output::ExecToolCallOutput;
 use codex_protocol::exec_output::StreamOutput;
 use codex_protocol::models::FunctionCallOutputContentItem;
 use codex_protocol::protocol::ExecCommandSource;
+use codex_tools::FreeformTool;
+use codex_tools::FreeformToolFormat;
+use codex_tools::JsonSchema;
+use codex_tools::ResponsesApiTool;
 use codex_tools::ToolName;
+use codex_tools::ToolSpec;
 
 pub struct PyReplHandler;
 pub struct PyReplResetHandler;
+
+const PY_REPL_FREEFORM_GRAMMAR: &str = r#"
+start: pragma_source | plain_source
+
+pragma_source: PRAGMA_LINE NEWLINE py_source
+plain_source: PLAIN_PY_SOURCE
+
+py_source: PY_SOURCE
+
+PRAGMA_LINE: /[ \t]*#[ \t]*codex-py-repl:[^\r\n]*/
+NEWLINE: /\r?\n/
+PLAIN_PY_SOURCE: /(?:\s*)(?:[^\s{\"'`]|#[^\r\n])[\s\S]*/
+PY_SOURCE: /(?:\s*)(?:[^\s{\"'`]|#[^\r\n])[\s\S]*/
+"#;
 
 fn join_outputs(stdout: &str, stderr: &str) -> String {
     if stdout.is_empty() {
@@ -86,7 +106,10 @@ async fn emit_py_repl_exec_end(
     let stage = if error.is_some() {
         ToolEventStage::Failure(ToolEventFailure::Output(exec_output))
     } else {
-        ToolEventStage::Success(exec_output)
+        ToolEventStage::Success {
+            output: exec_output,
+            applied_patch_delta: None,
+        }
     };
     emitter.emit(ctx, stage).await;
 }
@@ -96,6 +119,19 @@ impl ToolHandler for PyReplHandler {
 
     fn tool_name(&self) -> ToolName {
         ToolName::plain("py_repl")
+    }
+
+    fn spec(&self) -> Option<ToolSpec> {
+        Some(ToolSpec::Freeform(FreeformTool {
+            name: "py_repl".to_string(),
+            description: "Runs Python in a persistent kernel with top-level await. This is a freeform tool: send raw Python source text, optionally with a first-line pragma like `# codex-py-repl: timeout_ms=15000`; do not send JSON/quotes/markdown fences."
+                .to_string(),
+            format: FreeformToolFormat {
+                r#type: "grammar".to_string(),
+                syntax: "lark".to_string(),
+                definition: PY_REPL_FREEFORM_GRAMMAR.to_string(),
+            },
+        }))
     }
 
     fn kind(&self) -> ToolKind {
@@ -197,6 +233,23 @@ impl ToolHandler for PyReplResetHandler {
 
     fn tool_name(&self) -> ToolName {
         ToolName::plain("py_repl_reset")
+    }
+
+    fn spec(&self) -> Option<ToolSpec> {
+        Some(ToolSpec::Function(ResponsesApiTool {
+            name: "py_repl_reset".to_string(),
+            description:
+                "Restarts the py_repl kernel for this run and clears persisted top-level bindings."
+                    .to_string(),
+            strict: false,
+            defer_loading: None,
+            parameters: JsonSchema::object(
+                BTreeMap::new(),
+                /*required*/ None,
+                Some(false.into()),
+            ),
+            output_schema: None,
+        }))
     }
 
     fn kind(&self) -> ToolKind {

@@ -356,6 +356,8 @@ use self::status_surfaces::TerminalTitleStatusKind;
 mod user_messages;
 use self::user_messages::PendingSteerCompareKey;
 use self::user_messages::UserMessageDisplay;
+mod warnings;
+use self::warnings::WarningDisplayState;
 pub(crate) use crate::branch_summary::StatusLineGitSummary;
 use crate::streaming::chunking::AdaptiveChunkingPolicy;
 use crate::streaming::commit_tick::CommitTickScope;
@@ -785,6 +787,7 @@ pub(crate) struct ChatWidget {
     plan_type: Option<PlanType>,
     codex_rate_limit_reached_type: Option<RateLimitReachedType>,
     rate_limit_warnings: RateLimitWarningState,
+    warning_display_state: WarningDisplayState,
     rate_limit_switch_prompt: RateLimitSwitchPromptState,
     add_credits_nudge_email_in_flight: Option<AddCreditsNudgeCreditType>,
     adaptive_chunking: AdaptiveChunkingPolicy,
@@ -2066,10 +2069,12 @@ impl ChatWidget {
         self.visible_user_turn_count = 0;
         self.copy_history_evicted_by_rollback = false;
         self.saw_copy_source_this_turn = false;
-        let history_entry_count =
-            usize::try_from(session.history_entry_count).unwrap_or(usize::MAX);
-        self.bottom_pane
-            .set_history_metadata(session.history_log_id, history_entry_count);
+        let history_metadata = session.message_history.unwrap_or_default();
+        self.bottom_pane.set_history_metadata(
+            session.thread_id,
+            history_metadata.log_id,
+            history_metadata.entry_count,
+        );
         self.set_skills(/*skills*/ None);
         self.session_network_proxy = session.network_proxy.clone();
         let previous_thread_id = self.thread_id;
@@ -2089,7 +2094,10 @@ impl ChatWidget {
         self.current_rollout_path = session.rollout_path.clone();
         self.current_cwd = Some(session.cwd.to_path_buf());
         self.config.cwd = session.cwd.clone();
-        self.effective_service_tier = session.service_tier;
+        self.effective_service_tier = session
+            .service_tier
+            .as_deref()
+            .and_then(ServiceTier::from_request_value);
         if let Err(err) = self
             .config
             .permissions
@@ -2138,7 +2146,7 @@ impl ChatWidget {
         if display == SessionConfiguredDisplay::Normal {
             let startup_tooltip_override = self.startup_tooltip_override.take();
             let show_fast_status =
-                self.should_show_fast_status(&model_for_header, session.service_tier);
+                self.should_show_fast_status(&model_for_header, self.effective_service_tier);
             let session_info_cell = history_cell::new_session_info(
                 &self.config,
                 &model_for_header,
@@ -3151,7 +3159,11 @@ impl ChatWidget {
     }
 
     fn on_warning(&mut self, message: impl Into<String>) {
-        self.add_to_history(history_cell::new_warning_event(message.into()));
+        let message = message.into();
+        if !self.warning_display_state.should_display(&message) {
+            return;
+        }
+        self.add_to_history(history_cell::new_warning_event(message));
         self.request_redraw();
     }
 
@@ -4057,7 +4069,7 @@ impl ChatWidget {
             entry,
         } = event;
         self.bottom_pane
-            .on_history_entry_response(log_id, offset, entry.map(|e| e.text));
+            .on_history_entry_response(log_id, offset, entry);
     }
 
     fn on_shutdown_complete(&mut self) {
@@ -4580,7 +4592,14 @@ impl ChatWidget {
         });
 
         let thread_id = self.thread_id.unwrap_or_default();
-        if let Some(request) = McpServerElicitationFormRequest::from_app_server_request(
+        if let Some(params) = crate::bottom_pane::AppLinkViewParams::from_url_app_server_request(
+            thread_id,
+            &params.server_name,
+            request_id.clone(),
+            &params.request,
+        ) {
+            self.open_app_link_view(params);
+        } else if let Some(request) = McpServerElicitationFormRequest::from_app_server_request(
             thread_id,
             request_id.clone(),
             params.clone(),
@@ -4588,18 +4607,29 @@ impl ChatWidget {
             self.bottom_pane
                 .push_mcp_server_elicitation_request(request);
         } else {
-            let request = ApprovalRequest::McpElicitation {
-                thread_id,
-                thread_label: None,
-                server_name: params.server_name,
-                request_id,
-                message: match params.request {
-                    McpServerElicitationRequest::Form { message, .. }
-                    | McpServerElicitationRequest::Url { message, .. } => message,
-                },
-            };
-            self.bottom_pane
-                .push_approval_request(request, &self.config.features);
+            match params.request {
+                McpServerElicitationRequest::Form { message, .. } => {
+                    let request = ApprovalRequest::McpElicitation {
+                        thread_id,
+                        thread_label: None,
+                        server_name: params.server_name,
+                        request_id,
+                        message,
+                    };
+                    self.bottom_pane
+                        .push_approval_request(request, &self.config.features);
+                }
+                McpServerElicitationRequest::Url { .. } => {
+                    self.app_event_tx.resolve_elicitation(
+                        thread_id,
+                        params.server_name,
+                        request_id,
+                        codex_app_server_protocol::McpServerElicitationAction::Decline,
+                        /*content*/ None,
+                        /*meta*/ None,
+                    );
+                }
+            }
         }
         self.request_redraw();
     }
@@ -4885,7 +4915,10 @@ impl ChatWidget {
         let active_cell = Some(Self::placeholder_session_header_cell(&config));
 
         let current_cwd = Some(config.cwd.to_path_buf());
-        let effective_service_tier = config.service_tier;
+        let effective_service_tier = config
+            .service_tier
+            .as_deref()
+            .and_then(ServiceTier::from_request_value);
         let current_terminal_info = terminal_info();
         let runtime_keymap = RuntimeKeymap::from_config(&config.tui_keymap).ok();
         let default_keymap = RuntimeKeymap::defaults();
@@ -4938,6 +4971,7 @@ impl ChatWidget {
             plan_type: initial_plan_type,
             codex_rate_limit_reached_type: None,
             rate_limit_warnings: RateLimitWarningState::default(),
+            warning_display_state: WarningDisplayState::default(),
             rate_limit_switch_prompt: RateLimitSwitchPromptState::default(),
             add_credits_nudge_email_in_flight: None,
             adaptive_chunking: AdaptiveChunkingPolicy::default(),
@@ -5617,7 +5651,7 @@ impl ChatWidget {
     ) -> QueueDrain {
         let drain = self.submit_shell_command(command);
         if drain == QueueDrain::Stop {
-            self.submit_op(AppCommand::add_to_history(history_text.to_string()));
+            self.append_message_history_entry(history_text.to_string());
         }
         drain
     }
@@ -5900,7 +5934,7 @@ impl ChatWidget {
             .personality
             .filter(|_| self.config.features.enabled(Feature::Personality))
             .filter(|_| self.current_model_supports_personality());
-        let service_tier = match self.config.service_tier {
+        let service_tier = match self.config.service_tier.clone() {
             Some(service_tier) => Some(Some(service_tier)),
             None if self.config.notices.fast_default_opt_out == Some(true) => Some(None),
             None => None,
@@ -5948,7 +5982,7 @@ impl ChatWidget {
             }
         };
         if let Some(history_text) = history_text {
-            self.submit_op(AppCommand::add_to_history(history_text));
+            self.append_message_history_entry(history_text);
         }
 
         if let Some(pending_steer) = pending_steer {
@@ -9378,7 +9412,8 @@ impl ChatWidget {
 
     /// Set Fast mode in the widget's config copy.
     pub(crate) fn set_service_tier(&mut self, service_tier: Option<ServiceTier>) {
-        self.config.service_tier = service_tier;
+        self.config.service_tier =
+            service_tier.map(|service_tier| service_tier.request_value().to_string());
         self.effective_service_tier = service_tier;
     }
 
@@ -9387,7 +9422,10 @@ impl ChatWidget {
     }
 
     pub(crate) fn configured_service_tier(&self) -> Option<ServiceTier> {
-        self.config.service_tier
+        self.config
+            .service_tier
+            .as_deref()
+            .and_then(ServiceTier::from_request_value)
     }
 
     pub(crate) fn fast_default_opt_out(&self) -> Option<bool> {
@@ -9494,7 +9532,7 @@ impl ChatWidget {
                 /*model*/ None,
                 /*effort*/ None,
                 /*summary*/ None,
-                Some(service_tier),
+                Some(service_tier.map(|service_tier| service_tier.request_value().to_string())),
                 /*collaboration_mode*/ None,
                 /*personality*/ None,
             )));
@@ -10639,6 +10677,15 @@ impl ChatWidget {
             }
         }
         true
+    }
+
+    fn append_message_history_entry(&self, text: String) {
+        let Some(thread_id) = self.thread_id else {
+            tracing::warn!("failed to append to message history: no active thread id");
+            return;
+        };
+        self.app_event_tx
+            .send(AppEvent::AppendMessageHistoryEntry { thread_id, text });
     }
 
     pub(crate) fn prepare_local_op_submission(&mut self, op: &AppCommand) {

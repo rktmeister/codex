@@ -11,7 +11,6 @@ use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::Personality;
 use codex_protocol::config_types::ReasoningSummary;
-use codex_protocol::config_types::ServiceTier;
 use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
@@ -53,7 +52,7 @@ use codex_rollout::state_db::StateDbHandle;
 pub struct ThreadConfigSnapshot {
     pub model: String,
     pub model_provider_id: String,
-    pub service_tier: Option<ServiceTier>,
+    pub service_tier: Option<String>,
     pub approval_policy: AskForApproval,
     pub approvals_reviewer: ApprovalsReviewer,
     pub permission_profile: PermissionProfile,
@@ -91,7 +90,7 @@ pub struct CodexThreadTurnContextOverrides {
     pub model: Option<String>,
     pub effort: Option<Option<ReasoningEffort>>,
     pub summary: Option<ReasoningSummary>,
-    pub service_tier: Option<Option<ServiceTier>>,
+    pub service_tier: Option<Option<String>>,
     pub collaboration_mode: Option<CollaborationMode>,
     pub personality: Option<Personality>,
 }
@@ -391,7 +390,7 @@ impl CodexThread {
         self.rollout_path.clone()
     }
 
-    pub(crate) fn session_configured(&self) -> SessionConfiguredEvent {
+    pub fn session_configured(&self) -> SessionConfiguredEvent {
         self.session_configured.clone()
     }
 
@@ -463,6 +462,13 @@ impl CodexThread {
 
     pub async fn config(&self) -> Arc<crate::config::Config> {
         self.codex.session.get_config().await
+    }
+
+    /// Refresh the thread's layer-backed user config state from a caller-supplied
+    /// config snapshot. Thread-scoped layers and session-static settings remain
+    /// unchanged.
+    pub async fn refresh_runtime_config(&self, next_config: crate::config::Config) {
+        self.codex.session.refresh_runtime_config(next_config).await;
     }
 
     pub async fn read_mcp_resource(
