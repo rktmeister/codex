@@ -55,6 +55,8 @@ fn status_line_segment(item: StatusLineItem, value: String) -> Vec<Span<'static>
         StatusLineItem::TotalOutputTokens => directional_segment("↓", value, Color::Red, " out"),
         StatusLineItem::SessionId => vec!["# ".dim(), Span::from(value).dim()],
         StatusLineItem::FastMode => fast_mode_segment(value),
+        StatusLineItem::Permissions => labeled_segment("perm", value),
+        StatusLineItem::ApprovalMode => labeled_segment("approval", value),
         StatusLineItem::RawOutput => vec![Span::from(value).dim()],
         StatusLineItem::ThreadTitle => vec![value.into()],
         StatusLineItem::TaskProgress => vec![Span::from(value).dim()],
@@ -256,5 +258,27 @@ mod tests {
         assert_eq!(line.spans[7].style.fg, Some(Color::Red));
         assert!(line.spans[11].style.add_modifier.contains(Modifier::DIM));
         assert_eq!(line.spans[12].style.fg, Some(Color::Green));
+    }
+
+    #[test]
+    fn format_status_line_formats_mode_segments() {
+        let line = format_status_line([
+            (StatusLineItem::Permissions, "Workspace".to_string()),
+            (StatusLineItem::ApprovalMode, "on-request".to_string()),
+        ])
+        .expect("line");
+
+        assert_eq!(
+            span_text(&line),
+            vec![
+                "perm ".to_string(),
+                "Workspace".to_string(),
+                "  ".to_string(),
+                "approval ".to_string(),
+                "on-request".to_string(),
+            ]
+        );
+        assert!(line.spans[0].style.add_modifier.contains(Modifier::DIM));
+        assert!(line.spans[3].style.add_modifier.contains(Modifier::DIM));
     }
 }

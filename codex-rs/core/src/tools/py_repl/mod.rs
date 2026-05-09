@@ -44,6 +44,7 @@ use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
 use crate::tools::ToolRouter;
 use crate::tools::context::SharedTurnDiffTracker;
+use crate::tools::flat_tool_name;
 use crate::tools::handlers::apply_granted_turn_permissions;
 use crate::tools::handlers::implicit_granted_permissions;
 use crate::tools::handlers::normalize_and_validate_additional_permissions;
@@ -1551,7 +1552,7 @@ impl PyReplManager {
                         ResponsesApiNamespaceTool::Function(tool) => {
                             let tool_name =
                                 ToolName::namespaced(namespace.name.clone(), tool.name.clone());
-                            (tool_name.display() == req.tool_name).then_some(tool_name)
+                            (flat_tool_name(&tool_name) == req.tool_name).then_some(tool_name)
                         }
                     })
                 }
