@@ -129,6 +129,7 @@ use codex_config::types::ApprovalsReviewer;
 use codex_config::types::Notifications;
 use codex_config::types::WindowsSandboxModeToml;
 use codex_core_skills::model::SkillMetadata;
+use codex_exec_server::EnvironmentManager;
 use codex_features::FEATURES;
 use codex_features::Feature;
 #[cfg(test)]
@@ -153,7 +154,6 @@ use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::CollaborationModeMask;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::Personality;
-use codex_protocol::config_types::ServiceTier;
 use codex_protocol::config_types::Settings;
 #[cfg(target_os = "windows")]
 use codex_protocol::config_types::WindowsSandboxLevel;
@@ -349,6 +349,7 @@ use self::plan_implementation::PLAN_IMPLEMENTATION_TITLE;
 mod realtime;
 use self::realtime::RealtimeConversationUiState;
 mod reasoning_shortcuts;
+mod service_tiers;
 mod side;
 mod status_surfaces;
 use self::status_surfaces::CachedProjectRootName;
@@ -563,6 +564,7 @@ pub(crate) fn get_limits_duration(windows_minutes: i64) -> String {
 /// Common initialization parameters shared by all `ChatWidget` constructors.
 pub(crate) struct ChatWidgetInit {
     pub(crate) config: Config,
+    pub(crate) environment_manager: Arc<EnvironmentManager>,
     pub(crate) frame_requester: FrameRequester,
     pub(crate) app_event_tx: AppEventSender,
     /// App-server-backed runner used by status surfaces for workspace metadata probes.
@@ -764,9 +766,10 @@ pub(crate) struct ChatWidget {
     /// where the overlay may briefly treat new tail content as already cached.
     active_cell_revision: u64,
     config: Config,
+    environment_manager: Arc<EnvironmentManager>,
     raw_output_mode: bool,
     /// Runtime value resolved by core. `config.service_tier` remains the explicit user choice.
-    effective_service_tier: Option<ServiceTier>,
+    effective_service_tier: Option<String>,
     /// The unmasked collaboration mode settings (always Default mode).
     ///
     /// Masks are applied on top of this base mode to derive the effective mode.
@@ -1648,6 +1651,7 @@ fn request_permissions_from_params(
     RequestPermissionsEvent {
         turn_id: params.turn_id,
         call_id: params.item_id,
+        started_at_ms: params.started_at_ms,
         reason: params.reason,
         permissions: params.permissions.into(),
         cwd: Some(params.cwd),
@@ -2094,10 +2098,7 @@ impl ChatWidget {
         self.current_rollout_path = session.rollout_path.clone();
         self.current_cwd = Some(session.cwd.to_path_buf());
         self.config.cwd = session.cwd.clone();
-        self.effective_service_tier = session
-            .service_tier
-            .as_deref()
-            .and_then(ServiceTier::from_request_value);
+        self.effective_service_tier = session.service_tier.clone();
         if let Err(err) = self
             .config
             .permissions
@@ -2138,15 +2139,15 @@ impl ChatWidget {
         }
         self.refresh_model_display();
         self.refresh_status_surfaces();
-        self.sync_fast_command_enabled();
+        self.sync_service_tier_commands();
         self.sync_personality_command_enabled();
         self.sync_plugins_command_enabled();
         self.sync_goal_command_enabled();
         self.refresh_plugin_mentions();
         if display == SessionConfiguredDisplay::Normal {
             let startup_tooltip_override = self.startup_tooltip_override.take();
-            let show_fast_status =
-                self.should_show_fast_status(&model_for_header, self.effective_service_tier);
+            let show_fast_status = self
+                .should_show_fast_status(&model_for_header, self.effective_service_tier.as_deref());
             let session_info_cell = history_cell::new_session_info(
                 &self.config,
                 &model_for_header,
@@ -4864,6 +4865,7 @@ impl ChatWidget {
     fn new_with_op_target(common: ChatWidgetInit, codex_op_target: CodexOpTarget) -> Self {
         let ChatWidgetInit {
             config,
+            environment_manager,
             frame_requester,
             app_event_tx,
             workspace_command_runner,
@@ -4915,10 +4917,7 @@ impl ChatWidget {
         let active_cell = Some(Self::placeholder_session_header_cell(&config));
 
         let current_cwd = Some(config.cwd.to_path_buf());
-        let effective_service_tier = config
-            .service_tier
-            .as_deref()
-            .and_then(ServiceTier::from_request_value);
+        let effective_service_tier = config.service_tier.clone();
         let current_terminal_info = terminal_info();
         let runtime_keymap = RuntimeKeymap::from_config(&config.tui_keymap).ok();
         let default_keymap = RuntimeKeymap::defaults();
@@ -4952,6 +4951,7 @@ impl ChatWidget {
             active_cell_revision: 0,
             raw_output_mode: config.tui_raw_output_mode,
             config,
+            environment_manager,
             effective_service_tier,
             skills_all: Vec::new(),
             skills_initial_state: None,
@@ -5113,7 +5113,7 @@ impl ChatWidget {
         widget
             .bottom_pane
             .set_collaboration_modes_enabled(/*enabled*/ true);
-        widget.sync_fast_command_enabled();
+        widget.sync_service_tier_commands();
         widget.sync_personality_command_enabled();
         widget.sync_plugins_command_enabled();
         widget.sync_goal_command_enabled();
@@ -5352,6 +5352,9 @@ impl ChatWidget {
                     }
                     InputResult::Command(cmd) => {
                         self.handle_slash_command_dispatch(cmd);
+                    }
+                    InputResult::ServiceTierCommand(command) => {
+                        self.handle_service_tier_command_dispatch(command);
                     }
                     InputResult::CommandWithArgs(cmd, args, text_elements) => {
                         self.handle_slash_command_with_args_dispatch(cmd, args, text_elements);
@@ -6298,6 +6301,7 @@ impl ChatWidget {
                 self.on_request_user_input(params);
             }
             ServerRequest::DynamicToolCall { .. }
+            | ServerRequest::AttestationGenerate { .. }
             | ServerRequest::ChatgptAuthTokensRefresh { .. }
             | ServerRequest::ApplyPatchApproval { .. }
             | ServerRequest::ExecCommandApproval { .. } => {
@@ -6468,8 +6472,9 @@ impl ChatWidget {
                 self.on_guardian_review_notification(
                     notification.review_id,
                     notification.turn_id,
+                    notification.started_at_ms,
                     notification.review,
-                    /*decision_source*/ None,
+                    /*completion*/ None,
                     notification.action,
                 );
             }
@@ -6477,8 +6482,9 @@ impl ChatWidget {
                 self.on_guardian_review_notification(
                     notification.review_id,
                     notification.turn_id,
+                    notification.started_at_ms,
                     notification.review,
-                    Some(notification.decision_source),
+                    Some((notification.completed_at_ms, notification.decision_source)),
                     notification.action,
                 );
             }
@@ -6659,14 +6665,24 @@ impl ChatWidget {
         &mut self,
         id: String,
         turn_id: String,
+        started_at_ms: i64,
         review: codex_app_server_protocol::GuardianApprovalReview,
-        decision_source: Option<codex_app_server_protocol::AutoReviewDecisionSource>,
+        completion: Option<(i64, codex_app_server_protocol::AutoReviewDecisionSource)>,
         action: GuardianApprovalReviewAction,
     ) {
+        let (completed_at_ms, decision_source) = match completion {
+            Some((completed_at_ms, decision_source)) => {
+                (Some(completed_at_ms), Some(decision_source))
+            }
+            None => (None, None),
+        };
+
         self.on_guardian_assessment(GuardianAssessmentEvent {
             id,
             target_item_id: None,
             turn_id,
+            started_at_ms,
+            completed_at_ms,
             status: match review.status {
                 codex_app_server_protocol::GuardianApprovalReviewStatus::InProgress => {
                     GuardianAssessmentStatus::InProgress
@@ -7257,12 +7273,14 @@ impl ChatWidget {
         }
 
         let config = self.config.clone();
+        let environment_manager = Arc::clone(&self.environment_manager);
         let app_event_tx = self.app_event_tx.clone();
         tokio::spawn(async move {
             let accessible_result =
-                match connectors::list_accessible_connectors_from_mcp_tools_with_options_and_status(
+                match connectors::list_accessible_connectors_from_mcp_tools_with_environment_manager(
                     &config,
                     force_refetch,
+                    &environment_manager,
                 )
                 .await
                 {
@@ -9247,6 +9265,8 @@ impl ChatWidget {
             .set(policy.to_core())
         {
             tracing::warn!(%err, "failed to set approval_policy on chat config");
+        } else {
+            self.refresh_status_surfaces();
         }
     }
 
@@ -9256,7 +9276,9 @@ impl ChatWidget {
         &mut self,
         profile: PermissionProfile,
     ) -> ConstraintResult<()> {
-        self.config.permissions.set_permission_profile(profile)
+        self.config.permissions.set_permission_profile(profile)?;
+        self.refresh_status_surfaces();
+        Ok(())
     }
 
     #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
@@ -9295,7 +9317,7 @@ impl ChatWidget {
             }
         }
         if feature == Feature::FastMode {
-            self.sync_fast_command_enabled();
+            self.sync_service_tier_commands();
         }
         if feature == Feature::Personality {
             self.sync_personality_command_enabled();
@@ -9337,6 +9359,7 @@ impl ChatWidget {
 
     pub(crate) fn set_approvals_reviewer(&mut self, policy: ApprovalsReviewer) {
         self.config.approvals_reviewer = policy;
+        self.refresh_status_surfaces();
     }
 
     pub(crate) fn set_full_access_warning_acknowledged(&mut self, acknowledged: bool) {
@@ -9410,28 +9433,6 @@ impl ChatWidget {
         self.config.personality = Some(personality);
     }
 
-    /// Set Fast mode in the widget's config copy.
-    pub(crate) fn set_service_tier(&mut self, service_tier: Option<ServiceTier>) {
-        self.config.service_tier =
-            service_tier.map(|service_tier| service_tier.request_value().to_string());
-        self.effective_service_tier = service_tier;
-    }
-
-    pub(crate) fn current_service_tier(&self) -> Option<ServiceTier> {
-        self.effective_service_tier
-    }
-
-    pub(crate) fn configured_service_tier(&self) -> Option<ServiceTier> {
-        self.config
-            .service_tier
-            .as_deref()
-            .and_then(ServiceTier::from_request_value)
-    }
-
-    pub(crate) fn fast_default_opt_out(&self) -> Option<bool> {
-        self.config.notices.fast_default_opt_out
-    }
-
     pub(crate) fn status_account_display(&self) -> Option<&StatusAccountDisplay> {
         self.status_account_display.as_ref()
     }
@@ -9466,26 +9467,6 @@ impl ChatWidget {
             .set_connectors_enabled(self.connectors_enabled());
     }
 
-    pub(crate) fn should_show_fast_status(
-        &self,
-        model: &str,
-        service_tier: Option<ServiceTier>,
-    ) -> bool {
-        self.model_supports_fast_mode(model)
-            && matches!(service_tier, Some(ServiceTier::Fast))
-            && self.has_chatgpt_account
-    }
-
-    fn fast_mode_enabled(&self) -> bool {
-        self.config.features.enabled(Feature::FastMode)
-    }
-
-    pub(crate) fn can_toggle_fast_mode_from_keybinding(&self) -> bool {
-        self.fast_mode_enabled()
-            && !self.is_user_turn_pending_or_running()
-            && self.bottom_pane.no_modal_or_popup_active()
-    }
-
     pub(crate) fn set_realtime_audio_device(
         &mut self,
         kind: RealtimeAudioDeviceKind,
@@ -9517,38 +9498,6 @@ impl ChatWidget {
         self.refresh_model_dependent_surfaces();
     }
 
-    fn set_service_tier_selection(&mut self, service_tier: Option<ServiceTier>) {
-        if service_tier.is_none() {
-            self.config.notices.fast_default_opt_out = Some(true);
-        }
-        self.set_service_tier(service_tier);
-        self.app_event_tx
-            .send(AppEvent::CodexOp(AppCommand::override_turn_context(
-                /*cwd*/ None,
-                /*approval_policy*/ None,
-                /*approvals_reviewer*/ None,
-                /*permission_profile*/ None,
-                /*windows_sandbox_level*/ None,
-                /*model*/ None,
-                /*effort*/ None,
-                /*summary*/ None,
-                Some(service_tier.map(|service_tier| service_tier.request_value().to_string())),
-                /*collaboration_mode*/ None,
-                /*personality*/ None,
-            )));
-        self.app_event_tx
-            .send(AppEvent::PersistServiceTierSelection { service_tier });
-    }
-
-    pub(crate) fn toggle_fast_mode_from_ui(&mut self) {
-        let next_tier = if matches!(self.current_service_tier(), Some(ServiceTier::Fast)) {
-            None
-        } else {
-            Some(ServiceTier::Fast)
-        };
-        self.set_service_tier_selection(next_tier);
-    }
-
     pub(crate) fn current_model(&self) -> &str {
         if !self.collaboration_modes_enabled() {
             return self.current_collaboration_mode.model();
@@ -9573,11 +9522,6 @@ impl ChatWidget {
     fn current_realtime_audio_selection_label(&self, kind: RealtimeAudioDeviceKind) -> String {
         self.current_realtime_audio_device_name(kind)
             .unwrap_or_else(|| "System default".to_string())
-    }
-
-    fn sync_fast_command_enabled(&mut self) {
-        self.bottom_pane
-            .set_fast_command_enabled(self.fast_mode_enabled());
     }
 
     fn sync_personality_command_enabled(&mut self) {
@@ -9605,19 +9549,6 @@ impl ChatWidget {
                     .into_iter()
                     .find(|preset| preset.model == model)
                     .map(|preset| preset.supports_personality)
-            })
-            .unwrap_or(false)
-    }
-
-    fn model_supports_fast_mode(&self, model: &str) -> bool {
-        self.model_catalog
-            .try_list_models()
-            .ok()
-            .and_then(|models| {
-                models
-                    .into_iter()
-                    .find(|preset| preset.model == model)
-                    .map(|preset| preset.supports_fast_mode())
             })
             .unwrap_or(false)
     }
@@ -9761,6 +9692,7 @@ impl ChatWidget {
         self.session_header.set_model(effective.model());
         // Keep composer paste affordances aligned with the currently effective model.
         self.sync_image_paste_enabled();
+        self.sync_service_tier_commands();
         self.refresh_terminal_title();
     }
 

@@ -26,6 +26,7 @@ pub use info::GitDiffToRemote;
 pub use info::GitInfo;
 pub use info::GitLineStats;
 pub use info::branch_diff_line_counts;
+pub use info::canonicalize_git_remote_url;
 pub use info::collect_git_info;
 pub use info::current_branch_name;
 pub use info::default_branch_name;
