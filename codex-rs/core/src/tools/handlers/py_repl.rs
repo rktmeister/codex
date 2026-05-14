@@ -30,6 +30,7 @@ use codex_tools::JsonSchema;
 use codex_tools::ResponsesApiTool;
 use codex_tools::ToolName;
 use codex_tools::ToolSpec;
+use codex_utils_absolute_path::AbsolutePathBuf;
 
 pub struct PyReplHandler;
 pub struct PyReplResetHandler;
@@ -76,10 +77,15 @@ fn build_py_repl_exec_output(
     }
 }
 
-async fn emit_py_repl_exec_begin(session: &Session, turn: &TurnContext, call_id: &str) {
+async fn emit_py_repl_exec_begin(
+    session: &Session,
+    turn: &TurnContext,
+    call_id: &str,
+    cwd: &AbsolutePathBuf,
+) {
     let emitter = ToolEmitter::shell(
         vec!["py_repl".to_string()],
-        turn.cwd.clone(),
+        cwd.clone(),
         ExecCommandSource::Agent,
         false,
     );
@@ -94,11 +100,12 @@ async fn emit_py_repl_exec_end(
     output: &str,
     error: Option<&str>,
     duration: Duration,
+    cwd: &AbsolutePathBuf,
 ) {
     let exec_output = build_py_repl_exec_output(output, error, duration);
     let emitter = ToolEmitter::shell(
         vec!["py_repl".to_string()],
-        turn.cwd.clone(),
+        cwd.clone(),
         ExecCommandSource::Agent,
         false,
     );
@@ -162,8 +169,14 @@ impl ToolExecutor<ToolInvocation> for PyReplHandler {
         };
 
         let manager = turn.py_repl.manager().await?;
+        let Some(turn_environment) = turn.environments.primary() else {
+            return Err(FunctionCallError::RespondToModel(
+                "py_repl is unavailable without a selected turn environment".to_string(),
+            ));
+        };
+        let cwd = turn_environment.cwd.clone();
         let started_at = Instant::now();
-        emit_py_repl_exec_begin(session.as_ref(), turn.as_ref(), &call_id).await;
+        emit_py_repl_exec_begin(session.as_ref(), turn.as_ref(), &call_id, &cwd).await;
         let result = manager
             .execute(
                 Arc::clone(&session),
@@ -184,6 +197,7 @@ impl ToolExecutor<ToolInvocation> for PyReplHandler {
                     "",
                     Some(&message),
                     started_at.elapsed(),
+                    &cwd,
                 )
                 .await;
                 return Err(err);
@@ -206,6 +220,7 @@ impl ToolExecutor<ToolInvocation> for PyReplHandler {
             &content,
             None,
             started_at.elapsed(),
+            &cwd,
         )
         .await;
 
@@ -432,6 +447,11 @@ mod tests {
             "hello",
             None,
             Duration::from_millis(12),
+            &turn
+                .environments
+                .primary()
+                .expect("primary environment")
+                .cwd,
         )
         .await;
 
@@ -449,7 +469,13 @@ mod tests {
         assert_eq!(event.call_id, "call-1");
         assert_eq!(event.turn_id, turn.sub_id);
         assert_eq!(event.command, vec!["py_repl".to_string()]);
-        assert_eq!(event.cwd, turn.cwd.clone());
+        assert_eq!(
+            event.cwd,
+            turn.environments
+                .primary()
+                .expect("primary environment")
+                .cwd
+        );
         assert_eq!(event.source, ExecCommandSource::Agent);
         assert_eq!(event.interaction_input, None);
         assert_eq!(event.stdout, "hello");

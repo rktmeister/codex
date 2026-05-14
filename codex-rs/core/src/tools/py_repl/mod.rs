@@ -741,10 +741,14 @@ impl PyReplManager {
         }
         env.insert("PYTHONDONTWRITEBYTECODE".to_string(), "1".to_string());
 
+        let Some(turn_environment) = turn.environments.primary() else {
+            return Err("py_repl is unavailable without a selected turn environment".to_string());
+        };
+        let cwd = turn_environment.cwd.clone();
         let command = SandboxCommand {
             program: self.python_path.clone().into_os_string(),
             args: vec!["-u".to_string(), kernel_path.to_string_lossy().to_string()],
-            cwd: turn.cwd.clone(),
+            cwd: cwd.clone(),
             env,
             additional_permissions: None,
         };
@@ -776,7 +780,7 @@ impl PyReplManager {
                 sandbox: sandbox_type,
                 enforce_managed_network: has_managed_network_requirements,
                 network: None,
-                sandbox_policy_cwd: &turn.cwd,
+                sandbox_policy_cwd: &cwd,
                 #[cfg(target_os = "macos")]
                 macos_seatbelt_profile_extensions: None,
                 codex_linux_sandbox_exe: turn.codex_linux_sandbox_exe.as_deref(),
@@ -791,7 +795,7 @@ impl PyReplManager {
                 crate::sandboxing::ExecRequest::from_sandbox_exec_request(
                     request,
                     options,
-                    turn.cwd.clone(),
+                    cwd.clone(),
                 )
             })
             .map_err(|err| format!("failed to configure sandbox for py_repl: {err}"))?;
@@ -1894,24 +1898,23 @@ impl PyReplManager {
             ));
         }
 
-        let cwd = req
-            .cwd
-            .clone()
-            .filter(|value| !value.is_empty())
-            .map_or_else(
-                || exec.turn.cwd.clone(),
-                |cwd| exec.turn.resolve_path(Some(cwd)),
-            );
-        let hook_command = codex_shell_command::parse_command::shlex_join(&req.command);
         let manager = &exec.session.services.unified_exec_manager;
-        let process_id = manager.allocate_process_id().await;
         let Some(turn_environment) = exec.turn.environments.primary() else {
-            manager.release_process_id(process_id).await;
             return Err(Self::run_process_error(
                 request_id,
                 "unified exec is unavailable in this session",
             ));
         };
+        let cwd = req
+            .cwd
+            .clone()
+            .filter(|value| !value.is_empty())
+            .map_or_else(
+                || turn_environment.cwd.clone(),
+                |cwd| turn_environment.cwd.join(cwd),
+            );
+        let hook_command = codex_shell_command::parse_command::shlex_join(&req.command);
+        let process_id = manager.allocate_process_id().await;
         let environment = Arc::clone(&turn_environment.environment);
 
         let exec_permission_approvals_enabled = exec
