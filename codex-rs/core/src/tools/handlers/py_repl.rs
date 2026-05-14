@@ -17,8 +17,8 @@ use crate::tools::events::ToolEventStage;
 use crate::tools::handlers::parse_arguments;
 use crate::tools::py_repl::PY_REPL_PRAGMA_PREFIX;
 use crate::tools::py_repl::PyReplArgs;
+use crate::tools::registry::ToolExecutor;
 use crate::tools::registry::ToolHandler;
-use crate::tools::registry::ToolKind;
 use codex_features::Feature;
 use codex_protocol::exec_output::ExecToolCallOutput;
 use codex_protocol::exec_output::StreamOutput;
@@ -114,7 +114,7 @@ async fn emit_py_repl_exec_end(
     emitter.emit(ctx, stage).await;
 }
 
-impl ToolHandler for PyReplHandler {
+impl ToolExecutor<ToolInvocation> for PyReplHandler {
     type Output = FunctionToolOutput;
 
     fn tool_name(&self) -> ToolName {
@@ -132,17 +132,6 @@ impl ToolHandler for PyReplHandler {
                 definition: PY_REPL_FREEFORM_GRAMMAR.to_string(),
             },
         }))
-    }
-
-    fn kind(&self) -> ToolKind {
-        ToolKind::Function
-    }
-
-    fn matches_kind(&self, payload: &ToolPayload) -> bool {
-        matches!(
-            payload,
-            ToolPayload::Function { .. } | ToolPayload::Custom { .. }
-        )
     }
 
     async fn handle(&self, invocation: ToolInvocation) -> Result<Self::Output, FunctionCallError> {
@@ -228,7 +217,16 @@ impl ToolHandler for PyReplHandler {
     }
 }
 
-impl ToolHandler for PyReplResetHandler {
+impl ToolHandler for PyReplHandler {
+    fn matches_kind(&self, payload: &ToolPayload) -> bool {
+        matches!(
+            payload,
+            ToolPayload::Function { .. } | ToolPayload::Custom { .. }
+        )
+    }
+}
+
+impl ToolExecutor<ToolInvocation> for PyReplResetHandler {
     type Output = FunctionToolOutput;
 
     fn tool_name(&self) -> ToolName {
@@ -252,10 +250,6 @@ impl ToolHandler for PyReplResetHandler {
         }))
     }
 
-    fn kind(&self) -> ToolKind {
-        ToolKind::Function
-    }
-
     async fn handle(&self, invocation: ToolInvocation) -> Result<Self::Output, FunctionCallError> {
         if !invocation.session.features().enabled(Feature::PyRepl) {
             return Err(FunctionCallError::RespondToModel(
@@ -271,6 +265,8 @@ impl ToolHandler for PyReplResetHandler {
         ))
     }
 }
+
+impl ToolHandler for PyReplResetHandler {}
 
 fn parse_freeform_args(input: &str) -> Result<PyReplArgs, FunctionCallError> {
     if input.trim().is_empty() {

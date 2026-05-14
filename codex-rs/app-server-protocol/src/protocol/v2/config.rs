@@ -120,7 +120,6 @@ pub struct SandboxWorkspaceWrite {
 #[ts(export_to = "v2/")]
 pub struct ToolsV2 {
     pub web_search: Option<WebSearchToolConfig>,
-    pub view_image: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS, ExperimentalApi)]
@@ -357,6 +356,7 @@ pub struct ConfigRequirements {
     pub allowed_approvals_reviewers: Option<Vec<ApprovalsReviewer>>,
     pub allowed_sandbox_modes: Option<Vec<SandboxMode>>,
     pub allowed_web_search_modes: Option<Vec<WebSearchMode>>,
+    pub allow_managed_hooks_only: Option<bool>,
     pub feature_requirements: Option<BTreeMap<String, bool>>,
     #[experimental("configRequirements/read.hooks")]
     pub hooks: Option<ManagedHooksRequirements>,
@@ -413,6 +413,9 @@ pub enum ConfiguredHookHandler {
     #[ts(rename = "command")]
     Command {
         command: String,
+        #[serde(rename = "commandWindows")]
+        #[ts(rename = "commandWindows")]
+        command_windows: Option<String>,
         #[serde(rename = "timeoutSec")]
         #[ts(rename = "timeoutSec")]
         timeout_sec: Option<u64>,

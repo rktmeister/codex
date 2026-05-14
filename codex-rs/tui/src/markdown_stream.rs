@@ -85,7 +85,7 @@ impl MarkdownStreamCollector {
     /// delta without a newline returns `None`, as does a delta that only completes lines inside an
     /// open markdown block that may change meaning when more source arrives.
     pub fn commit_complete_source(&mut self) -> Option<String> {
-        let commit_end = stable_commit_end(&self.buffer)?;
+        let commit_end = source_commit_end(&self.buffer)?;
         if commit_end <= self.committed_source_len {
             return None;
         }
@@ -205,7 +205,33 @@ impl MarkdownStreamCollector {
     }
 }
 
+fn source_commit_end(source: &str) -> Option<usize> {
+    commit_end(source, CommitBoundary::SourceChunk)
+}
+
+#[cfg(test)]
 fn stable_commit_end(source: &str) -> Option<usize> {
+    commit_end(source, CommitBoundary::StableRenderedLines)
+}
+
+#[derive(Clone, Copy)]
+enum CommitBoundary {
+    SourceChunk,
+    #[cfg(test)]
+    StableRenderedLines,
+}
+
+impl CommitBoundary {
+    fn should_hold_table_candidates(self) -> bool {
+        match self {
+            Self::SourceChunk => false,
+            #[cfg(test)]
+            Self::StableRenderedLines => true,
+        }
+    }
+}
+
+fn commit_end(source: &str, boundary: CommitBoundary) -> Option<usize> {
     let last_newline_idx = source.rfind('\n')?;
     let source = &source[..=last_newline_idx];
 
@@ -244,7 +270,8 @@ fn stable_commit_end(source: &str) -> Option<usize> {
         .collect();
 
     if trailing_block_contains_callout_marker(&trailing_block)
-        || trailing_block_is_table_candidate(&trailing_block)
+        || (boundary.should_hold_table_candidates()
+            && trailing_block_is_table_candidate(&trailing_block))
     {
         if trailing_block_start == 0 {
             None
@@ -1035,5 +1062,42 @@ mod tests {
     #[tokio::test]
     async fn table_like_lines_inside_fenced_code_are_not_held() {
         assert_streamed_equals_full(&["```\n", "| a | b |\n", "```\n"]).await;
+    }
+
+    #[tokio::test]
+    async fn collector_source_chunks_round_trip_into_agent_fence_unwrapping() {
+        let deltas = [
+            "```md\n",
+            "| A | B |\n",
+            "|---|---|\n",
+            "| 1 | 2 |\n",
+            "```\n",
+        ];
+        let mut collector =
+            super::MarkdownStreamCollector::new(/*width*/ None, &super::test_cwd());
+        let mut raw_source = String::new();
+
+        for delta in deltas {
+            collector.push_delta(delta);
+            if delta.contains('\n')
+                && let Some(chunk) = collector.commit_complete_source()
+            {
+                raw_source.push_str(&chunk);
+            }
+        }
+        raw_source.push_str(&collector.finalize_and_drain_source());
+
+        let mut rendered = Vec::new();
+        crate::markdown::append_markdown_agent(&raw_source, /*width*/ None, &mut rendered);
+        let rendered_strs = lines_to_plain_strings(&rendered);
+
+        assert!(
+            rendered_strs.iter().any(|line| line.contains('┌')),
+            "expected markdown-fenced table to render as boxed table: {rendered_strs:?}"
+        );
+        assert!(
+            !rendered_strs.iter().any(|line| line.trim() == "| A | B |"),
+            "did not expect raw table header after markdown-fence unwrapping: {rendered_strs:?}"
+        );
     }
 }

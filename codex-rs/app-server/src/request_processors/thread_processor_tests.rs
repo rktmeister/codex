@@ -582,6 +582,7 @@ mod thread_processor_behavior_tests {
             temp_dir.path().to_path_buf(),
             Vec::new(),
             LoaderOverrides::default(),
+            /*strict_config*/ false,
             CloudRequirementsLoader::default(),
             Arg0DispatchPaths::default(),
             Arc::new(StaticThreadConfigLoader::new(vec![
@@ -1086,6 +1087,7 @@ mod thread_processor_behavior_tests {
             conversation_id,
             PathBuf::from("/tmp/rollout.jsonl"),
             Some("hi".to_string()),
+            /*preview*/ None,
             "2025-09-05T16:53:11Z".to_string(),
             "2025-09-05T16:53:12Z".to_string(),
             "test-provider".to_string(),

@@ -23,6 +23,7 @@ use codex_core::thread_store_from_config;
 use codex_exec_server::CreateDirectoryOptions;
 use codex_exec_server::ExecutorFileSystem;
 use codex_exec_server::RemoveOptions;
+use codex_extension_api::empty_extension_registry;
 use codex_features::Feature;
 use codex_login::CodexAuth;
 use codex_model_provider_info::ModelProviderInfo;
@@ -188,17 +189,13 @@ fn docker_command_capture_stdout<const N: usize>(args: [&str; N]) -> Result<Stri
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ApplyPatchModelOutput {
     Freeform,
-    Shell,
-    ShellViaHeredoc,
     ShellCommandViaHeredoc,
 }
 
 /// A collection of different ways the model can output an apply_patch call
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ShellModelOutput {
-    Shell,
     ShellCommand,
-    LocalShell,
     // UnifiedExec has its own set of tests
 }
 
@@ -437,6 +434,7 @@ impl TestCodexBuilder {
             codex_core::test_support::auth_manager_from_auth(auth.clone()),
             SessionSource::Exec,
             Arc::clone(&environment_manager),
+            empty_extension_registry(),
             /*analytics_events_client*/ None,
             thread_store,
             state_db.clone(),
@@ -957,9 +955,7 @@ impl TestCodexHarness {
             ApplyPatchModelOutput::Freeform => {
                 Box::pin(self.custom_tool_call_output(call_id)).await
             }
-            ApplyPatchModelOutput::Shell
-            | ApplyPatchModelOutput::ShellViaHeredoc
-            | ApplyPatchModelOutput::ShellCommandViaHeredoc => {
+            ApplyPatchModelOutput::ShellCommandViaHeredoc => {
                 Box::pin(self.function_call_stdout(call_id)).await
             }
         }

@@ -1528,77 +1528,54 @@ impl PyReplManager {
             ToolRouterParams {
                 deferred_mcp_tools: None,
                 mcp_tools: Some(mcp_tools),
-                unavailable_called_tools: Vec::new(),
-                // Py REPL dispatches nested tool calls directly, not through
-                // `ToolCallRuntime`'s parallel scheduling lock.
-                parallel_mcp_server_names: std::collections::HashSet::new(),
                 discoverable_tools: None,
+                extension_tool_executors: crate::tools::router::extension_tool_executors(
+                    exec.session.as_ref(),
+                ),
                 dynamic_tools: exec.turn.dynamic_tools.as_slice(),
             },
         );
 
-        let specs = router.specs();
-        let requested_tool_name = specs
+        let specs = router.model_visible_specs();
+        let (requested_tool_name, requested_spec_is_freeform) = specs
             .iter()
             .find_map(|spec| match spec {
                 codex_tools::ToolSpec::Function(tool) if tool.name == req.tool_name => {
-                    Some(ToolName::plain(req.tool_name.clone()))
+                    Some((ToolName::plain(req.tool_name.clone()), false))
                 }
                 codex_tools::ToolSpec::Freeform(tool) if tool.name == req.tool_name => {
-                    Some(ToolName::plain(req.tool_name.clone()))
+                    Some((ToolName::plain(req.tool_name.clone()), true))
                 }
                 codex_tools::ToolSpec::Namespace(namespace) => {
                     namespace.tools.iter().find_map(|tool| match tool {
                         ResponsesApiNamespaceTool::Function(tool) => {
                             let tool_name =
                                 ToolName::namespaced(namespace.name.clone(), tool.name.clone());
-                            (flat_tool_name(&tool_name) == req.tool_name).then_some(tool_name)
+                            (flat_tool_name(&tool_name) == req.tool_name)
+                                .then_some((tool_name, false))
                         }
                     })
                 }
-                codex_tools::ToolSpec::LocalShell {}
-                | codex_tools::ToolSpec::ImageGeneration { .. }
+                codex_tools::ToolSpec::ImageGeneration { .. }
                 | codex_tools::ToolSpec::ToolSearch { .. }
                 | codex_tools::ToolSpec::WebSearch { .. }
                 | codex_tools::ToolSpec::Function(_)
                 | codex_tools::ToolSpec::Freeform(_) => None,
             })
-            .unwrap_or_else(|| ToolName::plain(req.tool_name.clone()));
+            .unwrap_or_else(|| (ToolName::plain(req.tool_name.clone()), false));
 
-        let (tool_call_name, payload) = if let Some(tool_info) = exec
-            .session
-            .resolve_mcp_tool_info(&requested_tool_name)
-            .await
-        {
-            (
-                tool_info.canonical_tool_name(),
-                crate::tools::context::ToolPayload::Mcp {
-                    server: tool_info.server_name,
-                    tool: tool_info.tool.name.to_string(),
-                    raw_arguments: req.arguments.clone(),
-                },
-            )
-        } else if matches!(
-            router.find_spec(&requested_tool_name),
-            Some(codex_tools::ToolSpec::Freeform(_))
-        ) {
-            (
-                requested_tool_name,
-                crate::tools::context::ToolPayload::Custom {
-                    input: req.arguments.clone(),
-                },
-            )
+        let payload = if requested_spec_is_freeform {
+            crate::tools::context::ToolPayload::Custom {
+                input: req.arguments.clone(),
+            }
         } else {
-            (
-                requested_tool_name,
-                crate::tools::context::ToolPayload::Function {
-                    arguments: req.arguments.clone(),
-                },
-            )
+            crate::tools::context::ToolPayload::Function {
+                arguments: req.arguments.clone(),
+            }
         };
 
         let call = crate::tools::router::ToolCall {
-            tool_name: tool_call_name,
+            tool_name: requested_tool_name,
             call_id: req.id.clone(),
             payload,
         };
@@ -2004,11 +1981,13 @@ impl PyReplManager {
 
         let request = ExecCommandRequest {
             command: req.command,
+            shell_type: exec.session.user_shell().shell_type.clone(),
             hook_command,
             process_id,
             yield_time_ms,
             max_output_tokens: req.max_output_tokens,
-            cwd,
+            cwd: cwd.clone(),
+            sandbox_cwd: cwd,
             environment,
             env: req.env,
             network: exec.turn.network.clone(),
