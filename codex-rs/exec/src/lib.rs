@@ -24,7 +24,6 @@ use codex_app_server_protocol::ConfigWarningNotification;
 use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::McpServerElicitationAction;
 use codex_app_server_protocol::McpServerElicitationRequestResponse;
-use codex_app_server_protocol::PermissionProfileModificationParams;
 use codex_app_server_protocol::PermissionProfileSelectionParams;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ReviewStartParams;
@@ -65,6 +64,7 @@ use codex_core::config::ConfigOverrides;
 use codex_core::config::find_codex_home;
 use codex_core::config::load_config_as_toml_with_cli_and_load_options;
 use codex_core::config::resolve_oss_provider;
+use codex_core::config::resolve_profile_v2_config_path;
 use codex_core::find_thread_meta_by_name_str;
 use codex_core::format_exec_policy_error_with_source;
 use codex_core::path_utils;
@@ -82,7 +82,6 @@ use codex_protocol::SessionId;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::SandboxMode;
 use codex_protocol::models::ActivePermissionProfile;
-use codex_protocol::models::ActivePermissionProfileModification;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::ReviewRequest;
@@ -264,6 +263,7 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         oss,
         oss_provider,
         config_profile,
+        config_profile_v2,
         sandbox_mode: sandbox_mode_cli_arg,
         dangerously_bypass_approvals_and_sandbox,
         bypass_hook_trust,
@@ -319,8 +319,12 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
             std::process::exit(1);
         }
     };
-
+    let user_config_path = config_profile_v2
+        .as_ref()
+        .map(|profile_v2| resolve_profile_v2_config_path(&codex_home, profile_v2));
     let loader_overrides = LoaderOverrides {
+        user_config_path,
+        user_config_profile: config_profile_v2,
         ignore_user_config,
         ignore_user_and_project_exec_policy_rules: ignore_rules,
         ..Default::default()
@@ -413,6 +417,7 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         permission_profile: None,
         default_permissions: None,
         cwd: resolved_cwd,
+        workspace_roots: None,
         model_provider: model_provider.clone(),
         service_tier: None,
         codex_self_exe: arg0_paths.codex_self_exe.clone(),
@@ -754,7 +759,7 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
     event_processor.print_config_summary(&config, &prompt_summary, &session_configured);
     if !json_mode
         && let Some(message) =
-            codex_core::config::system_bwrap_warning(config.permissions.permission_profile.get())
+            codex_core::config::system_bwrap_warning(config.permissions.permission_profile())
     {
         event_processor.process_warning(message);
     }
@@ -784,6 +789,7 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
                         responsesapi_client_metadata: None,
                         environments: None,
                         cwd: Some(default_cwd),
+                        runtime_workspace_roots: None,
                         approval_policy: Some(default_approval_policy.into()),
                         approvals_reviewer: None,
                         sandbox_policy: None,
@@ -947,7 +953,7 @@ fn thread_start_params_from_config(config: &Config) -> ThreadStartParams {
     let permissions = permissions_selection_from_config(config);
     let sandbox = permissions.is_none().then(|| {
         sandbox_mode_from_permission_profile(
-            &config.permissions.permission_profile(),
+            &config.permissions.effective_permission_profile(),
             config.cwd.as_path(),
         )
     });
@@ -955,6 +961,13 @@ fn thread_start_params_from_config(config: &Config) -> ThreadStartParams {
         model: config.model.clone(),
         model_provider: Some(config.model_provider_id.clone()),
         cwd: Some(config.cwd.to_string_lossy().to_string()),
+        runtime_workspace_roots: Some(
+            config
+                .workspace_roots
+                .iter()
+                .map(AbsolutePathBuf::to_path_buf)
+                .collect(),
+        ),
         approval_policy: Some(config.permissions.approval_policy.value().into()),
         approvals_reviewer: approvals_reviewer_override_from_config(config),
         sandbox: sandbox.flatten(),
@@ -969,7 +982,7 @@ fn thread_resume_params_from_config(config: &Config, thread_id: String) -> Threa
     let permissions = permissions_selection_from_config(config);
     let sandbox = permissions.is_none().then(|| {
         sandbox_mode_from_permission_profile(
-            &config.permissions.permission_profile(),
+            &config.permissions.effective_permission_profile(),
             config.cwd.as_path(),
         )
     });
@@ -978,6 +991,13 @@ fn thread_resume_params_from_config(config: &Config, thread_id: String) -> Threa
         model: config.model.clone(),
         model_provider: Some(config.model_provider_id.clone()),
         cwd: Some(config.cwd.to_string_lossy().to_string()),
+        runtime_workspace_roots: Some(
+            config
+                .workspace_roots
+                .iter()
+                .map(AbsolutePathBuf::to_path_buf)
+                .collect(),
+        ),
         approval_policy: Some(config.permissions.approval_policy.value().into()),
         approvals_reviewer: approvals_reviewer_override_from_config(config),
         sandbox: sandbox.flatten(),
@@ -997,19 +1017,7 @@ fn permissions_selection_from_config(config: &Config) -> Option<PermissionProfil
 fn permissions_selection_from_active_profile(
     active: ActivePermissionProfile,
 ) -> PermissionProfileSelectionParams {
-    let modifications = active
-        .modifications
-        .into_iter()
-        .map(|modification| match modification {
-            ActivePermissionProfileModification::AdditionalWritableRoot { path } => {
-                PermissionProfileModificationParams::AdditionalWritableRoot { path }
-            }
-        })
-        .collect::<Vec<_>>();
-    PermissionProfileSelectionParams::Profile {
-        id: active.id,
-        modifications: (!modifications.is_empty()).then_some(modifications),
-    }
+    PermissionProfileSelectionParams::new(active.id)
 }
 
 fn sandbox_mode_from_permission_profile(
@@ -1085,7 +1093,7 @@ fn session_configured_from_thread_start_response(
             .permission_profile
             .clone()
             .map(Into::into)
-            .unwrap_or_else(|| config.permissions.permission_profile()),
+            .unwrap_or_else(|| config.permissions.effective_permission_profile()),
         response.active_permission_profile.clone().map(Into::into),
         response.cwd.clone(),
         response.reasoning_effort,
@@ -1110,7 +1118,7 @@ fn session_configured_from_thread_resume_response(
             .permission_profile
             .clone()
             .map(Into::into)
-            .unwrap_or_else(|| config.permissions.permission_profile()),
+            .unwrap_or_else(|| config.permissions.effective_permission_profile()),
         response.active_permission_profile.clone().map(Into::into),
         response.cwd.clone(),
         response.reasoning_effort,

@@ -177,7 +177,6 @@ impl ToolsConfig {
             session_source,
             ..
         } = params;
-        let include_apply_patch_tool = features.enabled(Feature::ApplyPatchFreeform);
         let include_code_mode = features.enabled(Feature::CodeMode);
         let include_code_mode_only = include_code_mode && features.enabled(Feature::CodeModeOnly);
         let include_py_repl = features.enabled(Feature::PyRepl);
@@ -230,10 +229,7 @@ impl ToolsConfig {
             model_shell_type
         };
 
-        let apply_patch_tool_type = model_info
-            .apply_patch_tool_type
-            .clone()
-            .or_else(|| include_apply_patch_tool.then_some(ApplyPatchToolType::Freeform));
+        let apply_patch_tool_type = model_info.apply_patch_tool_type.clone();
 
         let agent_jobs_worker_tools = include_agent_jobs
             && matches!(

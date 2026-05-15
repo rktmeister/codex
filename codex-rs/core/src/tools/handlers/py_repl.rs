@@ -121,6 +121,7 @@ async fn emit_py_repl_exec_end(
     emitter.emit(ctx, stage).await;
 }
 
+#[async_trait::async_trait]
 impl ToolExecutor<ToolInvocation> for PyReplHandler {
     type Output = FunctionToolOutput;
 
@@ -241,6 +242,7 @@ impl ToolHandler for PyReplHandler {
     }
 }
 
+#[async_trait::async_trait]
 impl ToolExecutor<ToolInvocation> for PyReplResetHandler {
     type Output = FunctionToolOutput;
 

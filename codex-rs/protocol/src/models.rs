@@ -297,6 +297,15 @@ impl ManagedFileSystemPermissions {
     }
 }
 
+/// Reserved identifier for the built-in read-only permission profile.
+pub const BUILT_IN_PERMISSION_PROFILE_READ_ONLY: &str = ":read-only";
+
+/// Reserved identifier for the built-in workspace-write permission profile.
+pub const BUILT_IN_PERMISSION_PROFILE_WORKSPACE: &str = ":workspace";
+
+/// Reserved identifier for the built-in full-access permission profile.
+pub const BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS: &str = ":danger-full-access";
+
 /// Canonical active runtime permissions for a conversation, turn, or command.
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, JsonSchema, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -335,21 +344,6 @@ pub struct ActivePermissionProfile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub extends: Option<String>,
-
-    /// Bounded user-requested modifications applied on top of the named
-    /// profile, if any.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub modifications: Vec<ActivePermissionProfileModification>,
-}
-
-#[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize, JsonSchema, TS)]
-#[serde(tag = "type", rename_all = "snake_case")]
-#[ts(tag = "type")]
-pub enum ActivePermissionProfileModification {
-    /// Additional concrete directory that should be writable.
-    #[serde(rename_all = "snake_case")]
-    #[ts(rename_all = "snake_case")]
-    AdditionalWritableRoot { path: AbsolutePathBuf },
 }
 
 impl ActivePermissionProfile {
@@ -357,16 +351,7 @@ impl ActivePermissionProfile {
         Self {
             id: id.into(),
             extends: None,
-            modifications: Vec::new(),
         }
-    }
-
-    pub fn with_modifications(
-        mut self,
-        modifications: Vec<ActivePermissionProfileModification>,
-    ) -> Self {
-        self.modifications = modifications;
-        self
     }
 }
 
@@ -402,7 +387,7 @@ impl PermissionProfile {
     /// Managed workspace-write filesystem access with restricted network
     /// access.
     ///
-    /// The returned profile contains symbolic `:project_roots` entries that
+    /// The returned profile contains symbolic `:workspace_roots` entries that
     /// must be resolved against the active permission root before enforcement.
     pub fn workspace_write() -> Self {
         Self::workspace_write_with(
@@ -416,7 +401,7 @@ impl PermissionProfile {
     /// Managed workspace-write filesystem access with the legacy
     /// `sandbox_workspace_write` knobs applied directly to the profile.
     ///
-    /// The returned profile contains symbolic `:project_roots` entries that
+    /// The returned profile contains symbolic `:workspace_roots` entries that
     /// must be resolved against the active permission root before enforcement.
     pub fn workspace_write_with(
         writable_roots: &[AbsolutePathBuf],
@@ -432,6 +417,28 @@ impl PermissionProfile {
         Self::Managed {
             file_system: ManagedFileSystemPermissions::from_sandbox_policy(&file_system),
             network,
+        }
+    }
+
+    pub fn materialize_project_roots_with_workspace_roots(
+        self,
+        workspace_roots: &[AbsolutePathBuf],
+    ) -> Self {
+        match self {
+            Self::Managed {
+                file_system,
+                network,
+            } => {
+                let file_system = file_system
+                    .to_sandbox_policy()
+                    .materialize_project_roots_with_workspace_roots(workspace_roots);
+                Self::Managed {
+                    file_system: ManagedFileSystemPermissions::from_sandbox_policy(&file_system),
+                    network,
+                }
+            }
+            Self::Disabled => Self::Disabled,
+            Self::External { network } => Self::External { network },
         }
     }
 
