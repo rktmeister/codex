@@ -22,6 +22,33 @@ use crate::protocol::WritableRoot;
 const PROTECTED_METADATA_GIT_PATH_NAME: &str = ".git";
 const PROTECTED_METADATA_AGENTS_PATH_NAME: &str = ".agents";
 const PROTECTED_METADATA_CODEX_PATH_NAME: &str = ".codex";
+const GIT_CONFIG_WORKTREE_FILE_NAME: &str = "config.worktree";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum GitAdminRootRole {
+    NotAdminRoot,
+    GitDir,
+    LinkedWorktreeGitDir,
+    CommonGitDir,
+}
+
+impl GitAdminRootRole {
+    pub(crate) fn merge(self, other: Self) -> Self {
+        use GitAdminRootRole::*;
+        match (self, other) {
+            (CommonGitDir, _) | (_, CommonGitDir) => CommonGitDir,
+            (GitDir, _) | (_, GitDir) => GitDir,
+            (LinkedWorktreeGitDir, _) | (_, LinkedWorktreeGitDir) => LinkedWorktreeGitDir,
+            (NotAdminRoot, NotAdminRoot) => NotAdminRoot,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct GitAdminRoot {
+    pub(crate) path: AbsolutePathBuf,
+    pub(crate) role: GitAdminRootRole,
+}
 
 /// Top-level workspace metadata directories that stay protected under writable
 /// roots.
@@ -568,7 +595,7 @@ impl FileSystemSandboxPolicy {
             for protected_path in default_read_only_subpaths_for_writable_root(
                 writable_root,
                 /*protect_missing_dot_codex*/ false,
-                /*is_git_admin_root*/ false,
+                GitAdminRootRole::NotAdminRoot,
             ) {
                 append_default_read_only_path_if_no_explicit_rule(&mut entries, protected_path);
             }
@@ -589,8 +616,9 @@ impl FileSystemSandboxPolicy {
         if let SandboxPolicy::WorkspaceWrite { writable_roots, .. } = sandbox_policy {
             if let Ok(cwd_root) = AbsolutePathBuf::from_absolute_path(cwd) {
                 for protected_path in default_read_only_subpaths_for_writable_root(
-                    &cwd_root, /*protect_missing_dot_codex*/ true,
-                    /*is_git_admin_root*/ false,
+                    &cwd_root,
+                    /*protect_missing_dot_codex*/ true,
+                    GitAdminRootRole::NotAdminRoot,
                 ) {
                     append_default_read_only_path_if_no_explicit_rule(
                         &mut file_system_policy.entries,
@@ -602,7 +630,7 @@ impl FileSystemSandboxPolicy {
                 for protected_path in default_read_only_subpaths_for_writable_root(
                     writable_root,
                     /*protect_missing_dot_codex*/ false,
-                    /*is_git_admin_root*/ false,
+                    GitAdminRootRole::NotAdminRoot,
                 ) {
                     append_default_read_only_path_if_no_explicit_rule(
                         &mut file_system_policy.entries,
@@ -902,7 +930,9 @@ impl FileSystemSandboxPolicy {
             }
 
             for protected_path in default_read_only_subpaths_for_writable_root(
-                path, /*protect_missing_dot_codex*/ false, /*is_git_admin_root*/ false,
+                path,
+                /*protect_missing_dot_codex*/ false,
+                GitAdminRootRole::NotAdminRoot,
             ) {
                 append_default_read_only_path_if_no_explicit_rule(
                     &mut self.entries,
@@ -999,12 +1029,12 @@ impl FileSystemSandboxPolicy {
             let protect_missing_dot_codex = AbsolutePathBuf::from_absolute_path(cwd)
                 .ok()
                 .is_some_and(|cwd| normalize_effective_absolute_path(cwd) == root);
-            let is_git_admin_root = is_git_admin_root(&root, &writable_entries);
+            let git_admin_root_role = git_admin_root_role(&root, &writable_entries);
             let mut read_only_subpaths: Vec<AbsolutePathBuf> =
                 default_read_only_subpaths_for_writable_root(
                     &root,
                     protect_missing_dot_codex,
-                    is_git_admin_root,
+                    git_admin_root_role,
                 )
                 .into_iter()
                 .filter(|path| !has_explicit_resolved_path_entry(&explicit_resolved_entries, path))
@@ -1348,39 +1378,35 @@ fn add_dynamic_git_metadata_entries(entries: &mut Vec<ResolvedFileSystemEntry>) 
 
     let mut git_admin_roots = Vec::new();
     for root in &writable_roots {
-        add_default_git_read_only_entries(entries, root, /*is_git_admin_root*/ false);
-        git_admin_roots.extend(git_admin_roots_for_writable_root(root));
+        add_default_git_read_only_entries(entries, root, GitAdminRootRole::NotAdminRoot);
+        git_admin_roots.extend(git_admin_roots_with_roles_for_writable_root(root));
     }
 
-    for git_admin_root in
-        dedup_absolute_paths(git_admin_roots, /*normalize_effective_paths*/ true)
-    {
-        if !has_exact_non_write_entry(entries, &git_admin_root) {
+    for git_admin_root in dedup_git_admin_roots(git_admin_roots) {
+        if !has_exact_non_write_entry(entries, &git_admin_root.path) {
             push_resolved_entry_if_missing(
                 entries,
-                git_admin_root.clone(),
+                git_admin_root.path.clone(),
                 FileSystemAccessMode::Write,
             );
         }
-        add_default_git_read_only_entries(
-            entries,
-            &git_admin_root,
-            /*is_git_admin_root*/ true,
-        );
+        add_default_git_read_only_entries(entries, &git_admin_root.path, git_admin_root.role);
     }
 }
 
 fn add_default_git_read_only_entries(
     entries: &mut Vec<ResolvedFileSystemEntry>,
     root: &AbsolutePathBuf,
-    is_git_admin_root: bool,
+    git_admin_root_role: GitAdminRootRole,
 ) {
-    for path in default_git_read_only_subpaths_for_writable_root(root, is_git_admin_root) {
+    for path in default_git_read_only_subpaths_for_writable_root(root, git_admin_root_role) {
         push_resolved_entry_if_missing(entries, path, FileSystemAccessMode::Read);
     }
 }
 
-pub(crate) fn git_admin_roots_for_writable_root(root: &AbsolutePathBuf) -> Vec<AbsolutePathBuf> {
+pub(crate) fn git_admin_roots_with_roles_for_writable_root(
+    root: &AbsolutePathBuf,
+) -> Vec<GitAdminRoot> {
     let top_level_git = root.join(PROTECTED_METADATA_GIT_PATH_NAME);
     if !is_git_pointer_file(&top_level_git) {
         return Vec::new();
@@ -1393,21 +1419,57 @@ pub(crate) fn git_admin_roots_for_writable_root(root: &AbsolutePathBuf) -> Vec<A
         return Vec::new();
     }
 
-    let mut roots = vec![gitdir.clone()];
     if let Some(commondir) = resolve_commondir_from_gitdir(&gitdir)
         && commondir.as_path().is_dir()
     {
-        roots.push(commondir);
+        return vec![
+            GitAdminRoot {
+                path: gitdir,
+                role: GitAdminRootRole::LinkedWorktreeGitDir,
+            },
+            GitAdminRoot {
+                path: commondir,
+                role: GitAdminRootRole::CommonGitDir,
+            },
+        ];
     }
-    roots
+
+    vec![GitAdminRoot {
+        path: gitdir,
+        role: GitAdminRootRole::GitDir,
+    }]
 }
 
-fn is_git_admin_root(root: &AbsolutePathBuf, writable_entries: &[AbsolutePathBuf]) -> bool {
-    writable_entries.iter().any(|writable_root| {
-        git_admin_roots_for_writable_root(writable_root)
-            .iter()
-            .any(|git_admin_root| git_admin_root == root)
-    })
+fn dedup_git_admin_roots(roots: Vec<GitAdminRoot>) -> Vec<GitAdminRoot> {
+    let mut deduped: Vec<GitAdminRoot> = Vec::with_capacity(roots.len());
+    for root in roots {
+        let path = normalize_effective_absolute_path(root.path);
+        if let Some(existing) = deduped.iter_mut().find(|existing| existing.path == path) {
+            existing.role = existing.role.merge(root.role);
+        } else {
+            deduped.push(GitAdminRoot {
+                path,
+                role: root.role,
+            });
+        }
+    }
+    deduped
+}
+
+fn git_admin_root_role(
+    root: &AbsolutePathBuf,
+    writable_entries: &[AbsolutePathBuf],
+) -> GitAdminRootRole {
+    let normalized_root = normalize_effective_absolute_path(root.clone());
+    let mut role = GitAdminRootRole::NotAdminRoot;
+    for writable_root in writable_entries {
+        for git_admin_root in git_admin_roots_with_roles_for_writable_root(writable_root) {
+            if normalize_effective_absolute_path(git_admin_root.path) == normalized_root {
+                role = role.merge(git_admin_root.role);
+            }
+        }
+    }
+    role
 }
 
 fn has_exact_non_write_entry(entries: &[ResolvedFileSystemEntry], path: &AbsolutePathBuf) -> bool {
@@ -1669,10 +1731,10 @@ fn normalize_effective_absolute_path(path: AbsolutePathBuf) -> AbsolutePathBuf {
 pub(crate) fn default_read_only_subpaths_for_writable_root(
     writable_root: &AbsolutePathBuf,
     protect_missing_dot_codex: bool,
-    is_git_admin_root: bool,
+    git_admin_root_role: GitAdminRootRole,
 ) -> Vec<AbsolutePathBuf> {
     let mut subpaths =
-        default_git_read_only_subpaths_for_writable_root(writable_root, is_git_admin_root);
+        default_git_read_only_subpaths_for_writable_root(writable_root, git_admin_root_role);
 
     let top_level_agents = writable_root.join(PROTECTED_METADATA_AGENTS_PATH_NAME);
     if top_level_agents.as_path().is_dir() {
@@ -1693,21 +1755,27 @@ pub(crate) fn default_read_only_subpaths_for_writable_root(
 
 fn default_git_read_only_subpaths_for_writable_root(
     writable_root: &AbsolutePathBuf,
-    is_git_admin_root: bool,
+    git_admin_root_role: GitAdminRootRole,
 ) -> Vec<AbsolutePathBuf> {
     let mut subpaths: Vec<AbsolutePathBuf> = Vec::new();
     let top_level_git = writable_root.join(PROTECTED_METADATA_GIT_PATH_NAME);
     // This applies to typical repos (directory .git), worktrees/submodules
-    // (file .git with gitdir pointer), and linked-worktree git admin roots
-    // discovered separately.
+    // (file .git with gitdir pointer), and git admin roots discovered
+    // separately.
     if is_git_directory(&top_level_git) {
         protect_high_risk_git_subpaths(&mut subpaths, &top_level_git);
     } else if is_git_pointer_file(&top_level_git) {
         push_read_only_subpath(&mut subpaths, top_level_git);
     }
 
-    if is_git_admin_root {
-        protect_high_risk_git_subpaths(&mut subpaths, writable_root);
+    match git_admin_root_role {
+        GitAdminRootRole::NotAdminRoot => {}
+        GitAdminRootRole::GitDir | GitAdminRootRole::CommonGitDir => {
+            protect_high_risk_git_subpaths(&mut subpaths, writable_root);
+        }
+        GitAdminRootRole::LinkedWorktreeGitDir => {
+            protect_linked_worktree_gitdir_subpaths(&mut subpaths, writable_root);
+        }
     }
 
     subpaths
@@ -1722,6 +1790,19 @@ fn push_read_only_subpath(subpaths: &mut Vec<AbsolutePathBuf>, subpath: Absolute
 fn protect_high_risk_git_subpaths(subpaths: &mut Vec<AbsolutePathBuf>, git_dir: &AbsolutePathBuf) {
     for relative_path in ["config", "hooks"] {
         push_read_only_subpath(subpaths, git_dir.join(relative_path));
+    }
+}
+
+fn protect_linked_worktree_gitdir_subpaths(
+    subpaths: &mut Vec<AbsolutePathBuf>,
+    git_dir: &AbsolutePathBuf,
+) {
+    push_read_only_subpath(subpaths, git_dir.join(GIT_CONFIG_WORKTREE_FILE_NAME));
+    for relative_path in ["config", "hooks"] {
+        let path = git_dir.join(relative_path);
+        if path.as_path().exists() {
+            push_read_only_subpath(subpaths, path);
+        }
     }
 }
 
@@ -1789,7 +1870,9 @@ fn legacy_runtime_file_system_policy_for_cwd(
 
     if let Ok(cwd_root) = AbsolutePathBuf::from_absolute_path(cwd) {
         for protected_path in default_read_only_subpaths_for_writable_root(
-            &cwd_root, /*protect_missing_dot_codex*/ true, /*is_git_admin_root*/ false,
+            &cwd_root,
+            /*protect_missing_dot_codex*/ true,
+            GitAdminRootRole::NotAdminRoot,
         ) {
             append_default_read_only_path_if_no_explicit_rule(&mut entries, protected_path);
         }
@@ -1798,7 +1881,7 @@ fn legacy_runtime_file_system_policy_for_cwd(
         for protected_path in default_read_only_subpaths_for_writable_root(
             writable_root,
             /*protect_missing_dot_codex*/ false,
-            /*is_git_admin_root*/ false,
+            GitAdminRootRole::NotAdminRoot,
         ) {
             append_default_read_only_path_if_no_explicit_rule(&mut entries, protected_path);
         }
@@ -2374,13 +2457,66 @@ mod tests {
                 .contains(&commondir)
         );
         assert!(gitdir_writable_root.is_path_writable(gitdir.join("index").as_path()));
-        assert!(!gitdir_writable_root.is_path_writable(gitdir.join("config").as_path()));
-        assert!(!gitdir_writable_root.is_path_writable(gitdir.join("hooks/pre-commit").as_path()));
+        assert!(gitdir_writable_root.is_path_writable(gitdir.join("config").as_path()));
+        assert!(gitdir_writable_root.is_path_writable(gitdir.join("hooks/pre-commit").as_path()));
+        assert!(!gitdir_writable_root.is_path_writable(gitdir.join("config.worktree").as_path()));
+        assert!(
+            !gitdir_writable_root
+                .read_only_subpaths
+                .contains(&gitdir.join("config"))
+        );
+        assert!(
+            !gitdir_writable_root
+                .read_only_subpaths
+                .contains(&gitdir.join("hooks"))
+        );
         assert!(commondir_writable_root.is_path_writable(commondir.join("HEAD").as_path()));
         assert!(!commondir_writable_root.is_path_writable(commondir.join("config").as_path()));
         assert!(
             !commondir_writable_root.is_path_writable(commondir.join("hooks/pre-commit").as_path())
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn writable_roots_protect_gitfile_gitdir_without_commondir() {
+        let tmp = TempDir::new().expect("tempdir");
+        let worktree = tmp.path().join("worktree");
+        let gitdir = tmp.path().join("gitdir");
+
+        fs::create_dir_all(&worktree).expect("create worktree");
+        fs::create_dir_all(&gitdir).expect("create gitdir");
+        fs::write(
+            worktree.join(".git"),
+            format!("gitdir: {}\n", gitdir.display()),
+        )
+        .expect("write gitdir pointer");
+
+        let worktree_root = AbsolutePathBuf::from_absolute_path(
+            worktree.canonicalize().expect("canonicalize worktree"),
+        )
+        .expect("absolute worktree");
+        let gitdir = AbsolutePathBuf::from_absolute_path(
+            gitdir.canonicalize().expect("canonicalize gitdir"),
+        )
+        .expect("absolute gitdir");
+
+        let policy = FileSystemSandboxPolicy::restricted(vec![FileSystemSandboxEntry {
+            path: FileSystemPath::Path {
+                path: worktree_root,
+            },
+            access: FileSystemAccessMode::Write,
+        }]);
+
+        let writable_roots = policy.get_writable_roots_with_cwd(worktree.as_path());
+        let gitdir_writable_root = writable_roots
+            .iter()
+            .find(|root| root.root == gitdir)
+            .expect("gitdir writable root");
+
+        assert!(gitdir_writable_root.is_path_writable(gitdir.join("index").as_path()));
+        assert!(!gitdir_writable_root.is_path_writable(gitdir.join("config").as_path()));
+        assert!(!gitdir_writable_root.is_path_writable(gitdir.join("hooks/pre-commit").as_path()));
     }
 
     #[test]
@@ -2605,7 +2741,7 @@ mod tests {
             default_read_only_subpaths_for_writable_root(
                 &expected_root,
                 /*protect_missing_dot_codex*/ true,
-                /*is_git_admin_root*/ false,
+                GitAdminRootRole::NotAdminRoot,
             )
             .into_iter()
             .map(|path| FileSystemSandboxEntry {

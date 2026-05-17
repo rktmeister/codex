@@ -524,6 +524,7 @@ async fn sandbox_allows_git_index_but_blocks_high_risk_git_and_codex_writes() {
     let dot_git = tmpdir.path().join(".git");
     let dot_codex = tmpdir.path().join(".codex");
     std::fs::create_dir_all(dot_git.join("hooks")).expect("create .git/hooks");
+    std::fs::write(dot_git.join("HEAD"), "ref: refs/heads/main\n").expect("write .git/HEAD");
     std::fs::create_dir_all(&dot_codex).expect("create .codex");
 
     let git_index_target = dot_git.join("index");

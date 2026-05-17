@@ -81,9 +81,10 @@ pub use crate::permissions::FileSystemSandboxEntry;
 pub use crate::permissions::FileSystemSandboxKind;
 pub use crate::permissions::FileSystemSandboxPolicy;
 pub use crate::permissions::FileSystemSpecialPath;
+use crate::permissions::GitAdminRootRole;
 pub use crate::permissions::NetworkSandboxPolicy;
 use crate::permissions::default_read_only_subpaths_for_writable_root;
-use crate::permissions::git_admin_roots_for_writable_root;
+use crate::permissions::git_admin_roots_with_roles_for_writable_root;
 pub use crate::request_permissions::RequestPermissionsArgs;
 pub use crate::request_user_input::RequestUserInputEvent;
 
@@ -1235,16 +1236,27 @@ impl SandboxPolicy {
 
                 // For linked worktrees (`.git` pointer file), include the
                 // resolved Git admin directories as writable roots so Git can
-                // update refs and lockfiles while config/hooks stay read-only.
+                // update refs and lockfiles while the gitdir's control-plane
+                // paths stay read-only.
                 let mut git_admin_roots = Vec::new();
                 for writable_root in &roots {
-                    git_admin_roots.extend(git_admin_roots_for_writable_root(writable_root));
+                    git_admin_roots
+                        .extend(git_admin_roots_with_roles_for_writable_root(writable_root));
                 }
-                roots.extend(git_admin_roots.iter().cloned());
-                let git_admin_root_set: HashSet<PathBuf> = git_admin_roots
-                    .iter()
-                    .map(|path| path.as_path().to_path_buf())
-                    .collect();
+                roots.extend(
+                    git_admin_roots
+                        .iter()
+                        .map(|git_admin_root| git_admin_root.path.clone()),
+                );
+                let mut git_admin_root_roles = HashMap::new();
+                for git_admin_root in git_admin_roots {
+                    git_admin_root_roles
+                        .entry(git_admin_root.path.as_path().to_path_buf())
+                        .and_modify(|role: &mut GitAdminRootRole| {
+                            *role = role.merge(git_admin_root.role);
+                        })
+                        .or_insert(git_admin_root.role);
+                }
                 let mut seen_roots = HashSet::new();
                 roots.retain(|root| seen_roots.insert(root.as_path().to_path_buf()));
 
@@ -1260,7 +1272,10 @@ impl SandboxPolicy {
                             read_only_subpaths: default_read_only_subpaths_for_writable_root(
                                 &writable_root,
                                 protect_missing_dot_codex,
-                                git_admin_root_set.contains(writable_root.as_path()),
+                                git_admin_root_roles
+                                    .get(writable_root.as_path())
+                                    .copied()
+                                    .unwrap_or(GitAdminRootRole::NotAdminRoot),
                             ),
                             protected_metadata_names: Vec::new(),
                             root: writable_root,
