@@ -10,6 +10,7 @@ use crate::session::turn_context::TurnContext;
 use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
+use crate::tools::context::boxed_tool_output;
 use crate::tools::events::ToolEmitter;
 use crate::tools::events::ToolEventCtx;
 use crate::tools::events::ToolEventFailure;
@@ -17,8 +18,8 @@ use crate::tools::events::ToolEventStage;
 use crate::tools::handlers::parse_arguments;
 use crate::tools::py_repl::PY_REPL_PRAGMA_PREFIX;
 use crate::tools::py_repl::PyReplArgs;
+use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::ToolExecutor;
-use crate::tools::registry::ToolHandler;
 use codex_features::Feature;
 use codex_protocol::exec_output::ExecToolCallOutput;
 use codex_protocol::exec_output::StreamOutput;
@@ -87,7 +88,6 @@ async fn emit_py_repl_exec_begin(
         vec!["py_repl".to_string()],
         cwd.clone(),
         ExecCommandSource::Agent,
-        false,
     );
     let ctx = ToolEventCtx::new(session, turn, call_id, None);
     emitter.emit(ctx, ToolEventStage::Begin).await;
@@ -107,7 +107,6 @@ async fn emit_py_repl_exec_end(
         vec!["py_repl".to_string()],
         cwd.clone(),
         ExecCommandSource::Agent,
-        false,
     );
     let ctx = ToolEventCtx::new(session, turn, call_id, None);
     let stage = if error.is_some() {
@@ -123,8 +122,6 @@ async fn emit_py_repl_exec_end(
 
 #[async_trait::async_trait]
 impl ToolExecutor<ToolInvocation> for PyReplHandler {
-    type Output = FunctionToolOutput;
-
     fn tool_name(&self) -> ToolName {
         ToolName::plain("py_repl")
     }
@@ -142,7 +139,10 @@ impl ToolExecutor<ToolInvocation> for PyReplHandler {
         }))
     }
 
-    async fn handle(&self, invocation: ToolInvocation) -> Result<Self::Output, FunctionCallError> {
+    async fn handle(
+        &self,
+        invocation: ToolInvocation,
+    ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
         let ToolInvocation {
             session,
             turn,
@@ -226,14 +226,20 @@ impl ToolExecutor<ToolInvocation> for PyReplHandler {
         .await;
 
         if items.is_empty() {
-            Ok(FunctionToolOutput::from_text(content, Some(true)))
+            Ok(boxed_tool_output(FunctionToolOutput::from_text(
+                content,
+                Some(true),
+            )))
         } else {
-            Ok(FunctionToolOutput::from_content(items, Some(true)))
+            Ok(boxed_tool_output(FunctionToolOutput::from_content(
+                items,
+                Some(true),
+            )))
         }
     }
 }
 
-impl ToolHandler for PyReplHandler {
+impl CoreToolRuntime for PyReplHandler {
     fn matches_kind(&self, payload: &ToolPayload) -> bool {
         matches!(
             payload,
@@ -244,8 +250,6 @@ impl ToolHandler for PyReplHandler {
 
 #[async_trait::async_trait]
 impl ToolExecutor<ToolInvocation> for PyReplResetHandler {
-    type Output = FunctionToolOutput;
-
     fn tool_name(&self) -> ToolName {
         ToolName::plain("py_repl_reset")
     }
@@ -267,7 +271,10 @@ impl ToolExecutor<ToolInvocation> for PyReplResetHandler {
         }))
     }
 
-    async fn handle(&self, invocation: ToolInvocation) -> Result<Self::Output, FunctionCallError> {
+    async fn handle(
+        &self,
+        invocation: ToolInvocation,
+    ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
         if !invocation.session.features().enabled(Feature::PyRepl) {
             return Err(FunctionCallError::RespondToModel(
                 "py_repl is disabled by feature flag".to_string(),
@@ -276,14 +283,14 @@ impl ToolExecutor<ToolInvocation> for PyReplResetHandler {
 
         let manager = invocation.turn.py_repl.manager().await?;
         manager.reset().await?;
-        Ok(FunctionToolOutput::from_text(
+        Ok(boxed_tool_output(FunctionToolOutput::from_text(
             "py_repl kernel reset".to_string(),
             Some(true),
-        ))
+        )))
     }
 }
 
-impl ToolHandler for PyReplResetHandler {}
+impl CoreToolRuntime for PyReplResetHandler {}
 
 fn parse_freeform_args(input: &str) -> Result<PyReplArgs, FunctionCallError> {
     if input.trim().is_empty() {

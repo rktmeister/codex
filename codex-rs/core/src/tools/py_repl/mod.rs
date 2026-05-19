@@ -416,13 +416,8 @@ impl PyReplManager {
         let (stdin, pending_execs, exec_contexts, child, recent_stderr) = {
             let mut kernel = self.kernel.lock().await;
             if kernel.is_none() {
-                let dependency_env = session.dependency_env().await;
                 let state = self
-                    .start_kernel(
-                        Arc::clone(&turn),
-                        &dependency_env,
-                        Some(session.conversation_id),
-                    )
+                    .start_kernel(Arc::clone(&turn), Some(session.conversation_id))
                     .await
                     .map_err(FunctionCallError::RespondToModel)?;
                 *kernel = Some(state);
@@ -715,7 +710,6 @@ impl PyReplManager {
     async fn start_kernel(
         &self,
         turn: Arc<TurnContext>,
-        dependency_env: &HashMap<String, String>,
         thread_id: Option<ThreadId>,
     ) -> Result<KernelState, String> {
         let kernel_path = self
@@ -724,9 +718,6 @@ impl PyReplManager {
             .map_err(|err| err.to_string())?;
 
         let mut env = create_env(&turn.shell_environment_policy, thread_id);
-        if !dependency_env.is_empty() {
-            env.extend(dependency_env.clone());
-        }
         env.insert(
             "CODEX_PY_REPL_TMP_DIR".to_string(),
             self.tmp_dir.path().to_string_lossy().to_string(),
@@ -1527,8 +1518,8 @@ impl PyReplManager {
             .list_all_tools()
             .await;
 
-        let router = ToolRouter::from_config(
-            &exec.turn.tools_config,
+        let router = ToolRouter::from_turn_context(
+            exec.turn.as_ref(),
             ToolRouterParams {
                 deferred_mcp_tools: None,
                 mcp_tools: Some(mcp_tools),
@@ -2512,13 +2503,13 @@ mod tests {
         let content_item = emitted_image_content_item(
             &turn,
             "data:image/png;base64,AAA".to_string(),
-            Some(ImageDetail::Low),
+            Some(ImageDetail::High),
         );
         assert_eq!(
             content_item,
             FunctionCallOutputContentItem::InputImage {
                 image_url: "data:image/png;base64,AAA".to_string(),
-                detail: Some(ImageDetail::Low),
+                detail: Some(ImageDetail::High),
             }
         );
     }

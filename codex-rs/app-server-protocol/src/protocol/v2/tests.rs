@@ -14,8 +14,9 @@ use codex_protocol::mcp::CallToolResult;
 use codex_protocol::memory_citation::MemoryCitation as CoreMemoryCitation;
 use codex_protocol::memory_citation::MemoryCitationEntry as CoreMemoryCitationEntry;
 use codex_protocol::models::AdditionalPermissionProfile as CoreAdditionalPermissionProfile;
+use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_WORKSPACE;
 use codex_protocol::models::FileSystemPermissions as CoreFileSystemPermissions;
-use codex_protocol::models::ManagedFileSystemPermissions as CoreManagedFileSystemPermissions;
+use codex_protocol::models::ImageDetail;
 use codex_protocol::models::MessagePhase;
 use codex_protocol::models::NetworkPermissions as CoreNetworkPermissions;
 use codex_protocol::models::WebSearchAction as CoreWebSearchAction;
@@ -506,48 +507,6 @@ fn additional_file_system_permissions_rejects_zero_glob_scan_depth() {
 }
 
 #[test]
-fn permission_profile_file_system_permissions_preserves_glob_scan_depth() {
-    let core_permissions = CoreManagedFileSystemPermissions::Restricted {
-        entries: vec![CoreFileSystemSandboxEntry {
-            path: CoreFileSystemPath::GlobPattern {
-                pattern: "**/*.env".to_string(),
-            },
-            access: CoreFileSystemAccessMode::None,
-        }],
-        glob_scan_max_depth: NonZeroUsize::new(2),
-    };
-
-    let permissions = PermissionProfileFileSystemPermissions::from(core_permissions.clone());
-
-    assert_eq!(
-        permissions,
-        PermissionProfileFileSystemPermissions::Restricted {
-            entries: vec![FileSystemSandboxEntry {
-                path: FileSystemPath::GlobPattern {
-                    pattern: "**/*.env".to_string(),
-                },
-                access: FileSystemAccessMode::None,
-            }],
-            glob_scan_max_depth: NonZeroUsize::new(2),
-        }
-    );
-    assert_eq!(
-        CoreManagedFileSystemPermissions::from(permissions),
-        core_permissions
-    );
-}
-
-#[test]
-fn permission_profile_file_system_permissions_rejects_zero_glob_scan_depth() {
-    serde_json::from_value::<PermissionProfileFileSystemPermissions>(json!({
-        "type": "restricted",
-        "entries": [],
-        "globScanMaxDepth": 0,
-    }))
-    .expect_err("zero glob scan depth should fail deserialization");
-}
-
-#[test]
 fn legacy_current_working_directory_special_path_deserializes_as_project_roots() {
     let special_path = serde_json::from_value::<FileSystemSpecialPath>(json!({
         "kind": "current_working_directory",
@@ -656,57 +615,49 @@ fn permissions_request_approval_response_accepts_strict_auto_review() {
 }
 
 #[test]
-fn permission_profile_selection_accepts_legacy_object_shape() {
-    let additional_root = absolute_path("additional-root");
-    let params = json!({
-        "permissions": {
-            "type": "profile",
-            "id": ":workspace",
-            "modifications": [
-                {
-                    "type": "additionalWritableRoot",
-                    "path": additional_root,
-                }
-            ],
-        },
-    });
-
-    let start: ThreadStartParams =
-        serde_json::from_value(params.clone()).expect("thread/start params deserialize");
-    assert_legacy_permission_profile_selection(start.permissions, &additional_root);
-
-    let resume: ThreadResumeParams = serde_json::from_value(json!({
-        "threadId": "thread-1",
-        "permissions": params["permissions"].clone(),
+fn permission_profile_selection_uses_id_string() {
+    let start: ThreadStartParams = serde_json::from_value(json!({
+        "permissions": BUILT_IN_PERMISSION_PROFILE_WORKSPACE,
     }))
-    .expect("thread/resume params deserialize");
-    assert_legacy_permission_profile_selection(resume.permissions, &additional_root);
-
-    let fork: ThreadForkParams = serde_json::from_value(json!({
-        "threadId": "thread-1",
-        "permissions": params["permissions"].clone(),
-    }))
-    .expect("thread/fork params deserialize");
-    assert_legacy_permission_profile_selection(fork.permissions, &additional_root);
+    .expect("thread/start params deserialize");
+    assert_eq!(
+        start.permissions,
+        Some(BUILT_IN_PERMISSION_PROFILE_WORKSPACE.to_string())
+    );
 
     let turn: TurnStartParams = serde_json::from_value(json!({
         "threadId": "thread-1",
         "input": [],
-        "permissions": params["permissions"].clone(),
+        "permissions": "dev",
     }))
     .expect("turn/start params deserialize");
-    assert_legacy_permission_profile_selection(turn.permissions, &additional_root);
-}
+    assert_eq!(turn.permissions, Some("dev".to_string()));
 
-fn assert_legacy_permission_profile_selection(
-    selection: Option<PermissionProfileSelectionParams>,
-    additional_root: &AbsolutePathBuf,
-) {
-    let selection = selection.expect("permissions should be present");
-    assert_eq!(selection.id(), ":workspace");
+    let command: CommandExecParams = serde_json::from_value(json!({
+        "command": ["echo", "hello"],
+        "permissionProfile": "dev",
+    }))
+    .expect("command/exec params deserialize");
+    assert_eq!(command.permission_profile, Some("dev".to_string()));
+
+    let resume: ThreadResumeParams = serde_json::from_value(json!({
+        "threadId": "thread-1",
+        "permissions": BUILT_IN_PERMISSION_PROFILE_WORKSPACE,
+    }))
+    .expect("thread/resume params deserialize");
     assert_eq!(
-        selection.legacy_additional_writable_roots(),
-        std::slice::from_ref(additional_root)
+        resume.permissions,
+        Some(BUILT_IN_PERMISSION_PROFILE_WORKSPACE.to_string())
+    );
+
+    let fork: ThreadForkParams = serde_json::from_value(json!({
+        "threadId": "thread-1",
+        "permissions": BUILT_IN_PERMISSION_PROFILE_WORKSPACE,
+    }))
+    .expect("thread/fork params deserialize");
+    assert_eq!(
+        fork.permissions,
+        Some(BUILT_IN_PERMISSION_PROFILE_WORKSPACE.to_string())
     );
 }
 
@@ -1560,6 +1511,7 @@ fn config_granular_approval_policy_is_marked_experimental() {
         review_model: None,
         model_context_window: None,
         model_auto_compact_token_limit: None,
+        model_auto_compact_token_limit_scope: None,
         model_provider: None,
         approval_policy: Some(AskForApproval::Granular {
             sandbox_approval: false,
@@ -1600,6 +1552,7 @@ fn config_approvals_reviewer_is_marked_experimental() {
         review_model: None,
         model_context_window: None,
         model_auto_compact_token_limit: None,
+        model_auto_compact_token_limit_scope: None,
         model_provider: None,
         approval_policy: None,
         approvals_reviewer: Some(ApprovalsReviewer::AutoReview),
@@ -1634,6 +1587,7 @@ fn config_nested_profile_granular_approval_policy_is_marked_experimental() {
         review_model: None,
         model_context_window: None,
         model_auto_compact_token_limit: None,
+        model_auto_compact_token_limit_scope: None,
         model_provider: None,
         approval_policy: None,
         approvals_reviewer: None,
@@ -1690,6 +1644,7 @@ fn config_nested_profile_approvals_reviewer_is_marked_experimental() {
         review_model: None,
         model_context_window: None,
         model_auto_compact_token_limit: None,
+        model_auto_compact_token_limit_scope: None,
         model_provider: None,
         approval_policy: None,
         approvals_reviewer: None,
@@ -2319,9 +2274,11 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
             },
             CoreUserInput::Image {
                 image_url: "https://example.com/image.png".to_string(),
+                detail: Some(ImageDetail::Original),
             },
             CoreUserInput::LocalImage {
                 path: PathBuf::from("local/image.png"),
+                detail: Some(ImageDetail::Original),
             },
             CoreUserInput::Skill {
                 name: "skill-creator".to_string(),
@@ -2345,9 +2302,11 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
                 },
                 UserInput::Image {
                     url: "https://example.com/image.png".to_string(),
+                    detail: Some(ImageDetail::Original),
                 },
                 UserInput::LocalImage {
                     path: PathBuf::from("local/image.png"),
+                    detail: Some(ImageDetail::Original),
                 },
                 UserInput::Skill {
                     name: "skill-creator".to_string(),
@@ -2558,6 +2517,33 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
             })),
             error: None,
             duration_ms: Some(42),
+        }
+    );
+}
+
+#[test]
+fn user_input_into_core_preserves_image_detail() {
+    assert_eq!(
+        UserInput::Image {
+            url: "https://example.com/image.png".to_string(),
+            detail: Some(ImageDetail::Original),
+        }
+        .into_core(),
+        CoreUserInput::Image {
+            image_url: "https://example.com/image.png".to_string(),
+            detail: Some(ImageDetail::Original),
+        }
+    );
+
+    assert_eq!(
+        UserInput::LocalImage {
+            path: PathBuf::from("local/image.png"),
+            detail: Some(ImageDetail::Original),
+        }
+        .into_core(),
+        CoreUserInput::LocalImage {
+            path: PathBuf::from("local/image.png"),
+            detail: Some(ImageDetail::Original),
         }
     );
 }
@@ -2796,6 +2782,27 @@ fn plugin_list_params_serializes_marketplace_kind_filter() {
                 "local",
                 "workspace-directory",
                 "shared-with-me",
+            ],
+        }),
+    );
+}
+
+#[test]
+fn plugin_installed_params_serializes_install_suggestion_names() {
+    assert_eq!(
+        serde_json::to_value(PluginInstalledParams {
+            cwds: None,
+            install_suggestion_plugin_names: Some(vec![
+                "computer-use".to_string(),
+                "chrome".to_string(),
+            ]),
+        })
+        .unwrap(),
+        json!({
+            "cwds": null,
+            "installSuggestionPluginNames": [
+                "computer-use",
+                "chrome",
             ],
         }),
     );
@@ -3498,9 +3505,6 @@ fn thread_lifecycle_responses_default_missing_optional_fields() {
     assert_eq!(start.instruction_sources, Vec::<AbsolutePathBuf>::new());
     assert_eq!(resume.instruction_sources, Vec::<AbsolutePathBuf>::new());
     assert_eq!(fork.instruction_sources, Vec::<AbsolutePathBuf>::new());
-    assert_eq!(start.permission_profile, None);
-    assert_eq!(resume.permission_profile, None);
-    assert_eq!(fork.permission_profile, None);
     assert_eq!(start.active_permission_profile, None);
     assert_eq!(resume.active_permission_profile, None);
     assert_eq!(fork.active_permission_profile, None);

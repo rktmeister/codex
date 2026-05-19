@@ -1,8 +1,6 @@
 use super::ActivePermissionProfile;
 use super::ApprovalsReviewer;
 use super::AskForApproval;
-use super::PermissionProfile;
-use super::PermissionProfileSelectionParams;
 use super::SandboxMode;
 use super::SandboxPolicy;
 use super::Thread;
@@ -123,10 +121,8 @@ pub struct ThreadStartParams {
     pub sandbox: Option<SandboxMode>,
     /// Named profile id for this thread. Cannot be combined with `sandbox`.
     #[experimental("thread/start.permissions")]
-    #[schemars(with = "Option<String>")]
-    #[ts(type = "string | null")]
     #[ts(optional = nullable)]
-    pub permissions: Option<PermissionProfileSelectionParams>,
+    pub permissions: Option<String>,
     #[ts(optional = nullable)]
     pub config: Option<HashMap<String, JsonValue>>,
     #[ts(optional = nullable)]
@@ -213,14 +209,8 @@ pub struct ThreadStartResponse {
     /// Reviewer currently used for approval requests on this thread.
     pub approvals_reviewer: ApprovalsReviewer,
     /// Legacy sandbox policy retained for compatibility. Experimental clients
-    /// should prefer `permissionProfile` when they need exact runtime
-    /// permissions.
+    /// should prefer `activePermissionProfile` for profile provenance.
     pub sandbox: SandboxPolicy,
-    /// Full active permissions for this thread. `activePermissionProfile`
-    /// carries display/provenance metadata for this runtime profile.
-    #[experimental("thread/start.permissionProfile")]
-    #[serde(default)]
-    pub permission_profile: Option<PermissionProfile>,
     /// Named or implicit built-in profile that produced the active
     /// permissions, when known.
     #[experimental("thread/start.activePermissionProfile")]
@@ -291,10 +281,8 @@ pub struct ThreadResumeParams {
     /// Named profile id for the resumed thread. Cannot be combined with
     /// `sandbox`.
     #[experimental("thread/resume.permissions")]
-    #[schemars(with = "Option<String>")]
-    #[ts(type = "string | null")]
     #[ts(optional = nullable)]
-    pub permissions: Option<PermissionProfileSelectionParams>,
+    pub permissions: Option<String>,
     #[ts(optional = nullable)]
     pub config: Option<HashMap<String, serde_json::Value>>,
     #[ts(optional = nullable)]
@@ -339,14 +327,8 @@ pub struct ThreadResumeResponse {
     /// Reviewer currently used for approval requests on this thread.
     pub approvals_reviewer: ApprovalsReviewer,
     /// Legacy sandbox policy retained for compatibility. Experimental clients
-    /// should prefer `permissionProfile` when they need exact runtime
-    /// permissions.
+    /// should prefer `activePermissionProfile` for profile provenance.
     pub sandbox: SandboxPolicy,
-    /// Full active permissions for this thread. `activePermissionProfile`
-    /// carries display/provenance metadata for this runtime profile.
-    #[experimental("thread/resume.permissionProfile")]
-    #[serde(default)]
-    pub permission_profile: Option<PermissionProfile>,
     /// Named or implicit built-in profile that produced the active
     /// permissions, when known.
     #[experimental("thread/resume.activePermissionProfile")]
@@ -408,10 +390,8 @@ pub struct ThreadForkParams {
     /// Named profile id for the forked thread. Cannot be combined with
     /// `sandbox`.
     #[experimental("thread/fork.permissions")]
-    #[schemars(with = "Option<String>")]
-    #[ts(type = "string | null")]
     #[ts(optional = nullable)]
-    pub permissions: Option<PermissionProfileSelectionParams>,
+    pub permissions: Option<String>,
     #[ts(optional = nullable)]
     pub config: Option<HashMap<String, serde_json::Value>>,
     #[ts(optional = nullable)]
@@ -459,14 +439,8 @@ pub struct ThreadForkResponse {
     /// Reviewer currently used for approval requests on this thread.
     pub approvals_reviewer: ApprovalsReviewer,
     /// Legacy sandbox policy retained for compatibility. Experimental clients
-    /// should prefer `permissionProfile` when they need exact runtime
-    /// permissions.
+    /// should prefer `activePermissionProfile` for profile provenance.
     pub sandbox: SandboxPolicy,
-    /// Full active permissions for this thread. `activePermissionProfile`
-    /// carries display/provenance metadata for this runtime profile.
-    #[experimental("thread/fork.permissionProfile")]
-    #[serde(default)]
-    pub permission_profile: Option<PermissionProfile>,
     /// Named or implicit built-in profile that produced the active
     /// permissions, when known.
     #[experimental("thread/fork.activePermissionProfile")]
@@ -574,6 +548,8 @@ v2_enum_from_core! {
     pub enum ThreadGoalStatus from CoreThreadGoalStatus {
         Active,
         Paused,
+        Blocked,
+        UsageLimited,
         BudgetLimited,
         Complete,
     }

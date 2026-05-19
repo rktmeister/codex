@@ -1199,7 +1199,6 @@ impl ThreadRequestProcessor {
             approval_policy: config_snapshot.approval_policy.into(),
             approvals_reviewer: config_snapshot.approvals_reviewer.into(),
             sandbox,
-            permission_profile: Some(config_snapshot.permission_profile.into()),
             active_permission_profile,
             reasoning_effort: config_snapshot.reasoning_effort,
         };
@@ -1240,17 +1239,18 @@ impl ThreadRequestProcessor {
         approval_policy: Option<codex_app_server_protocol::AskForApproval>,
         approvals_reviewer: Option<codex_app_server_protocol::ApprovalsReviewer>,
         sandbox: Option<SandboxMode>,
-        permissions: Option<PermissionProfileSelectionParams>,
+        permissions: Option<String>,
         base_instructions: Option<String>,
         developer_instructions: Option<String>,
         personality: Option<Personality>,
     ) -> ConfigOverrides {
-        let mut overrides = ConfigOverrides {
+        ConfigOverrides {
             model,
             model_provider,
             service_tier,
             cwd: cwd.map(PathBuf::from),
             workspace_roots: runtime_workspace_roots,
+            default_permissions: permissions,
             approval_policy: approval_policy
                 .map(codex_app_server_protocol::AskForApproval::to_core),
             approvals_reviewer: approvals_reviewer
@@ -1262,9 +1262,7 @@ impl ThreadRequestProcessor {
             developer_instructions,
             personality,
             ..Default::default()
-        };
-        apply_permission_profile_selection_to_config_overrides(&mut overrides, permissions);
-        overrides
+        }
     }
 
     fn parse_environment_selections(
@@ -2554,7 +2552,6 @@ impl ThreadRequestProcessor {
                     approval_policy: session_configured.approval_policy.into(),
                     approvals_reviewer: session_configured.approvals_reviewer.into(),
                     sandbox,
-                    permission_profile: Some(config_snapshot.permission_profile.into()),
                     active_permission_profile,
                     reasoning_effort: session_configured.reasoning_effort,
                 };
@@ -3215,7 +3212,6 @@ impl ThreadRequestProcessor {
             approval_policy: session_configured.approval_policy.into(),
             approvals_reviewer: session_configured.approvals_reviewer.into(),
             sandbox,
-            permission_profile: Some(config_snapshot.permission_profile.into()),
             active_permission_profile,
             reasoning_effort: session_configured.reasoning_effort,
         };

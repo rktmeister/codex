@@ -626,7 +626,6 @@ pub(super) async fn handle_pending_thread_resume_request(
         approval_policy: approval_policy.into(),
         approvals_reviewer: approvals_reviewer.into(),
         sandbox,
-        permission_profile: Some(permission_profile.into()),
         active_permission_profile,
         reasoning_effort,
     };
@@ -677,7 +676,7 @@ pub(super) async fn send_thread_goal_snapshot_notification(
     thread_id: ThreadId,
     state_db: &StateDbHandle,
 ) {
-    match state_db.get_thread_goal(thread_id).await {
+    match state_db.thread_goals().get_thread_goal(thread_id).await {
         Ok(Some(goal)) => {
             outgoing
                 .send_server_notification(ServerNotification::ThreadGoalUpdated(
