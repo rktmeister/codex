@@ -2117,6 +2117,7 @@ async fn default_permissions_can_select_builtin_profile_without_permissions_tabl
     let codex_home = TempDir::new()?;
     let cwd = TempDir::new()?;
     std::fs::create_dir_all(cwd.path().join(".git/hooks"))?;
+    std::fs::write(cwd.path().join(".git/HEAD"), "ref: refs/heads/main\n")?;
 
     let config = Config::load_from_base_config_with_overrides(
         ConfigToml {
@@ -2581,6 +2582,10 @@ async fn implicit_builtin_workspace_profile_preserves_add_dir_metadata_carveouts
     let cwd = TempDir::new()?;
     let extra_root = TempDir::new()?;
     std::fs::create_dir_all(extra_root.path().join(".git/hooks"))?;
+    std::fs::write(
+        extra_root.path().join(".git/HEAD"),
+        "ref: refs/heads/main\n",
+    )?;
     for subpath in [".agents", ".codex"] {
         std::fs::create_dir_all(extra_root.path().join(subpath))?;
     }

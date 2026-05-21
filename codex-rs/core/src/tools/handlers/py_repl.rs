@@ -126,8 +126,8 @@ impl ToolExecutor<ToolInvocation> for PyReplHandler {
         ToolName::plain("py_repl")
     }
 
-    fn spec(&self) -> Option<ToolSpec> {
-        Some(ToolSpec::Freeform(FreeformTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec::Freeform(FreeformTool {
             name: "py_repl".to_string(),
             description: "Runs Python in a persistent kernel with top-level await. This is a freeform tool: send raw Python source text, optionally with a first-line pragma like `# codex-py-repl: timeout_ms=15000`; do not send JSON/quotes/markdown fences."
                 .to_string(),
@@ -136,7 +136,7 @@ impl ToolExecutor<ToolInvocation> for PyReplHandler {
                 syntax: "lark".to_string(),
                 definition: PY_REPL_FREEFORM_GRAMMAR.to_string(),
             },
-        }))
+        })
     }
 
     async fn handle(
@@ -254,8 +254,8 @@ impl ToolExecutor<ToolInvocation> for PyReplResetHandler {
         ToolName::plain("py_repl_reset")
     }
 
-    fn spec(&self) -> Option<ToolSpec> {
-        Some(ToolSpec::Function(ResponsesApiTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec::Function(ResponsesApiTool {
             name: "py_repl_reset".to_string(),
             description:
                 "Restarts the py_repl kernel for this run and clears persisted top-level bindings."
@@ -268,7 +268,7 @@ impl ToolExecutor<ToolInvocation> for PyReplResetHandler {
                 Some(false.into()),
             ),
             output_schema: None,
-        }))
+        })
     }
 
     async fn handle(

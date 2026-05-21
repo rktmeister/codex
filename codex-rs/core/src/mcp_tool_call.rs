@@ -12,8 +12,8 @@ use crate::guardian::GuardianMcpAnnotations;
 use crate::guardian::guardian_rejection_message;
 use crate::guardian::guardian_timeout_message;
 use crate::guardian::new_guardian_review_id;
-use crate::guardian::review_approval_request;
 use crate::guardian::routes_approval_to_guardian;
+use crate::guardian::spawn_approval_request_review;
 use crate::hook_runtime::run_permission_request_hooks;
 use crate::mcp_openai_file::rewrite_mcp_tool_arguments_for_openai_files;
 use crate::mcp_tool_approval_templates::RenderedMcpToolApprovalParam;
@@ -24,6 +24,7 @@ use crate::tools::hook_names::HookToolName;
 use crate::tools::sandboxing::PermissionRequestPayload;
 use crate::turn_metadata::McpTurnMetadataContext;
 use codex_analytics::AppInvocation;
+use codex_analytics::GuardianApprovalRequestSource;
 use codex_analytics::InvocationType;
 use codex_analytics::build_track_events_context;
 use codex_app_server_protocol::ConfigLayerSource;
@@ -83,6 +84,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
 use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
 use toml_edit::value;
 use tracing::Instrument;
 use tracing::Span;
@@ -1220,14 +1222,16 @@ async fn maybe_request_mcp_tool_approval(
 
     if routes_approval_to_guardian(turn_context) {
         let review_id = new_guardian_review_id();
-        let decision = review_approval_request(
-            sess,
-            turn_context,
+        let review_rx = spawn_approval_request_review(
+            Arc::clone(sess),
+            Arc::clone(turn_context),
             review_id.clone(),
             build_guardian_mcp_tool_review_request(call_id, invocation, metadata),
             /*retry_reason*/ None,
-        )
-        .await;
+            GuardianApprovalRequestSource::MainTurn,
+            CancellationToken::new(),
+        );
+        let decision = review_rx.await.unwrap_or_default();
         let decision = mcp_tool_approval_decision_from_guardian(sess, &review_id, decision).await;
         apply_mcp_tool_approval_decision(
             sess,

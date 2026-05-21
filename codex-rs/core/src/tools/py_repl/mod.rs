@@ -1669,6 +1669,7 @@ impl PyReplManager {
                 input: "",
                 yield_time_ms: (timeout_ms - elapsed_ms).clamp(1, PY_REPL_DEFAULT_TIMEOUT_MS),
                 max_output_tokens,
+                truncation_policy: exec.turn.truncation_policy,
             };
             let poll_output = tokio::select! {
                 _ = reset_cancel.cancelled() => {
@@ -1792,6 +1793,7 @@ impl PyReplManager {
             input: "",
             yield_time_ms: timeout_ms,
             max_output_tokens: req.max_output_tokens,
+            truncation_policy: exec.turn.truncation_policy,
         };
         let poll_output = tokio::select! {
             _ = reset_cancel.cancelled() => {

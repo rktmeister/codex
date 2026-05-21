@@ -579,8 +579,8 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut
     }
 
     if features.enabled(Feature::PyRepl) {
-        planned_tools.add_runtime(PyReplHandler);
-        planned_tools.add_runtime(PyReplResetHandler);
+        planned_tools.add(PyReplHandler);
+        planned_tools.add(PyReplResetHandler);
     }
 
     if tool_suggest_enabled(turn_context)
