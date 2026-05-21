@@ -150,7 +150,7 @@ async fn load_config(codex_home: &Path, cwd: &Path) -> PluginsConfigInput {
 
 fn remote_installed_linear_plugin() -> RemoteInstalledPlugin {
     RemoteInstalledPlugin {
-        marketplace_name: "chatgpt-global".to_string(),
+        marketplace_name: "openai-curated-remote".to_string(),
         id: "plugins~Plugin_linear".to_string(),
         name: "linear".to_string(),
         enabled: true,
@@ -235,7 +235,7 @@ async fn load_plugins_loads_default_skills_and_mcp_servers() {
                         http_headers: None,
                         env_http_headers: None,
                     },
-                    experimental_environment: None,
+                    environment_id: "local".to_string(),
                     enabled: true,
                     required: false,
                     supports_parallel_tool_calls: false,
@@ -401,11 +401,11 @@ async fn build_remote_installed_plugin_marketplaces_from_cache_uses_remote_metad
         .build_remote_installed_plugin_marketplaces_from_cache(&[RemotePluginScope::Global])
         .expect("remote installed cache should be present");
     assert_eq!(marketplaces.len(), 1);
-    assert_eq!(marketplaces[0].name, "chatgpt-global");
-    assert_eq!(marketplaces[0].display_name, "ChatGPT Plugins");
+    assert_eq!(marketplaces[0].name, "openai-curated-remote");
+    assert_eq!(marketplaces[0].display_name, "OpenAI Curated Remote");
     assert_eq!(marketplaces[0].plugins.len(), 1);
     let plugin = &marketplaces[0].plugins[0];
-    assert_eq!(plugin.id, "linear@chatgpt-global");
+    assert_eq!(plugin.id, "linear@openai-curated-remote");
     assert_eq!(plugin.remote_plugin_id, "plugins~Plugin_linear");
     assert_eq!(plugin.name, "linear");
     assert_eq!(plugin.installed, true);
@@ -738,7 +738,7 @@ async fn load_plugins_uses_manifest_configured_component_paths() {
                     http_headers: None,
                     env_http_headers: None,
                 },
-                experimental_environment: None,
+                environment_id: "local".to_string(),
                 enabled: true,
                 required: false,
                 supports_parallel_tool_calls: false,
@@ -850,7 +850,7 @@ async fn load_plugins_ignores_manifest_component_paths_without_dot_slash() {
                     http_headers: None,
                     env_http_headers: None,
                 },
-                experimental_environment: None,
+                environment_id: "local".to_string(),
                 enabled: true,
                 required: false,
                 supports_parallel_tool_calls: false,
@@ -1012,7 +1012,7 @@ fn capability_index_filters_inactive_and_zero_capability_plugins() {
             http_headers: None,
             env_http_headers: None,
         },
-        experimental_environment: None,
+        environment_id: "local".to_string(),
         enabled: true,
         required: false,
         supports_parallel_tool_calls: false,
@@ -1599,6 +1599,7 @@ enabled = false
                     id: "enabled-plugin@debug".to_string(),
                     name: "enabled-plugin".to_string(),
                     local_version: None,
+                    installed_version: Some("local".to_string()),
                     source: MarketplacePluginSource::Local {
                         path: AbsolutePathBuf::try_from(tmp.path().join("repo/enabled-plugin"))
                             .unwrap(),
@@ -1617,6 +1618,7 @@ enabled = false
                     id: "disabled-plugin@debug".to_string(),
                     name: "disabled-plugin".to_string(),
                     local_version: None,
+                    installed_version: Some("local".to_string()),
                     source: MarketplacePluginSource::Local {
                         path: AbsolutePathBuf::try_from(tmp.path().join("repo/disabled-plugin"),)
                             .unwrap(),
@@ -1738,6 +1740,7 @@ plugins = true
             id: "default-plugin@debug".to_string(),
             name: "default-plugin".to_string(),
             local_version: None,
+            installed_version: None,
             source: MarketplacePluginSource::Local {
                 path: AbsolutePathBuf::try_from(tmp.path().join("repo/default-plugin")).unwrap(),
             },
@@ -2170,6 +2173,7 @@ enabled = true
             id: "toolkit@debug".to_string(),
             name: "toolkit".to_string(),
             local_version: None,
+            installed_version: Some("local".to_string()),
             source: MarketplacePluginSource::Git {
                 url: missing_remote_repo_url,
                 path: Some("plugins/toolkit".to_string()),
@@ -2287,6 +2291,7 @@ plugins = true
                 id: "linear@openai-curated".to_string(),
                 name: "linear".to_string(),
                 local_version: None,
+                installed_version: None,
                 source: MarketplacePluginSource::Local {
                     path: AbsolutePathBuf::try_from(curated_root.join("plugins/linear")).unwrap(),
                 },
@@ -2582,6 +2587,7 @@ enabled = false
             id: "dup-plugin@debug".to_string(),
             name: "dup-plugin".to_string(),
             local_version: None,
+            installed_version: None,
             source: MarketplacePluginSource::Local {
                 path: AbsolutePathBuf::try_from(tmp.path().join("repo-a/from-a")).unwrap(),
             },
@@ -2613,6 +2619,7 @@ enabled = false
             id: "b-only-plugin@debug".to_string(),
             name: "b-only-plugin".to_string(),
             local_version: None,
+            installed_version: None,
             source: MarketplacePluginSource::Local {
                 path: AbsolutePathBuf::try_from(tmp.path().join("repo-b/from-b-only")).unwrap(),
             },
@@ -2698,6 +2705,7 @@ enabled = true
                 id: "sample-plugin@debug".to_string(),
                 name: "sample-plugin".to_string(),
                 local_version: None,
+                installed_version: None,
                 source: MarketplacePluginSource::Local {
                     path: AbsolutePathBuf::try_from(tmp.path().join("repo/sample-plugin")).unwrap(),
                 },
