@@ -483,35 +483,35 @@ async fn start_thread_keeps_internal_threads_hidden_from_normal_lookups() {
 
 #[tokio::test]
 async fn resume_and_fork_do_not_restore_thread_environments_from_rollout() {
-    let temp_dir = tempdir().expect("tempdir");
-    let mut config = test_config().await;
-    config.codex_home = temp_dir.path().join("codex-home").abs();
-    config.cwd = config.codex_home.abs();
-    std::fs::create_dir_all(&config.codex_home).expect("create codex home");
+    Box::pin(async {
+        let temp_dir = tempdir().expect("tempdir");
+        let mut config = test_config().await;
+        config.codex_home = temp_dir.path().join("codex-home").abs();
+        config.cwd = config.codex_home.abs();
+        std::fs::create_dir_all(&config.codex_home).expect("create codex home");
 
-    let auth_manager =
-        AuthManager::from_auth_for_testing(CodexAuth::create_dummy_chatgpt_auth_for_testing());
-    let manager = ThreadManager::new(
-        &config,
-        auth_manager.clone(),
-        SessionSource::Exec,
-        Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
-        empty_extension_registry(),
-        /*analytics_events_client*/ None,
-        thread_store_from_config(&config, /*state_db*/ None),
-        /*state_db*/ None,
-        TEST_INSTALLATION_ID.to_string(),
-        /*attestation_provider*/ None,
-    );
-    let selected_cwd =
-        AbsolutePathBuf::try_from(config.cwd.as_path().join("selected")).expect("absolute path");
-    let environments = vec![TurnEnvironmentSelection {
-        environment_id: "local".to_string(),
-        cwd: selected_cwd.clone(),
-    }];
-    let default_cwd = config.cwd.clone();
-    let source = manager
-        .start_thread_with_options(StartThreadOptions {
+        let auth_manager =
+            AuthManager::from_auth_for_testing(CodexAuth::create_dummy_chatgpt_auth_for_testing());
+        let manager = ThreadManager::new(
+            &config,
+            auth_manager.clone(),
+            SessionSource::Exec,
+            Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+            empty_extension_registry(),
+            /*analytics_events_client*/ None,
+            thread_store_from_config(&config, /*state_db*/ None),
+            /*state_db*/ None,
+            TEST_INSTALLATION_ID.to_string(),
+            /*attestation_provider*/ None,
+        );
+        let selected_cwd = AbsolutePathBuf::try_from(config.cwd.as_path().join("selected"))
+            .expect("absolute path");
+        let environments = vec![TurnEnvironmentSelection {
+            environment_id: "local".to_string(),
+            cwd: selected_cwd.clone(),
+        }];
+        let default_cwd = config.cwd.clone();
+        let source = Box::pin(manager.start_thread_with_options(StartThreadOptions {
             config: config.clone(),
             initial_history: InitialHistory::New,
             session_source: None,
@@ -521,79 +521,79 @@ async fn resume_and_fork_do_not_restore_thread_environments_from_rollout() {
             metrics_service_name: None,
             parent_trace: None,
             environments: environments.clone(),
-        })
+        }))
         .await
         .expect("start source thread");
-    source.thread.ensure_rollout_materialized().await;
-    source
-        .thread
-        .flush_rollout()
-        .await
-        .expect("flush source rollout");
-    let rollout_path = source
-        .thread
-        .rollout_path()
-        .expect("source rollout path should exist");
-    source
-        .thread
-        .shutdown_and_wait()
-        .await
-        .expect("shutdown source thread before resume");
-    let _ = manager.remove_thread(&source.thread_id).await;
+        source.thread.ensure_rollout_materialized().await;
+        source
+            .thread
+            .flush_rollout()
+            .await
+            .expect("flush source rollout");
+        let rollout_path = source
+            .thread
+            .rollout_path()
+            .expect("source rollout path should exist");
+        source
+            .thread
+            .shutdown_and_wait()
+            .await
+            .expect("shutdown source thread before resume");
+        let _ = manager.remove_thread(&source.thread_id).await;
 
-    let resumed = manager
-        .resume_thread_from_rollout(
+        let resumed = Box::pin(manager.resume_thread_from_rollout(
             config.clone(),
             rollout_path.clone(),
             auth_manager,
             /*parent_trace*/ None,
-        )
+        ))
         .await
         .expect("resume source thread");
-    let resumed_turn = resumed
-        .thread
-        .codex
-        .session
-        .new_turn_with_sub_id("resume-turn".to_string(), SessionSettingsUpdate::default())
-        .await
-        .expect("build resumed turn context");
-    assert_eq!(resumed_turn.environments.turn_environments.len(), 1);
-    assert_eq!(
-        resumed_turn.environments.turn_environments[0].cwd,
-        default_cwd
-    );
-    assert_ne!(
-        resumed_turn.environments.turn_environments[0].cwd,
-        selected_cwd
-    );
+        let resumed_turn = resumed
+            .thread
+            .codex
+            .session
+            .new_turn_with_sub_id("resume-turn".to_string(), SessionSettingsUpdate::default())
+            .await
+            .expect("build resumed turn context");
+        assert_eq!(resumed_turn.environments.turn_environments.len(), 1);
+        assert_eq!(
+            resumed_turn.environments.turn_environments[0].cwd,
+            default_cwd
+        );
+        assert_ne!(
+            resumed_turn.environments.turn_environments[0].cwd,
+            selected_cwd
+        );
 
-    let forked = manager
-        .fork_thread(
+        let forked = Box::pin(manager.fork_thread(
             ForkSnapshot::Interrupted,
             config,
             rollout_path,
             /*thread_source*/ None,
             /*persist_extended_history*/ false,
             /*parent_trace*/ None,
-        )
+        ))
         .await
         .expect("fork source thread");
-    let forked_turn = forked
-        .thread
-        .codex
-        .session
-        .new_turn_with_sub_id("fork-turn".to_string(), SessionSettingsUpdate::default())
-        .await
-        .expect("build forked turn context");
-    assert_eq!(forked_turn.environments.turn_environments.len(), 1);
-    assert_eq!(
-        forked_turn.environments.turn_environments[0].cwd,
-        default_cwd
-    );
-    assert_ne!(
-        forked_turn.environments.turn_environments[0].cwd,
-        selected_cwd
-    );
+        let forked_turn = forked
+            .thread
+            .codex
+            .session
+            .new_turn_with_sub_id("fork-turn".to_string(), SessionSettingsUpdate::default())
+            .await
+            .expect("build forked turn context");
+        assert_eq!(forked_turn.environments.turn_environments.len(), 1);
+        assert_eq!(
+            forked_turn.environments.turn_environments[0].cwd,
+            default_cwd
+        );
+        assert_ne!(
+            forked_turn.environments.turn_environments[0].cwd,
+            selected_cwd
+        );
+    })
+    .await;
 }
 
 #[tokio::test]

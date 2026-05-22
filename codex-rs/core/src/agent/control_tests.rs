@@ -1473,106 +1473,109 @@ async fn spawn_child_completion_notifies_parent_history() {
 
 #[tokio::test]
 async fn multi_agent_v2_completion_ignores_dead_direct_parent() {
-    let harness = AgentControlHarness::new().await;
-    let (root_thread_id, root_thread) = harness.start_thread().await;
-    let mut config = harness.config.clone();
-    let _ = config.features.enable(Feature::MultiAgentV2);
-    let worker_path = AgentPath::root().join("worker_a").expect("worker path");
-    let worker_thread_id = harness
-        .control
-        .spawn_agent(
-            config.clone(),
-            text_input("hello worker"),
-            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-                parent_thread_id: root_thread_id,
-                depth: 1,
-                agent_path: Some(worker_path.clone()),
-                agent_nickname: None,
-                agent_role: Some("explorer".to_string()),
-            })),
-        )
-        .await
-        .expect("worker spawn should succeed");
-    let tester_path = worker_path.join("tester").expect("tester path");
-    let tester_thread_id = harness
-        .control
-        .spawn_agent(
-            config,
-            text_input("hello tester"),
-            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-                parent_thread_id: worker_thread_id,
-                depth: 2,
-                agent_path: Some(tester_path.clone()),
-                agent_nickname: None,
-                agent_role: Some("explorer".to_string()),
-            })),
-        )
-        .await
-        .expect("tester spawn should succeed");
-    harness
-        .control
-        .shutdown_live_agent(worker_thread_id)
-        .await
-        .expect("worker shutdown should succeed");
+    Box::pin(async {
+        let harness = AgentControlHarness::new().await;
+        let (root_thread_id, root_thread) = harness.start_thread().await;
+        let mut config = harness.config.clone();
+        let _ = config.features.enable(Feature::MultiAgentV2);
+        let worker_path = AgentPath::root().join("worker_a").expect("worker path");
+        let worker_thread_id = harness
+            .control
+            .spawn_agent(
+                config.clone(),
+                text_input("hello worker"),
+                Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                    parent_thread_id: root_thread_id,
+                    depth: 1,
+                    agent_path: Some(worker_path.clone()),
+                    agent_nickname: None,
+                    agent_role: Some("explorer".to_string()),
+                })),
+            )
+            .await
+            .expect("worker spawn should succeed");
+        let tester_path = worker_path.join("tester").expect("tester path");
+        let tester_thread_id = harness
+            .control
+            .spawn_agent(
+                config,
+                text_input("hello tester"),
+                Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                    parent_thread_id: worker_thread_id,
+                    depth: 2,
+                    agent_path: Some(tester_path.clone()),
+                    agent_nickname: None,
+                    agent_role: Some("explorer".to_string()),
+                })),
+            )
+            .await
+            .expect("tester spawn should succeed");
+        harness
+            .control
+            .shutdown_live_agent(worker_thread_id)
+            .await
+            .expect("worker shutdown should succeed");
 
-    let tester_thread = harness
-        .manager
-        .get_thread(tester_thread_id)
-        .await
-        .expect("tester thread should exist");
-    let tester_turn = tester_thread.codex.session.new_default_turn().await;
-    tester_thread
-        .codex
-        .session
-        .send_event(
-            tester_turn.as_ref(),
-            EventMsg::TurnComplete(TurnCompleteEvent {
-                turn_id: tester_turn.sub_id.clone(),
-                last_agent_message: Some("done".to_string()),
-                completed_at: None,
-                duration_ms: None,
-                time_to_first_token_ms: None,
-            }),
-        )
-        .await;
-
-    sleep(Duration::from_millis(100)).await;
-
-    assert!(
-        !harness
+        let tester_thread = harness
             .manager
-            .captured_ops()
-            .into_iter()
-            .any(|(thread_id, op)| {
-                thread_id == worker_thread_id
-                    && matches!(
-                        op,
-                        Op::InterAgentCommunication { communication }
-                            if communication.author == tester_path
-                                && communication.recipient == worker_path
-                                && communication.content == "done"
-                    )
-            })
-    );
+            .get_thread(tester_thread_id)
+            .await
+            .expect("tester thread should exist");
+        let tester_turn = tester_thread.codex.session.new_default_turn().await;
+        tester_thread
+            .codex
+            .session
+            .send_event(
+                tester_turn.as_ref(),
+                EventMsg::TurnComplete(TurnCompleteEvent {
+                    turn_id: tester_turn.sub_id.clone(),
+                    last_agent_message: Some("done".to_string()),
+                    completed_at: None,
+                    duration_ms: None,
+                    time_to_first_token_ms: None,
+                }),
+            )
+            .await;
 
-    let root_history_items = root_thread
-        .codex
-        .session
-        .clone_history()
-        .await
-        .raw_items()
-        .to_vec();
-    assert!(!history_contains_assistant_inter_agent_communication(
-        &root_history_items,
-        &InterAgentCommunication::new(
-            tester_path,
-            AgentPath::root(),
-            Vec::new(),
-            "done".to_string(),
-            /*trigger_turn*/ true,
-        )
-    ));
-    assert!(!has_subagent_notification(&root_history_items));
+        sleep(Duration::from_millis(100)).await;
+
+        assert!(
+            !harness
+                .manager
+                .captured_ops()
+                .into_iter()
+                .any(|(thread_id, op)| {
+                    thread_id == worker_thread_id
+                        && matches!(
+                            op,
+                            Op::InterAgentCommunication { communication }
+                                if communication.author == tester_path
+                                    && communication.recipient == worker_path
+                                    && communication.content == "done"
+                        )
+                })
+        );
+
+        let root_history_items = root_thread
+            .codex
+            .session
+            .clone_history()
+            .await
+            .raw_items()
+            .to_vec();
+        assert!(!history_contains_assistant_inter_agent_communication(
+            &root_history_items,
+            &InterAgentCommunication::new(
+                tester_path,
+                AgentPath::root(),
+                Vec::new(),
+                "done".to_string(),
+                /*trigger_turn*/ true,
+            )
+        ));
+        assert!(!has_subagent_notification(&root_history_items));
+    })
+    .await;
 }
 
 #[tokio::test]
@@ -2121,6 +2124,64 @@ async fn list_agent_subtree_thread_ids_includes_anonymous_and_closed_descendants
         no_path_child_subtree_thread_ids,
         expected_no_path_child_subtree_thread_ids
     );
+}
+
+#[tokio::test]
+async fn list_agent_subtree_thread_ids_includes_live_descendants_without_state_db() {
+    let (_home, config) = test_config().await;
+    let manager = ThreadManager::with_models_provider_home_and_state_for_tests(
+        CodexAuth::from_api_key("dummy"),
+        config.model_provider.clone(),
+        config.codex_home.to_path_buf(),
+        std::sync::Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+        /*state_db*/ None,
+    );
+    let control = manager.agent_control();
+    let parent_thread_id = manager
+        .start_thread(config.clone())
+        .await
+        .expect("parent should start")
+        .thread_id;
+
+    let child_thread_id = control
+        .spawn_agent(
+            config.clone(),
+            text_input("hello child"),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: Some("explorer".to_string()),
+            })),
+        )
+        .await
+        .expect("child spawn should succeed");
+    let grandchild_thread_id = control
+        .spawn_agent(
+            config,
+            text_input("hello grandchild"),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: child_thread_id,
+                depth: 2,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: Some("worker".to_string()),
+            })),
+        )
+        .await
+        .expect("grandchild spawn should succeed");
+
+    let mut subtree_thread_ids = manager
+        .list_agent_subtree_thread_ids(parent_thread_id)
+        .await
+        .expect("live subtree should load");
+    subtree_thread_ids.sort_by_key(ToString::to_string);
+    let mut expected_subtree_thread_ids =
+        vec![parent_thread_id, child_thread_id, grandchild_thread_id];
+    expected_subtree_thread_ids.sort_by_key(ToString::to_string);
+
+    assert_eq!(subtree_thread_ids, expected_subtree_thread_ids);
 }
 
 #[tokio::test]
