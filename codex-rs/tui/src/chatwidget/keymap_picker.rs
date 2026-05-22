@@ -158,7 +158,7 @@ impl ChatWidget {
     /// Applies a committed keymap edit to the live chat widget.
     ///
     /// The caller is responsible for persisting the config file before invoking this method. This
-    /// method updates the in-memory config, app-level copy binding cache, and bottom-pane keymap
+    /// method updates the in-memory config, app-level copy binding caches, and bottom-pane keymap
     /// bindings as one unit; callers that update only `self.config.tui_keymap` would leave visible
     /// picker state and active key handlers disagreeing until the next restart.
     pub(crate) fn apply_keymap_update(
@@ -168,6 +168,7 @@ impl ChatWidget {
     ) {
         self.config.tui_keymap = keymap_config;
         self.copy_last_response_binding = runtime_keymap.app.copy.clone();
+        self.copy_code_binding = runtime_keymap.app.copy_code.clone();
         self.chat_keymap = runtime_keymap.chat.clone();
         self.queued_message_edit_hint_binding = queued_message_edit_hint_binding(
             &self.chat_keymap.edit_queued_message,

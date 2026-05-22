@@ -1013,6 +1013,7 @@ mod tests {
                 "Composer.queue",
                 "Global.open_external_editor",
                 "Global.copy",
+                "Global.copy_code",
                 "Global.toggle_vim_mode",
                 "Editor.delete_backward_word",
                 "Editor.delete_forward_word",

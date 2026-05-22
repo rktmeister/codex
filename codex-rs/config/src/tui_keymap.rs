@@ -94,6 +94,8 @@ pub struct TuiGlobalKeymap {
     pub open_external_editor: Option<KeybindingsSpec>,
     /// Copy the last agent response to the clipboard.
     pub copy: Option<KeybindingsSpec>,
+    /// Select a fenced code block from the latest agent response and copy it.
+    pub copy_code: Option<KeybindingsSpec>,
     /// Clear the terminal UI.
     pub clear_terminal: Option<KeybindingsSpec>,
     /// Submit the current composer draft.

@@ -1280,6 +1280,38 @@ async fn ctrl_o_copy_reports_when_no_agent_response_exists() {
 }
 
 #[tokio::test]
+async fn alt_o_copy_code_reports_when_no_agent_response_exists() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::ALT));
+
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(cells.len(), 1, "expected one info message");
+    let rendered = lines_to_single_string(&cells[0]);
+    assert!(
+        rendered.contains("`/copy-code` is unavailable"),
+        "expected no-output message, got {rendered:?}"
+    );
+}
+
+#[tokio::test]
+async fn alt_o_copy_code_opens_code_block_picker() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.transcript.last_agent_markdown = Some("```rust\nfn main() {}\n```".to_string());
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::ALT));
+
+    let popup = render_bottom_popup(&chat, /*width*/ 100);
+    assert!(popup.contains("Copy Code Block"));
+    assert!(popup.contains("rust"));
+    assert!(popup.contains("fn main() {}"));
+    assert!(
+        drain_insert_history(&mut rx).is_empty(),
+        "copy-code shortcut should open a picker without adding transcript messages"
+    );
+}
+
+#[tokio::test]
 async fn keymap_capture_can_capture_current_copy_shortcut() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     let runtime_keymap = crate::keymap::RuntimeKeymap::defaults();
@@ -1432,6 +1464,33 @@ async fn copy_shortcut_can_be_remapped() {
     assert!(
         rendered.contains("No agent response to copy"),
         "expected remapped copy shortcut to run, got {rendered:?}"
+    );
+}
+
+#[tokio::test]
+async fn copy_code_shortcut_can_be_remapped() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let mut keymap_config = chat.config_ref().tui_keymap.clone();
+    keymap_config.global.copy_code = Some(codex_config::types::KeybindingsSpec::One(
+        codex_config::types::KeybindingSpec("ctrl-x".to_string()),
+    ));
+    let runtime_keymap =
+        crate::keymap::RuntimeKeymap::from_config(&keymap_config).expect("valid copy-code remap");
+    chat.apply_keymap_update(keymap_config, &runtime_keymap);
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::ALT));
+    assert!(
+        drain_insert_history(&mut rx).is_empty(),
+        "old copy-code shortcut should no longer run"
+    );
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL));
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(cells.len(), 1, "expected one info message");
+    let rendered = lines_to_single_string(&cells[0]);
+    assert!(
+        rendered.contains("`/copy-code` is unavailable"),
+        "expected remapped copy-code shortcut to run, got {rendered:?}"
     );
 }
 

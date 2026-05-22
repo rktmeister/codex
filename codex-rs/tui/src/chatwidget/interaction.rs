@@ -41,6 +41,14 @@ impl ChatWidget {
             return;
         }
 
+        if key_event.kind == KeyEventKind::Press && self.copy_code_binding.is_pressed(key_event) {
+            self.bottom_pane.clear_quit_shortcut_hint();
+            self.quit_shortcut_expires_at = None;
+            self.quit_shortcut_key = None;
+            self.open_copy_code_popup();
+            return;
+        }
+
         match key_event {
             KeyEvent {
                 code: KeyCode::Char(c),

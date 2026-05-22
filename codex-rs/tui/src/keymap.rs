@@ -59,6 +59,8 @@ pub(crate) struct AppKeymap {
     pub(crate) open_external_editor: Vec<KeyBinding>,
     /// Copy the last agent response to the clipboard.
     pub(crate) copy: Vec<KeyBinding>,
+    /// Select a fenced code block from the latest agent response and copy it.
+    pub(crate) copy_code: Vec<KeyBinding>,
     /// Clear the terminal UI.
     pub(crate) clear_terminal: Vec<KeyBinding>,
     /// Toggle Vim mode for the composer input.
@@ -378,6 +380,11 @@ impl RuntimeKeymap {
                 &defaults.app.copy,
                 "tui.keymap.global.copy",
             )?,
+            copy_code: resolve_bindings(
+                keymap.global.copy_code.as_ref(),
+                &defaults.app.copy_code,
+                "tui.keymap.global.copy_code",
+            )?,
             clear_terminal: resolve_bindings(
                 keymap.global.clear_terminal.as_ref(),
                 &defaults.app.clear_terminal,
@@ -545,6 +552,7 @@ impl RuntimeKeymap {
                 app.open_external_editor.as_slice(),
             ),
             (keymap.global.copy.as_ref(), app.copy.as_slice()),
+            (keymap.global.copy_code.as_ref(), app.copy_code.as_slice()),
             (
                 keymap.global.clear_terminal.as_ref(),
                 app.clear_terminal.as_slice(),
@@ -672,6 +680,7 @@ impl RuntimeKeymap {
                 open_transcript: default_bindings![ctrl(KeyCode::Char('t'))],
                 open_external_editor: default_bindings![ctrl(KeyCode::Char('g'))],
                 copy: default_bindings![ctrl(KeyCode::Char('o'))],
+                copy_code: default_bindings![alt(KeyCode::Char('o'))],
                 clear_terminal: default_bindings![ctrl(KeyCode::Char('l'))],
                 toggle_vim_mode: default_bindings![],
                 toggle_fast_mode: default_bindings![],
@@ -889,6 +898,7 @@ impl RuntimeKeymap {
                     self.app.open_external_editor.as_slice(),
                 ),
                 ("copy", self.app.copy.as_slice()),
+                ("copy_code", self.app.copy_code.as_slice()),
                 ("clear_terminal", self.app.clear_terminal.as_slice()),
                 ("toggle_vim_mode", self.app.toggle_vim_mode.as_slice()),
                 ("toggle_fast_mode", self.app.toggle_fast_mode.as_slice()),
@@ -931,6 +941,7 @@ impl RuntimeKeymap {
                     self.app.open_external_editor.as_slice(),
                 ),
                 ("copy", self.app.copy.as_slice()),
+                ("copy_code", self.app.copy_code.as_slice()),
                 ("clear_terminal", self.app.clear_terminal.as_slice()),
                 ("toggle_vim_mode", self.app.toggle_vim_mode.as_slice()),
                 ("toggle_fast_mode", self.app.toggle_fast_mode.as_slice()),
@@ -974,6 +985,7 @@ impl RuntimeKeymap {
                     self.app.open_external_editor.as_slice(),
                 ),
                 ("copy", self.app.copy.as_slice()),
+                ("copy_code", self.app.copy_code.as_slice()),
                 ("clear_terminal", self.app.clear_terminal.as_slice()),
                 ("toggle_vim_mode", self.app.toggle_vim_mode.as_slice()),
                 ("toggle_fast_mode", self.app.toggle_fast_mode.as_slice()),
@@ -1026,6 +1038,7 @@ impl RuntimeKeymap {
                     self.app.open_external_editor.as_slice(),
                 ),
                 ("copy", self.app.copy.as_slice()),
+                ("copy_code", self.app.copy_code.as_slice()),
                 ("clear_terminal", self.app.clear_terminal.as_slice()),
                 (
                     "chat.decrease_reasoning_effort",
@@ -1786,6 +1799,15 @@ mod tests {
     }
 
     #[test]
+    fn default_copy_code_binding_is_alt_o() {
+        let runtime = RuntimeKeymap::defaults();
+        assert_eq!(
+            runtime.app.copy_code,
+            vec![key_hint::alt(KeyCode::Char('o'))]
+        );
+    }
+
+    #[test]
     fn defaults_include_reassignable_main_surface_actions() {
         let runtime = RuntimeKeymap::defaults();
 
@@ -2011,6 +2033,15 @@ mod tests {
 
         let err = RuntimeKeymap::from_config(&keymap).expect_err("expected parse error");
         assert!(err.contains("tui.keymap.global.copy"));
+    }
+
+    #[test]
+    fn invalid_global_copy_code_binding_reports_global_path() {
+        let mut keymap = TuiKeymap::default();
+        keymap.global.copy_code = Some(one("meta-o"));
+
+        let err = RuntimeKeymap::from_config(&keymap).expect_err("expected parse error");
+        assert!(err.contains("tui.keymap.global.copy_code"));
     }
 
     #[test]

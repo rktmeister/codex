@@ -26,3 +26,4 @@ See the Codex keymap documentation for supported actions and examples.
 Paste an image with Ctrl+V to attach it to your next message.
 You can resume a previous conversation by running `codex resume`
 Use /copy or press Ctrl+O to copy the latest agent response as Markdown.
+Use /copy-code or press Alt+O to copy a fenced code block from the latest response.
