@@ -118,6 +118,7 @@ fn sandbox_context_from_profile_preserves_workspace_write_read_only_subpaths() -
     let writable_dir = tmp.path().join("writable");
     let git_dir = writable_dir.join(".git");
     std::fs::create_dir_all(&git_dir)?;
+    std::fs::write(git_dir.join("HEAD"), "ref: refs/heads/main\n")?;
 
     let sandbox = workspace_write_sandbox(writable_dir.clone());
     let policy = sandbox.permissions.file_system_sandbox_policy();
@@ -125,6 +126,8 @@ fn sandbox_context_from_profile_preserves_workspace_write_read_only_subpaths() -
     let writable_roots = policy.get_writable_roots_with_cwd(cwd.as_path());
     let writable_dir = absolute_path(std::fs::canonicalize(writable_dir)?);
     let git_dir = absolute_path(std::fs::canonicalize(git_dir)?);
+    let git_config = git_dir.join("config");
+    let git_hooks = git_dir.join("hooks");
     let Some(writable_root) = writable_roots
         .iter()
         .find(|writable_root| writable_root.root == writable_dir)
@@ -132,7 +135,9 @@ fn sandbox_context_from_profile_preserves_workspace_write_read_only_subpaths() -
         panic!("writable root should be preserved");
     };
 
-    assert!(writable_root.read_only_subpaths.contains(&git_dir));
+    assert!(writable_root.read_only_subpaths.contains(&git_config));
+    assert!(writable_root.read_only_subpaths.contains(&git_hooks));
+    assert!(!writable_root.read_only_subpaths.contains(&git_dir));
 
     Ok(())
 }
