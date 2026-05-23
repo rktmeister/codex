@@ -133,6 +133,16 @@ fn test_absolute_path(path: &str) -> AbsolutePathBuf {
     AbsolutePathBuf::try_from(PathBuf::from(path)).expect("absolute test path")
 }
 
+fn thread_spawn_source(parent_thread_id: ThreadId) -> SessionSource {
+    SessionSource::SubAgent(codex_protocol::protocol::SubAgentSource::ThreadSpawn {
+        parent_thread_id,
+        depth: 1,
+        agent_path: None,
+        agent_nickname: None,
+        agent_role: None,
+    })
+}
+
 async fn next_thread_settings_updated(
     app_server: &mut AppServerSession,
     thread_id: ThreadId,
@@ -2767,7 +2777,7 @@ async fn inactive_thread_started_notification_initializes_replay_session() -> Re
                 path: Some(rollout_path.clone()),
                 cwd: test_path_buf("/tmp/agent").abs(),
                 cli_version: "0.0.0".to_string(),
-                source: codex_app_server_protocol::SessionSource::Unknown,
+                source: thread_spawn_source(main_thread_id),
                 thread_source: None,
                 agent_nickname: Some("Robie".to_string()),
                 agent_role: Some("explorer".to_string()),
@@ -2856,7 +2866,7 @@ async fn inactive_thread_started_notification_preserves_primary_model_when_path_
                 path: None,
                 cwd: test_path_buf("/tmp/agent").abs(),
                 cli_version: "0.0.0".to_string(),
-                source: codex_app_server_protocol::SessionSource::Unknown,
+                source: thread_spawn_source(main_thread_id),
                 thread_source: None,
                 agent_nickname: Some("Robie".to_string()),
                 agent_role: Some("explorer".to_string()),
@@ -2878,6 +2888,64 @@ async fn inactive_thread_started_notification_preserves_primary_model_when_path_
     let session = store.session.clone().expect("inferred session");
 
     assert_eq!(session.model, primary_session.model);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn unrelated_thread_started_notification_does_not_enter_agent_navigation() -> Result<()> {
+    let mut app = make_test_app().await;
+    let main_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000601").expect("valid thread");
+    let unrelated_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000602").expect("valid thread");
+    let primary_cwd = test_path_buf("/tmp/main").abs();
+    let primary_session = ThreadSessionState {
+        runtime_workspace_roots: vec![primary_cwd.clone()],
+        ..test_thread_session(main_thread_id, primary_cwd.to_path_buf())
+    };
+
+    app.primary_thread_id = Some(main_thread_id);
+    app.active_thread_id = Some(main_thread_id);
+    app.primary_session_configured = Some(primary_session.clone());
+    app.thread_event_channels.insert(
+        main_thread_id,
+        ThreadEventChannel::new_with_session(/*capacity*/ 4, primary_session, Vec::new()),
+    );
+
+    app.enqueue_thread_notification(
+        unrelated_thread_id,
+        ServerNotification::ThreadStarted(ThreadStartedNotification {
+            thread: Thread {
+                id: unrelated_thread_id.to_string(),
+                session_id: unrelated_thread_id.to_string(),
+                forked_from_id: None,
+                preview: "unrelated thread".to_string(),
+                ephemeral: false,
+                model_provider: "agent-provider".to_string(),
+                created_at: 1,
+                updated_at: 2,
+                status: codex_app_server_protocol::ThreadStatus::Idle,
+                path: None,
+                cwd: test_path_buf("/tmp/unrelated").abs(),
+                cli_version: "0.0.0".to_string(),
+                source: SessionSource::Cli,
+                thread_source: None,
+                agent_nickname: None,
+                agent_role: None,
+                git_info: None,
+                name: Some("unrelated thread".to_string()),
+                turns: Vec::new(),
+            },
+        }),
+    )
+    .await?;
+
+    assert_eq!(app.agent_navigation.get(&unrelated_thread_id), None);
+    assert_eq!(
+        app.thread_event_channels.contains_key(&unrelated_thread_id),
+        false
+    );
 
     Ok(())
 }

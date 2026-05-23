@@ -224,6 +224,7 @@ use self::agent_navigation::AgentNavigationDirection;
 use self::agent_navigation::AgentNavigationState;
 use self::app_server_requests::PendingAppServerRequests;
 use self::loaded_threads::find_loaded_subagent_threads_for_primary;
+use self::loaded_threads::thread_spawn_parent_thread_id;
 use self::pending_interactive_replay::PendingInteractiveReplayState;
 use self::platform_actions::*;
 use self::side::SideParentStatus;

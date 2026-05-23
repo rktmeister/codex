@@ -831,6 +831,9 @@ impl App {
         thread_id: ThreadId,
         notification: ServerNotification,
     ) -> Result<()> {
+        if self.should_ignore_unsolicited_thread_notification(thread_id, &notification) {
+            return Ok(());
+        }
         if matches!(notification, ServerNotification::ThreadSettingsUpdated(_))
             && self.primary_thread_id.is_some()
             && self.primary_thread_id != Some(thread_id)
@@ -884,6 +887,44 @@ impl App {
         }
         self.refresh_pending_thread_approvals().await;
         Ok(())
+    }
+
+    fn should_ignore_unsolicited_thread_notification(
+        &self,
+        thread_id: ThreadId,
+        notification: &ServerNotification,
+    ) -> bool {
+        if self.primary_thread_id.is_none()
+            || self.primary_thread_id == Some(thread_id)
+            || self.active_side_parent_thread_id() == Some(thread_id)
+            || self.thread_event_channels.contains_key(&thread_id)
+            || self.agent_navigation.get(&thread_id).is_some()
+        {
+            return false;
+        }
+
+        let ServerNotification::ThreadStarted(notification) = notification else {
+            return true;
+        };
+
+        !self.thread_started_belongs_to_agent_navigation(thread_id, &notification.thread)
+    }
+
+    fn thread_started_belongs_to_agent_navigation(
+        &self,
+        thread_id: ThreadId,
+        thread: &codex_app_server_protocol::Thread,
+    ) -> bool {
+        if self.primary_thread_id == Some(thread_id) {
+            return true;
+        }
+
+        let Some(parent_thread_id) = thread_spawn_parent_thread_id(&thread.source) else {
+            return false;
+        };
+
+        self.primary_thread_id == Some(parent_thread_id)
+            || self.agent_navigation.get(&parent_thread_id).is_some()
     }
 
     /// Locally remembers receiver threads referenced by a collab notification.
