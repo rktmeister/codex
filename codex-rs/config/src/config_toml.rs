@@ -297,9 +297,6 @@ pub struct ConfigToml {
     /// Ordered list of directories to search for local imports in `py_repl`.
     pub py_repl_sys_path: Option<Vec<AbsolutePathBuf>>,
 
-    /// Optional absolute path to patched zsh used by zsh-exec-bridge-backed shell execution.
-    pub zsh_path: Option<AbsolutePathBuf>,
-
     /// Profile to use from the `profiles` map.
     pub profile: Option<String>,
 

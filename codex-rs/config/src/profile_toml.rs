@@ -52,8 +52,6 @@ pub struct ConfigProfile {
     pub py_repl_python_path: Option<AbsolutePathBuf>,
     /// Ordered list of directories to search for local imports in `py_repl`.
     pub py_repl_sys_path: Option<Vec<AbsolutePathBuf>>,
-    /// Optional absolute path to patched zsh used by zsh-exec-bridge-backed shell execution.
-    pub zsh_path: Option<AbsolutePathBuf>,
     pub experimental_compact_prompt_file: Option<AbsolutePathBuf>,
     pub include_permissions_instructions: Option<bool>,
     pub include_apps_instructions: Option<bool>,
