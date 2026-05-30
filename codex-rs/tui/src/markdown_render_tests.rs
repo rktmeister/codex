@@ -1479,6 +1479,24 @@ fn html_inline_is_verbatim() {
 }
 
 #[test]
+fn html_line_break_renders_hard_break() {
+    let text = render_markdown_text("Hello<br>world");
+    assert_eq!(plain_lines(&text), vec!["Hello".to_string(), "world".to_string()]);
+}
+
+#[test]
+fn html_line_break_variants_render_hard_breaks() {
+    let text = render_markdown_text("one<BR/>two<br />three<br clear=\"all\">four");
+    assert_snapshot!(
+        plain_lines(&text).join("\n"),
+        @r###"one
+two
+three
+four"###
+    );
+}
+
+#[test]
 fn html_block_is_verbatim_multiline() {
     let md = "<div>\n  <span>hi</span>\n</div>\n";
     let text = render_markdown_text(md);

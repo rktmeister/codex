@@ -359,6 +359,25 @@ static HASH_LOCATION_SUFFIX_RE: LazyLock<Regex> =
 
 const UNORDERED_LIST_MARKER: &str = "• ";
 
+fn is_html_line_break(html: &str) -> bool {
+    let trimmed = html.trim();
+    let Some(body) = trimmed
+        .strip_prefix('<')
+        .and_then(|body| body.strip_suffix('>'))
+    else {
+        return false;
+    };
+    let body = body.trim_start();
+    if body.starts_with('/') {
+        return false;
+    }
+    let tag = body
+        .split(|ch: char| ch.is_ascii_whitespace() || ch == '/')
+        .next()
+        .unwrap_or_default();
+    tag.eq_ignore_ascii_case("br")
+}
+
 /// Stateful pulldown-cmark event consumer that builds styled `ratatui` output.
 ///
 /// Tracks inline style nesting, indent/blockquote context, list numbering,
@@ -705,6 +724,10 @@ where
 
     fn html(&mut self, html: CowStr<'a>, inline: bool) {
         if self.suppressing_local_link_label() {
+            return;
+        }
+        if is_html_line_break(&html) {
+            self.hard_break();
             return;
         }
         self.flush_pending_callout_marker();
