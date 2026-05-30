@@ -46,9 +46,13 @@ impl ResolvedTurnEnvironments {
             .map(|environment| Arc::clone(&environment.environment))
     }
 
-    pub(crate) fn primary_filesystem(&self) -> Option<Arc<dyn ExecutorFileSystem>> {
-        self.primary()
-            .map(|environment| environment.environment.get_filesystem())
+    pub(crate) fn primary_local_filesystem(&self) -> Option<Arc<dyn ExecutorFileSystem>> {
+        let environment = self.primary()?;
+        if environment.environment.is_remote() {
+            None
+        } else {
+            Some(environment.environment.get_filesystem())
+        }
     }
 }
 

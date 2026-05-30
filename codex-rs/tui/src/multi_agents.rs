@@ -516,7 +516,7 @@ fn wait_complete_lines(
                 .then(|| (parsed_thread_id, agent_metadata(parsed_thread_id), status))
         })
         .collect::<Vec<_>>();
-    extras.sort_by_key(|left| left.0.to_string());
+    extras.sort_by_key(|entry| entry.0.to_string());
     entries.extend(extras);
 
     if entries.is_empty() {

@@ -4,6 +4,7 @@ use codex_analytics::GuardianReviewDecision;
 use codex_analytics::GuardianReviewFailureReason;
 use codex_analytics::GuardianReviewTerminalStatus;
 use codex_analytics::GuardianReviewTrackContext;
+use codex_analytics::GuardianReviewedAction;
 use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
@@ -36,6 +37,7 @@ use super::approval_request::guardian_assessment_action;
 use super::approval_request::guardian_request_target_item_id;
 use super::approval_request::guardian_request_turn_id;
 use super::approval_request::guardian_reviewed_action;
+use super::metrics::emit_guardian_review_metrics;
 use super::prompt::guardian_output_schema;
 use super::prompt::parse_guardian_assessment;
 use super::review_session::GuardianReviewSessionOutcome;
@@ -163,9 +165,18 @@ pub(crate) fn is_guardian_reviewer_source(
 fn track_guardian_review(
     session: &Session,
     tracking: &GuardianReviewTrackContext,
+    approval_request_source: GuardianApprovalRequestSource,
+    reviewed_action: &GuardianReviewedAction,
     result: GuardianReviewAnalyticsResult,
     completed_at_ms: u64,
 ) {
+    emit_guardian_review_metrics(
+        &session.services.session_telemetry,
+        &result,
+        approval_request_source,
+        reviewed_action,
+        completed_at_ms.saturating_sub(tracking.started_at_ms),
+    );
     session
         .services
         .analytics_events_client
@@ -245,13 +256,14 @@ async fn run_guardian_review(
     let target_item_id = guardian_request_target_item_id(&request).map(str::to_string);
     let assessment_turn_id = guardian_request_turn_id(&request, &turn.sub_id).to_string();
     let action_summary = guardian_assessment_action(&request);
+    let reviewed_action = guardian_reviewed_action(&request);
     let review_tracking = GuardianReviewTrackContext::new(
         session.conversation_id.to_string(),
         assessment_turn_id.clone(),
         review_id.clone(),
         target_item_id.clone(),
         approval_request_source,
-        guardian_reviewed_action(&request),
+        reviewed_action.clone(),
         GUARDIAN_REVIEW_TIMEOUT.as_millis() as u64,
     );
     let started_at_ms = review_tracking.started_at_ms.try_into().unwrap_or_default();
@@ -282,6 +294,8 @@ async fn run_guardian_review(
         track_guardian_review(
             session.as_ref(),
             &review_tracking,
+            approval_request_source,
+            &reviewed_action,
             GuardianReviewAnalyticsResult {
                 decision: GuardianReviewDecision::Aborted,
                 terminal_status: GuardianReviewTerminalStatus::Aborted,
@@ -331,6 +345,8 @@ async fn run_guardian_review(
             track_guardian_review(
                 session.as_ref(),
                 &review_tracking,
+                approval_request_source,
+                &reviewed_action,
                 GuardianReviewAnalyticsResult {
                     decision: if approved {
                         GuardianReviewDecision::Approved
@@ -362,6 +378,8 @@ async fn run_guardian_review(
                 track_guardian_review(
                     session.as_ref(),
                     &review_tracking,
+                    approval_request_source,
+                    &reviewed_action,
                     GuardianReviewAnalyticsResult {
                         decision: GuardianReviewDecision::Denied,
                         terminal_status: GuardianReviewTerminalStatus::TimedOut,
@@ -403,6 +421,8 @@ async fn run_guardian_review(
                 track_guardian_review(
                     session.as_ref(),
                     &review_tracking,
+                    approval_request_source,
+                    &reviewed_action,
                     GuardianReviewAnalyticsResult {
                         decision: GuardianReviewDecision::Aborted,
                         terminal_status: GuardianReviewTerminalStatus::Aborted,
@@ -447,6 +467,8 @@ async fn run_guardian_review(
                 track_guardian_review(
                     session.as_ref(),
                     &review_tracking,
+                    approval_request_source,
+                    &reviewed_action,
                     GuardianReviewAnalyticsResult {
                         decision: GuardianReviewDecision::Denied,
                         terminal_status: GuardianReviewTerminalStatus::FailedClosed,

@@ -764,6 +764,14 @@ impl PyReplManager {
             turn.windows_sandbox_level,
             has_managed_network_requirements,
         );
+        let windows_sandbox_workspace_roots = {
+            let workspace_roots = turn.config.effective_workspace_roots();
+            if workspace_roots.is_empty() {
+                vec![cwd.clone()]
+            } else {
+                workspace_roots
+            }
+        };
         let exec_env = sandbox
             .transform(SandboxTransformRequest {
                 command,
@@ -787,6 +795,7 @@ impl PyReplManager {
                     request,
                     options,
                     cwd.clone(),
+                    windows_sandbox_workspace_roots,
                 )
             })
             .map_err(|err| format!("failed to configure sandbox for py_repl: {err}"))?;

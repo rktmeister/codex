@@ -121,6 +121,7 @@ fn reference_context_item() -> TurnContextItem {
     TurnContextItem {
         turn_id: Some("reference-turn".to_string()),
         cwd: PathBuf::from("/tmp/reference-cwd"),
+        workspace_roots: None,
         current_date: Some("2026-03-23".to_string()),
         timezone: Some("America/Los_Angeles".to_string()),
         approval_policy: AskForApproval::OnRequest,
@@ -1069,6 +1070,35 @@ fn record_items_truncates_custom_tool_call_output_content() {
                 output.contains("tokens truncated") || output.contains("bytes truncated"),
                 "expected truncation marker, got {output}"
             );
+        }
+        other => panic!("unexpected history item: {other:?}"),
+    }
+}
+
+#[test]
+fn record_items_preserves_code_mode_exec_output_content() {
+    let mut history = ContextManager::new();
+    let policy = TruncationPolicy::Tokens(10);
+    let long_output = "code mode output ".repeat(200);
+    let call = ResponseItem::CustomToolCall {
+        id: None,
+        status: None,
+        call_id: "exec-call".to_string(),
+        name: codex_code_mode::PUBLIC_TOOL_NAME.to_string(),
+        input: "text('code mode output')".to_string(),
+    };
+    let output = ResponseItem::CustomToolCallOutput {
+        call_id: "exec-call".to_string(),
+        name: None,
+        output: FunctionCallOutputPayload::from_text(long_output.clone()),
+    };
+
+    history.record_items([&call, &output], policy);
+
+    assert_eq!(history.items.len(), 2);
+    match &history.items[1] {
+        ResponseItem::CustomToolCallOutput { output, .. } => {
+            assert_eq!(output.text_content().unwrap_or_default(), long_output);
         }
         other => panic!("unexpected history item: {other:?}"),
     }
