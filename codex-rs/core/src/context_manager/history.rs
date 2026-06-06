@@ -198,16 +198,6 @@ impl ContextManager {
         }
     }
 
-    pub(crate) fn remove_last_item(&mut self) -> bool {
-        if let Some(removed) = self.items.pop() {
-            normalize::remove_corresponding_for(&mut self.items, &removed);
-            self.history_version = self.history_version.saturating_add(1);
-            true
-        } else {
-            false
-        }
-    }
-
     pub(crate) fn replace(&mut self, items: Vec<ResponseItem>) {
         self.items = items;
         self.history_version = self.history_version.saturating_add(1);
@@ -432,6 +422,7 @@ impl ContextManager {
                 }
             }
             ResponseItem::Message { .. }
+            | ResponseItem::AgentMessage { .. }
             | ResponseItem::Reasoning { .. }
             | ResponseItem::LocalShellCall { .. }
             | ResponseItem::FunctionCall { .. }
@@ -520,7 +511,8 @@ pub(crate) fn truncate_function_output_payload(
 fn is_api_message(message: &ResponseItem) -> bool {
     match message {
         ResponseItem::Message { role, .. } => role.as_str() != "system",
-        ResponseItem::FunctionCallOutput { .. }
+        ResponseItem::AgentMessage { .. }
+        | ResponseItem::FunctionCallOutput { .. }
         | ResponseItem::FunctionCall { .. }
         | ResponseItem::ToolSearchCall { .. }
         | ResponseItem::ToolSearchOutput { .. }
@@ -766,20 +758,15 @@ fn is_model_generated_item(item: &ResponseItem) -> bool {
         ResponseItem::FunctionCallOutput { .. }
         | ResponseItem::ToolSearchOutput { .. }
         | ResponseItem::CustomToolCallOutput { .. }
+        | ResponseItem::AgentMessage { .. }
         | ResponseItem::Other => false,
     }
 }
 
-pub(crate) fn is_codex_generated_item(item: &ResponseItem) -> bool {
-    matches!(
-        item,
-        ResponseItem::FunctionCallOutput { .. }
-            | ResponseItem::ToolSearchOutput { .. }
-            | ResponseItem::CustomToolCallOutput { .. }
-    ) || matches!(item, ResponseItem::Message { role, .. } if role == "developer")
-}
-
 pub(crate) fn is_user_turn_boundary(item: &ResponseItem) -> bool {
+    if matches!(item, ResponseItem::AgentMessage { .. }) {
+        return true;
+    }
     let ResponseItem::Message { role, content, .. } = item else {
         return false;
     };

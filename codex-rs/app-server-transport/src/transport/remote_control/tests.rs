@@ -20,6 +20,8 @@ use codex_app_server_protocol::AuthMode;
 use codex_app_server_protocol::ConfigWarningNotification;
 use codex_app_server_protocol::JSONRPCMessage;
 use codex_app_server_protocol::RemoteControlConnectionStatus;
+use codex_app_server_protocol::RemoteControlPairingStartParams;
+use codex_app_server_protocol::RemoteControlPairingStatusParams;
 use codex_app_server_protocol::RemoteControlStatusChangedNotification;
 use codex_app_server_protocol::ServerNotification;
 use codex_config::types::AuthCredentialsStoreMode;
@@ -40,6 +42,7 @@ use serde_json::json;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use tempfile::TempDir;
+use time::OffsetDateTime;
 use tokio::io::AsyncBufReadExt;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
@@ -57,7 +60,11 @@ use tokio_tungstenite::accept_hdr_async;
 use tokio_tungstenite::tungstenite;
 use tokio_util::sync::CancellationToken;
 
+mod clients_tests;
+mod pairing_tests;
+
 const TEST_INSTALLATION_ID: &str = "11111111-1111-4111-8111-111111111111";
+const TEST_REMOTE_CONTROL_URL: &str = "http://127.0.0.1:1/backend-api/wham/remote/control";
 const TEST_REMOTE_CONTROL_SERVER_TOKEN: &str = "Remote Control Token";
 const TEST_REFRESHED_REMOTE_CONTROL_SERVER_TOKEN: &str = "Refreshed Remote Control Token";
 const TEST_REMOTE_CONTROL_SERVER_TOKEN_EXPIRES_AT: &str = "2999-01-01T00:00:00Z";
@@ -108,6 +115,7 @@ fn remote_control_auth_dot_json(account_id: Option<&str>) -> AuthDotJson {
         }),
         last_refresh: Some(chrono::Utc::now()),
         agent_identity: None,
+        personal_access_token: None,
     }
 }
 
@@ -126,6 +134,46 @@ fn remote_control_url_for_listener(listener: &TcpListener) -> String {
 
 fn test_server_name() -> String {
     gethostname().to_string_lossy().trim().to_string()
+}
+
+fn remote_control_handle_with_current_enrollment(
+    remote_control_url: &str,
+    auth_manager: Arc<AuthManager>,
+) -> RemoteControlHandle {
+    let (enabled_tx, _enabled_rx) = watch::channel(/*init*/ true);
+    let (status_tx, _status_rx) = watch::channel(RemoteControlStatusChangedNotification {
+        status: RemoteControlConnectionStatus::Connecting,
+        server_name: test_server_name(),
+        installation_id: TEST_INSTALLATION_ID.to_string(),
+        environment_id: Some("env_test".to_string()),
+    });
+    let remote_control_target = normalize_remote_control_url(remote_control_url)
+        .expect("remote control target should normalize");
+    let current_enrollment = Arc::new(RemoteControlEnrollmentState::new(Some(
+        RemoteControlEnrollment {
+            remote_control_target,
+            account_id: "account_id".to_string(),
+            environment_id: "env_test".to_string(),
+            server_id: "srv_e_test".to_string(),
+            server_name: test_server_name(),
+            remote_control_token: Some(TEST_REMOTE_CONTROL_SERVER_TOKEN.to_string()),
+            expires_at: Some(
+                OffsetDateTime::from_unix_timestamp(33_336_362_096)
+                    .expect("future timestamp should parse"),
+            ),
+        },
+    )));
+    RemoteControlHandle {
+        enabled_tx: Arc::new(enabled_tx),
+        status_tx: Arc::new(status_tx),
+        state_db_available: true,
+        state_db: None,
+        remote_control_url: remote_control_url.to_string(),
+        current_enrollment,
+        pairing_persistence_key: watch::channel(None).0,
+        pairing_persistence_key_required: false,
+        auth_manager,
+    }
 }
 
 fn remote_control_server_token_response(
@@ -1313,6 +1361,7 @@ async fn remote_control_http_mode_refreshes_persisted_enrollment_before_connecti
     let remote_control_target =
         normalize_remote_control_url(&remote_control_url).expect("target should parse");
     let persisted_enrollment = RemoteControlEnrollment {
+        remote_control_target: remote_control_target.clone(),
         account_id: "account_id".to_string(),
         environment_id: "env_persisted".to_string(),
         server_id: "srv_e_persisted".to_string(),
@@ -1418,6 +1467,7 @@ async fn remote_control_stdio_mode_waits_for_client_name_before_connecting() {
         normalize_remote_control_url(&remote_control_url).expect("target should parse");
     let app_server_client_name = "stdio-client";
     let persisted_enrollment = RemoteControlEnrollment {
+        remote_control_target: remote_control_target.clone(),
         account_id: "account_id".to_string(),
         environment_id: "env_persisted".to_string(),
         server_id: "srv_e_persisted".to_string(),
@@ -1505,7 +1555,10 @@ async fn remote_control_waits_for_account_id_before_enrolling() {
     )
     .await;
     let expected_server_name = gethostname().to_string_lossy().trim().to_string();
+    let expected_remote_control_target = normalize_remote_control_url(&remote_control_url)
+        .expect("remote control target should normalize");
     let expected_enrollment = RemoteControlEnrollment {
+        remote_control_target: expected_remote_control_target,
         account_id: "account_id".to_string(),
         environment_id: "env_ready".to_string(),
         server_id: "srv_e_ready".to_string(),
@@ -1583,6 +1636,7 @@ async fn remote_control_http_mode_reenrolls_when_refresh_reports_stale_enrollmen
         normalize_remote_control_url(&remote_control_url).expect("target should parse");
     let expected_server_name = gethostname().to_string_lossy().trim().to_string();
     let stale_enrollment = RemoteControlEnrollment {
+        remote_control_target: remote_control_target.clone(),
         account_id: "account_id".to_string(),
         environment_id: "env_stale".to_string(),
         server_id: "srv_e_stale".to_string(),
@@ -1591,6 +1645,7 @@ async fn remote_control_http_mode_reenrolls_when_refresh_reports_stale_enrollmen
         expires_at: None,
     };
     let refreshed_enrollment = RemoteControlEnrollment {
+        remote_control_target: remote_control_target.clone(),
         account_id: "account_id".to_string(),
         environment_id: "env_refreshed".to_string(),
         server_id: "srv_e_refreshed".to_string(),
@@ -1700,6 +1755,7 @@ async fn remote_control_http_mode_clears_stale_persisted_enrollment_after_404() 
         normalize_remote_control_url(&remote_control_url).expect("target should parse");
     let expected_server_name = gethostname().to_string_lossy().trim().to_string();
     let stale_enrollment = RemoteControlEnrollment {
+        remote_control_target: remote_control_target.clone(),
         account_id: "account_id".to_string(),
         environment_id: "env_stale".to_string(),
         server_id: "srv_e_stale".to_string(),
@@ -1708,6 +1764,7 @@ async fn remote_control_http_mode_clears_stale_persisted_enrollment_after_404() 
         expires_at: None,
     };
     let refreshed_enrollment = RemoteControlEnrollment {
+        remote_control_target: remote_control_target.clone(),
         account_id: "account_id".to_string(),
         environment_id: "env_refreshed".to_string(),
         server_id: "srv_e_refreshed".to_string(),

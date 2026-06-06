@@ -48,6 +48,7 @@ use crate::tools::flat_tool_name;
 use crate::tools::handlers::apply_granted_turn_permissions;
 use crate::tools::handlers::implicit_granted_permissions;
 use crate::tools::handlers::normalize_and_validate_additional_permissions;
+use crate::tools::handlers::unified_exec::shell_mode_for_environment;
 use crate::tools::repl_image::validate_repl_image_data_url;
 use crate::tools::router::ToolRouterParams;
 use crate::unified_exec::ExecCommandRequest;
@@ -417,7 +418,7 @@ impl PyReplManager {
             let mut kernel = self.kernel.lock().await;
             if kernel.is_none() {
                 let state = self
-                    .start_kernel(Arc::clone(&turn), Some(session.conversation_id))
+                    .start_kernel(Arc::clone(&turn), Some(session.thread_id))
                     .await
                     .map_err(FunctionCallError::RespondToModel)?;
                 *kernel = Some(state);
@@ -1926,6 +1927,7 @@ impl PyReplManager {
         let requested_additional_permissions = req.additional_permissions.clone();
         let effective_additional_permissions = apply_granted_turn_permissions(
             exec.session.as_ref(),
+            &turn_environment.environment_id,
             cwd.as_path(),
             req.sandbox_permissions,
             req.additional_permissions.clone(),
@@ -1986,7 +1988,7 @@ impl PyReplManager {
 
         let request = ExecCommandRequest {
             command: req.command,
-            shell_type: exec.session.user_shell().shell_type.clone(),
+            shell_type: exec.session.user_shell().shell_type,
             hook_command,
             process_id,
             yield_time_ms,
@@ -1995,6 +1997,10 @@ impl PyReplManager {
             sandbox_cwd: cwd,
             environment,
             env: req.env,
+            shell_mode: shell_mode_for_environment(
+                &exec.turn.unified_exec_shell_mode,
+                turn_environment.environment.as_ref(),
+            ),
             network: exec.turn.network.clone(),
             tty: false,
             sandbox_permissions: effective_additional_permissions.sandbox_permissions,

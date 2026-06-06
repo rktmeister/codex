@@ -36,6 +36,7 @@ fn status_line_segment(item: StatusLineItem, value: String) -> Vec<Span<'static>
     match item {
         StatusLineItem::ModelName => vec!["◉ ".cyan(), Span::from(value).cyan().bold()],
         StatusLineItem::ModelWithReasoning => model_segment(value),
+        StatusLineItem::Reasoning => vec![Span::from(value).cyan()],
         StatusLineItem::CurrentDir => labeled_segment("cwd", value),
         StatusLineItem::ProjectRoot => vec!["⌂ ".dim(), value.into()],
         StatusLineItem::GitBranch => vec![" ".green(), Span::from(value).green()],
@@ -263,6 +264,7 @@ mod tests {
     #[test]
     fn format_status_line_formats_mode_segments() {
         let line = format_status_line([
+            (StatusLineItem::Reasoning, "medium".to_string()),
             (StatusLineItem::Permissions, "Workspace".to_string()),
             (StatusLineItem::ApprovalMode, "on-request".to_string()),
         ])
@@ -271,6 +273,8 @@ mod tests {
         assert_eq!(
             span_text(&line),
             vec![
+                "medium".to_string(),
+                "  ".to_string(),
                 "perm ".to_string(),
                 "Workspace".to_string(),
                 "  ".to_string(),
@@ -278,7 +282,8 @@ mod tests {
                 "on-request".to_string(),
             ]
         );
-        assert!(line.spans[0].style.add_modifier.contains(Modifier::DIM));
-        assert!(line.spans[3].style.add_modifier.contains(Modifier::DIM));
+        assert_eq!(line.spans[0].style.fg, Some(Color::Cyan));
+        assert!(line.spans[2].style.add_modifier.contains(Modifier::DIM));
+        assert!(line.spans[5].style.add_modifier.contains(Modifier::DIM));
     }
 }
