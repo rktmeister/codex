@@ -40,6 +40,7 @@
 //! key/value records.
 
 use crate::markdown_code_block::render_markdown_code_block;
+use crate::markdown_text_merge::DecodedTextMerge;
 use crate::render::highlight::foreground_style_for_scopes;
 use crate::render::highlight::highlight_code_to_lines;
 use crate::render::line_utils::line_to_static;
@@ -348,7 +349,7 @@ pub(crate) fn render_markdown_lines_with_width_and_cwd(
     options.insert(Options::ENABLE_TABLES);
     options.insert(Options::ENABLE_FOOTNOTES);
     options.insert(Options::ENABLE_TASKLISTS);
-    let parser = Parser::new_ext(input, options).into_offset_iter();
+    let parser = DecodedTextMerge::new(Parser::new_ext(input, options).into_offset_iter());
     let mut w = Writer::new(input, parser, width, cwd);
     w.run();
     w.text

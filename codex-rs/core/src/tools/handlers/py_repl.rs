@@ -29,6 +29,7 @@ use codex_tools::FreeformTool;
 use codex_tools::FreeformToolFormat;
 use codex_tools::JsonSchema;
 use codex_tools::ResponsesApiTool;
+use codex_tools::ToolExecutorFuture;
 use codex_tools::ToolName;
 use codex_tools::ToolSpec;
 use codex_utils_absolute_path::AbsolutePathBuf;
@@ -120,7 +121,6 @@ async fn emit_py_repl_exec_end(
     emitter.emit(ctx, stage).await;
 }
 
-#[async_trait::async_trait]
 impl ToolExecutor<ToolInvocation> for PyReplHandler {
     fn tool_name(&self) -> ToolName {
         ToolName::plain("py_repl")
@@ -139,103 +139,102 @@ impl ToolExecutor<ToolInvocation> for PyReplHandler {
         })
     }
 
-    async fn handle(
-        &self,
-        invocation: ToolInvocation,
-    ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
-        let ToolInvocation {
-            session,
-            turn,
-            cancellation_token,
-            tracker,
-            payload,
-            call_id,
-            ..
-        } = invocation;
-
-        if !session.features().enabled(Feature::PyRepl) {
-            return Err(FunctionCallError::RespondToModel(
-                "py_repl is disabled by feature flag".to_string(),
-            ));
-        }
-
-        let args = match payload {
-            ToolPayload::Function { arguments } => parse_arguments(&arguments)?,
-            ToolPayload::Custom { input } => parse_freeform_args(&input)?,
-            _ => {
-                return Err(FunctionCallError::RespondToModel(
-                    "py_repl expects custom or function payload".to_string(),
-                ));
-            }
-        };
-
-        let manager = turn.py_repl.manager().await?;
-        let Some(turn_environment) = turn.environments.primary() else {
-            return Err(FunctionCallError::RespondToModel(
-                "py_repl is unavailable without a selected turn environment".to_string(),
-            ));
-        };
-        let cwd = turn_environment.cwd.clone();
-        let started_at = Instant::now();
-        emit_py_repl_exec_begin(session.as_ref(), turn.as_ref(), &call_id, &cwd).await;
-        let result = manager
-            .execute(
-                Arc::clone(&session),
-                Arc::clone(&turn),
+    fn handle(&self, invocation: ToolInvocation) -> ToolExecutorFuture<'_> {
+        Box::pin(async move {
+            let ToolInvocation {
+                session,
+                turn,
                 cancellation_token,
                 tracker,
-                args,
-            )
-            .await;
-        let result = match result {
-            Ok(result) => result,
-            Err(err) => {
-                let message = err.to_string();
-                emit_py_repl_exec_end(
-                    session.as_ref(),
-                    turn.as_ref(),
-                    &call_id,
-                    "",
-                    Some(&message),
-                    started_at.elapsed(),
-                    &cwd,
+                payload,
+                call_id,
+                ..
+            } = invocation;
+
+            if !session.features().enabled(Feature::PyRepl) {
+                return Err(FunctionCallError::RespondToModel(
+                    "py_repl is disabled by feature flag".to_string(),
+                ));
+            }
+
+            let args = match payload {
+                ToolPayload::Function { arguments } => parse_arguments(&arguments)?,
+                ToolPayload::Custom { input } => parse_freeform_args(&input)?,
+                _ => {
+                    return Err(FunctionCallError::RespondToModel(
+                        "py_repl expects custom or function payload".to_string(),
+                    ));
+                }
+            };
+
+            let manager = turn.py_repl.manager().await?;
+            let Some(turn_environment) = turn.environments.primary() else {
+                return Err(FunctionCallError::RespondToModel(
+                    "py_repl is unavailable without a selected turn environment".to_string(),
+                ));
+            };
+            let cwd = turn_environment.cwd().clone();
+            let started_at = Instant::now();
+            emit_py_repl_exec_begin(session.as_ref(), turn.as_ref(), &call_id, &cwd).await;
+            let result = manager
+                .execute(
+                    Arc::clone(&session),
+                    Arc::clone(&turn),
+                    cancellation_token,
+                    tracker,
+                    args,
                 )
                 .await;
-                return Err(err);
+            let result = match result {
+                Ok(result) => result,
+                Err(err) => {
+                    let message = err.to_string();
+                    emit_py_repl_exec_end(
+                        session.as_ref(),
+                        turn.as_ref(),
+                        &call_id,
+                        "",
+                        Some(&message),
+                        started_at.elapsed(),
+                        &cwd,
+                    )
+                    .await;
+                    return Err(err);
+                }
+            };
+
+            let content = result.output;
+            let mut items = Vec::with_capacity(result.content_items.len() + 1);
+            if !content.is_empty() {
+                items.push(FunctionCallOutputContentItem::InputText {
+                    text: content.clone(),
+                });
             }
-        };
+            items.extend(result.content_items);
 
-        let content = result.output;
-        let mut items = Vec::with_capacity(result.content_items.len() + 1);
-        if !content.is_empty() {
-            items.push(FunctionCallOutputContentItem::InputText {
-                text: content.clone(),
-            });
-        }
-        items.extend(result.content_items);
+            emit_py_repl_exec_end(
+                session.as_ref(),
+                turn.as_ref(),
+                &call_id,
+                &content,
+                None,
+                started_at.elapsed(),
+                &cwd,
+            )
+            .await;
 
-        emit_py_repl_exec_end(
-            session.as_ref(),
-            turn.as_ref(),
-            &call_id,
-            &content,
-            None,
-            started_at.elapsed(),
-            &cwd,
-        )
-        .await;
-
-        if items.is_empty() {
-            Ok(boxed_tool_output(FunctionToolOutput::from_text(
-                content,
-                Some(true),
-            )))
-        } else {
-            Ok(boxed_tool_output(FunctionToolOutput::from_content(
-                items,
-                Some(true),
-            )))
-        }
+            if items.is_empty() {
+                Ok(boxed_tool_output(FunctionToolOutput::from_text(
+                    content,
+                    Some(true),
+                )))
+            } else {
+                Ok(boxed_tool_output(FunctionToolOutput::from_content(
+                    items,
+                    Some(true),
+                )))
+            }
+        })
     }
 }
 
@@ -248,7 +247,6 @@ impl CoreToolRuntime for PyReplHandler {
     }
 }
 
-#[async_trait::async_trait]
 impl ToolExecutor<ToolInvocation> for PyReplResetHandler {
     fn tool_name(&self) -> ToolName {
         ToolName::plain("py_repl_reset")
@@ -271,22 +269,21 @@ impl ToolExecutor<ToolInvocation> for PyReplResetHandler {
         })
     }
 
-    async fn handle(
-        &self,
-        invocation: ToolInvocation,
-    ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
-        if !invocation.session.features().enabled(Feature::PyRepl) {
-            return Err(FunctionCallError::RespondToModel(
-                "py_repl is disabled by feature flag".to_string(),
-            ));
-        }
+    fn handle(&self, invocation: ToolInvocation) -> ToolExecutorFuture<'_> {
+        Box::pin(async move {
+            if !invocation.session.features().enabled(Feature::PyRepl) {
+                return Err(FunctionCallError::RespondToModel(
+                    "py_repl is disabled by feature flag".to_string(),
+                ));
+            }
 
-        let manager = invocation.turn.py_repl.manager().await?;
-        manager.reset().await?;
-        Ok(boxed_tool_output(FunctionToolOutput::from_text(
-            "py_repl kernel reset".to_string(),
-            Some(true),
-        )))
+            let manager = invocation.turn.py_repl.manager().await?;
+            manager.reset().await?;
+            Ok(boxed_tool_output(FunctionToolOutput::from_text(
+                "py_repl kernel reset".to_string(),
+                Some(true),
+            )))
+        })
     }
 }
 
@@ -456,11 +453,10 @@ mod tests {
             "hello",
             None,
             Duration::from_millis(12),
-            &turn
-                .environments
+            turn.environments
                 .primary()
                 .expect("primary environment")
-                .cwd,
+                .cwd(),
         )
         .await;
 
@@ -483,7 +479,8 @@ mod tests {
             turn.environments
                 .primary()
                 .expect("primary environment")
-                .cwd
+                .cwd()
+                .clone()
         );
         assert_eq!(event.source, ExecCommandSource::Agent);
         assert_eq!(event.interaction_input, None);

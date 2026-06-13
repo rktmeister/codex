@@ -16,6 +16,7 @@ use codex_protocol::models::AdditionalPermissionProfile;
 use codex_protocol::models::FunctionCallOutputContentItem;
 use codex_protocol::models::ImageDetail;
 use codex_utils_output_truncation::approx_token_count;
+use codex_utils_path_uri::PathUri;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
@@ -736,11 +737,12 @@ impl PyReplManager {
         let Some(turn_environment) = turn.environments.primary() else {
             return Err("py_repl is unavailable without a selected turn environment".to_string());
         };
-        let cwd = turn_environment.cwd.clone();
+        let cwd = turn_environment.cwd().clone();
+        let cwd_uri = PathUri::from_abs_path(&cwd);
         let command = SandboxCommand {
             program: self.python_path.clone().into_os_string(),
             args: vec!["-u".to_string(), kernel_path.to_string_lossy().to_string()],
-            cwd: cwd.clone(),
+            cwd: cwd_uri.clone(),
             env,
             additional_permissions: None,
         };
@@ -768,7 +770,7 @@ impl PyReplManager {
         let windows_sandbox_workspace_roots = {
             let workspace_roots = turn.config.effective_workspace_roots();
             if workspace_roots.is_empty() {
-                vec![cwd.clone()]
+                vec![cwd]
             } else {
                 workspace_roots
             }
@@ -780,7 +782,7 @@ impl PyReplManager {
                 sandbox: sandbox_type,
                 enforce_managed_network: has_managed_network_requirements,
                 network: None,
-                sandbox_policy_cwd: &cwd,
+                sandbox_policy_cwd: &cwd_uri,
                 #[cfg(target_os = "macos")]
                 macos_seatbelt_profile_extensions: None,
                 codex_linux_sandbox_exe: turn.codex_linux_sandbox_exe.as_deref(),
@@ -795,7 +797,6 @@ impl PyReplManager {
                 crate::sandboxing::ExecRequest::from_sandbox_exec_request(
                     request,
                     options,
-                    cwd.clone(),
                     windows_sandbox_workspace_roots,
                 )
             })
@@ -1519,14 +1520,8 @@ impl PyReplManager {
             };
         }
 
-        let mcp_tools = exec
-            .session
-            .services
-            .mcp_connection_manager
-            .read()
-            .await
-            .list_all_tools()
-            .await;
+        let manager = exec.session.services.mcp_connection_manager.load_full();
+        let mcp_tools = manager.list_all_tools().await;
 
         let router = ToolRouter::from_turn_context(
             exec.turn.as_ref(),
@@ -1913,8 +1908,8 @@ impl PyReplManager {
             .clone()
             .filter(|value| !value.is_empty())
             .map_or_else(
-                || turn_environment.cwd.clone(),
-                |cwd| turn_environment.cwd.join(cwd),
+                || turn_environment.cwd().clone(),
+                |cwd| turn_environment.cwd().join(cwd),
             );
         let hook_command = codex_shell_command::parse_command::shlex_join(&req.command);
         let process_id = manager.allocate_process_id().await;
@@ -2387,7 +2382,8 @@ pub(crate) async fn discover_project_venv_python_path(
 
     for relative in candidates {
         let candidate = project_root.join(relative);
-        match fs.get_metadata(&candidate, /*sandbox*/ None).await {
+        let candidate_uri = PathUri::from_abs_path(&candidate);
+        match fs.get_metadata(&candidate_uri, /*sandbox*/ None).await {
             Ok(metadata) if metadata.is_file => return Some(candidate.to_path_buf()),
             Ok(_) => {}
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
