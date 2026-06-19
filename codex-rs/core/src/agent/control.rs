@@ -3,6 +3,7 @@ use crate::agent::registry::AgentMetadata;
 use crate::agent::registry::AgentRegistry;
 use crate::agent::role::DEFAULT_ROLE_NAME;
 use crate::agent::role::resolve_role_config;
+use crate::agent::runtime::AgentRuntimeMetadata;
 use crate::agent::status::is_final;
 use crate::codex_thread::ThreadConfigSnapshot;
 use crate::config::Config;
@@ -82,6 +83,8 @@ pub(crate) struct ListedAgent {
     pub(crate) agent_name: String,
     pub(crate) agent_status: AgentStatus,
     pub(crate) last_task_message: Option<String>,
+    #[serde(skip_serializing_if = "AgentRuntimeMetadata::is_in_process")]
+    pub(crate) runtime: AgentRuntimeMetadata,
 }
 
 /// Control-plane handle for multi-agent operations.
@@ -376,6 +379,7 @@ impl AgentControl {
                 agent_name: root_path.to_string(),
                 agent_status: root_thread.agent_status().await,
                 last_task_message: Some(ROOT_LAST_TASK_MESSAGE.to_string()),
+                runtime: AgentRuntimeMetadata::in_process(),
             });
         }
 
@@ -403,6 +407,7 @@ impl AgentControl {
                 agent_name,
                 agent_status: thread.agent_status().await,
                 last_task_message,
+                runtime: metadata.runtime,
             });
         }
 
@@ -531,6 +536,7 @@ impl AgentControl {
             agent_path,
             agent_nickname,
             agent_role,
+            runtime: AgentRuntimeMetadata::in_process(),
             last_task_message: None,
         };
         Ok((session_source, agent_metadata))

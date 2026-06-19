@@ -13,6 +13,8 @@ use std::sync::Mutex;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 
+use super::runtime::AgentRuntimeMetadata;
+
 /// This structure is used to add some limits on the multi-agent capabilities for Codex. In
 /// the current implementation, it limits:
 /// * Total number of sub-agents (i.e. threads) per user session
@@ -38,6 +40,7 @@ pub(crate) struct AgentMetadata {
     pub(crate) agent_path: Option<AgentPath>,
     pub(crate) agent_nickname: Option<String>,
     pub(crate) agent_role: Option<String>,
+    pub(crate) runtime: AgentRuntimeMetadata,
     pub(crate) last_task_message: Option<String>,
 }
 
