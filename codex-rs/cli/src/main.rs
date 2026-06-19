@@ -543,6 +543,10 @@ struct AppServerCommand {
     #[arg(long = "remote-control", hide = true)]
     remote_control: bool,
 
+    /// Open tmux windows for app-server subagent threads.
+    #[arg(long = "tmux-subagents", hide = true)]
+    tmux_subagents: bool,
+
     /// Controls whether analytics are enabled by default.
     ///
     /// Analytics are disabled by default for app-server. Users have to explicitly opt in
@@ -1145,6 +1149,7 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
                 listen,
                 stdio,
                 remote_control,
+                tmux_subagents,
                 analytics_default_enabled,
                 auth,
             } = app_server_cli;
@@ -1175,6 +1180,11 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
                             (false, false) => {
                                 codex_app_server::RemoteControlStartupMode::ResolvePersisted
                             }
+                        },
+                        tmux_subagents: if tmux_subagents {
+                            codex_app_server::TmuxSubagentOptions::window()
+                        } else {
+                            codex_app_server::TmuxSubagentOptions::default()
                         },
                         ..Default::default()
                     };
@@ -3585,6 +3595,12 @@ mod tests {
     fn app_server_remote_control_startup_flag_enables_remote_control() {
         let enabled = app_server_from_args(["codex", "app-server", "--remote-control"].as_ref());
         assert!(enabled.remote_control);
+    }
+
+    #[test]
+    fn app_server_tmux_subagents_flag_enables_tmux_subagents() {
+        let enabled = app_server_from_args(["codex", "app-server", "--tmux-subagents"].as_ref());
+        assert!(enabled.tmux_subagents);
     }
 
     #[test]

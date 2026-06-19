@@ -110,10 +110,12 @@ mod server_request_error;
 mod skills_watcher;
 mod thread_state;
 mod thread_status;
+mod tmux_subagents;
 mod transport;
 
 pub use crate::error_code::INPUT_TOO_LARGE_ERROR_CODE;
 pub use crate::error_code::INVALID_PARAMS_ERROR_CODE;
+pub use crate::tmux_subagents::TmuxSubagentOptions;
 pub use crate::transport::AppServerTransport;
 pub use crate::transport::RemoteControlStartupMode;
 pub use crate::transport::app_server_control_socket_path;
@@ -419,6 +421,7 @@ pub struct AppServerRuntimeOptions {
     pub plugin_startup_tasks: PluginStartupTasks,
     pub remote_control_startup_mode: RemoteControlStartupMode,
     pub install_shutdown_signal_handler: bool,
+    pub tmux_subagents: TmuxSubagentOptions,
 }
 
 impl Default for AppServerRuntimeOptions {
@@ -427,6 +430,7 @@ impl Default for AppServerRuntimeOptions {
             plugin_startup_tasks: PluginStartupTasks::Start,
             remote_control_startup_mode: RemoteControlStartupMode::ResolvePersisted,
             install_shutdown_signal_handler: true,
+            tmux_subagents: TmuxSubagentOptions::default(),
         }
     }
 }
@@ -695,6 +699,12 @@ pub async fn run_main_with_transport_options(
         RemoteControlPolicy::Allowed
     };
     let remote_control_startup_mode = runtime_options.remote_control_startup_mode;
+    let tmux_subagent_launcher = crate::tmux_subagents::TmuxSubagentLauncher::new(
+        runtime_options.tmux_subagents,
+        &transport,
+        &arg0_paths,
+    )
+    .await?;
     let remote_control_explicitly_requested =
         remote_control_startup_mode == RemoteControlStartupMode::EnabledEphemeral;
     if remote_control_explicitly_requested
@@ -899,6 +909,7 @@ pub async fn run_main_with_transport_options(
             rpc_transport: analytics_rpc_transport(&transport),
             remote_control_handle: Some(remote_control_handle.clone()),
             plugin_startup_tasks: runtime_options.plugin_startup_tasks,
+            tmux_subagent_launcher,
         }));
         let mut thread_created_rx = processor.thread_created_receiver();
         let mut running_turn_count_rx = processor.subscribe_running_assistant_turn_count();

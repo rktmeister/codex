@@ -1,5 +1,8 @@
 use super::*;
 use crate::error_code::method_not_found;
+use crate::tmux_subagents::TmuxSubagentLaunchRequest;
+use crate::tmux_subagents::TmuxSubagentLauncher;
+use crate::tmux_subagents::is_thread_spawn_subagent;
 use codex_app_server_protocol::SelectedCapabilityRoot;
 use codex_extension_api::ExtensionDataInit;
 use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS;
@@ -359,6 +362,7 @@ pub(crate) struct ThreadRequestProcessor {
     pub(super) log_db: Option<LogDbLayer>,
     pub(super) background_tasks: TaskTracker,
     pub(super) skills_watcher: Arc<SkillsWatcher>,
+    pub(super) tmux_subagent_launcher: Option<TmuxSubagentLauncher>,
 }
 
 /// Outcome of trying to satisfy a resume request from an already loaded thread.
@@ -390,6 +394,7 @@ impl ThreadRequestProcessor {
         state_db: Option<StateDbHandle>,
         log_db: Option<LogDbLayer>,
         skills_watcher: Arc<SkillsWatcher>,
+        tmux_subagent_launcher: Option<TmuxSubagentLauncher>,
     ) -> Self {
         Self {
             auth_manager,
@@ -408,6 +413,7 @@ impl ThreadRequestProcessor {
             log_db,
             background_tasks: TaskTracker::new(),
             skills_watcher,
+            tmux_subagent_launcher,
         }
     }
 
@@ -2496,6 +2502,18 @@ impl ThreadRequestProcessor {
                     .lock()
                     .await
                     .experimental_raw_events;
+            }
+            if let Some(launcher) = self.tmux_subagent_launcher.as_ref()
+                && is_thread_spawn_subagent(&config_snapshot.session_source)
+                && let Err(err) = launcher
+                    .launch_subagent(TmuxSubagentLaunchRequest {
+                        thread_id,
+                        cwd: config_snapshot.cwd().to_path_buf(),
+                        session_source: config_snapshot.session_source.clone(),
+                    })
+                    .await
+            {
+                warn!("failed to launch tmux subagent observer for {thread_id}: {err}");
             }
         }
 

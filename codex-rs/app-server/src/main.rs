@@ -3,6 +3,7 @@ use codex_app_server::AppServerRuntimeOptions;
 use codex_app_server::AppServerTransport;
 use codex_app_server::AppServerWebsocketAuthArgs;
 use codex_app_server::PluginStartupTasks;
+use codex_app_server::TmuxSubagentOptions;
 use codex_app_server::run_main_with_transport_options;
 use codex_arg0::Arg0DispatchPaths;
 use codex_arg0::arg0_dispatch_or_else;
@@ -56,6 +57,10 @@ struct AppServerArgs {
     /// Enable remote control for this app-server process without changing persistence.
     #[arg(long = "remote-control", hide = true)]
     remote_control: bool,
+
+    /// Open tmux windows for app-server subagent threads.
+    #[arg(long = "tmux-subagents", hide = true)]
+    tmux_subagents: bool,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -70,6 +75,7 @@ fn main() -> anyhow::Result<()> {
             #[cfg(debug_assertions)]
             disable_plugin_startup_tasks_for_tests,
             remote_control,
+            tmux_subagents,
         } = AppServerArgs::parse();
         let loader_overrides = if disable_managed_config_from_debug_env() {
             LoaderOverrides::without_managed_config_for_tests()
@@ -91,6 +97,9 @@ fn main() -> anyhow::Result<()> {
                 (false, true) => codex_app_server::RemoteControlStartupMode::DisabledEphemeral,
                 (false, false) => codex_app_server::RemoteControlStartupMode::ResolvePersisted,
             };
+        if tmux_subagents {
+            runtime_options.tmux_subagents = TmuxSubagentOptions::window();
+        }
 
         run_main_with_transport_options(
             arg0_paths,
