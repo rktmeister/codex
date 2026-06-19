@@ -14,7 +14,6 @@ use codex_config::config_toml::AutoReviewToml;
 use codex_config::config_toml::ConfigToml;
 use codex_config::config_toml::ExperimentalRequestUserInput;
 use codex_config::config_toml::ProjectConfig;
-use codex_config::config_toml::RealtimeArchitecture;
 use codex_config::config_toml::RealtimeConfig;
 use codex_config::config_toml::RealtimeToml;
 use codex_config::config_toml::RealtimeTransport;
@@ -438,6 +437,7 @@ async fn load_config_resolves_code_mode_config() -> std::io::Result<()> {
 [features.code_mode]
 enabled = true
 excluded_tool_namespaces = ["mcp__codex_apps", "multi_agent_v1"]
+direct_only_tool_namespaces = ["mcp__history", "mcp__notes"]
 "#,
     )
     .expect("TOML deserialization should succeed");
@@ -452,8 +452,134 @@ excluded_tool_namespaces = ["mcp__codex_apps", "multi_agent_v1"]
         config.code_mode.excluded_tool_namespaces,
         vec!["mcp__codex_apps".to_string(), "multi_agent_v1".to_string()]
     );
+    assert_eq!(
+        config.code_mode.direct_only_tool_namespaces,
+        vec!["mcp__history".to_string(), "mcp__notes".to_string()]
+    );
     assert!(config.features.enabled(Feature::CodeMode));
     Ok(())
+}
+
+#[tokio::test]
+async fn load_config_resolves_rollout_budget() -> std::io::Result<()> {
+    let codex_home = tempdir()?;
+    let config_toml: ConfigToml = toml::from_str(
+        r#"
+[features.rollout_budget]
+enabled = true
+limit_tokens = 100000
+reminder_interval_tokens = 10000
+sampling_token_weight = 1.0
+prefill_token_weight = 0.1
+"#,
+    )
+    .expect("TOML deserialization should succeed");
+    let config = Config::load_from_base_config_with_overrides(
+        config_toml,
+        ConfigOverrides::default(),
+        codex_home.abs(),
+    )
+    .await?;
+
+    assert!(config.features.enabled(Feature::RolloutBudget));
+    assert!(!config.features.enabled(Feature::TokenBudget));
+    assert_eq!(
+        config.rollout_budget,
+        Some(RolloutBudgetConfig {
+            limit_tokens: 100_000,
+            reminder_interval_tokens: 10_000,
+            sampling_token_weight: 1.0,
+            prefill_token_weight: 0.1,
+        })
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn load_config_rejects_enabled_rollout_budget_without_limit() -> std::io::Result<()> {
+    for config_toml in [
+        "[features]\nrollout_budget = true\n",
+        "[features.rollout_budget]\nenabled = true\n",
+    ] {
+        let codex_home = tempdir()?;
+        let config_toml: ConfigToml =
+            toml::from_str(config_toml).expect("TOML deserialization should succeed");
+        let err = Config::load_from_base_config_with_overrides(
+            config_toml,
+            ConfigOverrides::default(),
+            codex_home.abs(),
+        )
+        .await
+        .expect_err("enabled rollout budget without limit_tokens should be rejected");
+
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+        assert_eq!(
+            err.to_string(),
+            "features.rollout_budget.limit_tokens is required when rollout_budget is enabled"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn load_config_resolves_current_time_reminder() -> std::io::Result<()> {
+    for (config_toml, expected) in [
+        (
+            r#"
+[features]
+current_time_reminder = true
+"#,
+            CurrentTimeReminderConfig::default(),
+        ),
+        (
+            r#"
+[features.current_time_reminder]
+enabled = true
+reminder_interval_model_requests = 4
+clock_source = "external"
+"#,
+            CurrentTimeReminderConfig {
+                reminder_interval_model_requests: 4,
+                clock_source: CurrentTimeSource::External,
+            },
+        ),
+    ] {
+        let config = load_current_time_reminder_config(config_toml).await?;
+        assert!(config.features.enabled(Feature::CurrentTimeReminder));
+        assert_eq!(config.current_time_reminder, Some(expected));
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn load_config_rejects_zero_current_time_reminder_interval() -> std::io::Result<()> {
+    let error = load_current_time_reminder_config(
+        r#"
+[features.current_time_reminder]
+enabled = true
+reminder_interval_model_requests = 0
+"#,
+    )
+    .await
+    .expect_err("zero reminder interval should be rejected");
+
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+    assert_eq!(
+        error.to_string(),
+        "features.current_time_reminder.reminder_interval_model_requests must be positive"
+    );
+    Ok(())
+}
+
+async fn load_current_time_reminder_config(config_toml: &str) -> std::io::Result<Config> {
+    let codex_home = tempdir()?;
+    let config_toml = toml::from_str(config_toml).expect("TOML should deserialize");
+    Config::load_from_base_config_with_overrides(
+        config_toml,
+        ConfigOverrides::default(),
+        codex_home.abs(),
+    )
+    .await
 }
 
 #[test]
@@ -1358,6 +1484,92 @@ sandbox = "elevated"
         .expect("network_proxy should start the managed network proxy");
     assert_eq!(network.proxy_host_and_port(), "127.0.0.1:3128");
     assert!(!network.socks_enabled());
+    Ok(())
+}
+
+#[tokio::test]
+async fn respect_system_proxy_feature_resolves_enabled() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    let config = Config::load_from_base_config_with_overrides(
+        ConfigToml {
+            features: Some(
+                toml::from_str(
+                    r#"
+respect_system_proxy = true
+"#,
+                )
+                .expect("valid features"),
+            ),
+            ..Default::default()
+        },
+        ConfigOverrides::default(),
+        codex_home.abs(),
+    )
+    .await?;
+
+    assert!(config.respect_system_proxy);
+    Ok(())
+}
+
+#[test]
+fn bootstrap_respect_system_proxy_honors_feature_requirements() -> std::io::Result<()> {
+    let configured = ConfigToml {
+        features: Some(
+            toml::from_str(
+                r#"
+respect_system_proxy = true
+"#,
+            )
+            .expect("valid features"),
+        ),
+        ..Default::default()
+    };
+    let disabled = Sourced::new(
+        FeatureRequirementsToml {
+            entries: BTreeMap::from([("respect_system_proxy".to_string(), false)]),
+        },
+        RequirementSource::Unknown,
+    );
+    assert!(!resolve_bootstrap_respect_system_proxy(
+        &configured,
+        Some(&disabled)
+    )?);
+
+    let configured = ConfigToml::default();
+    let enabled = Sourced::new(
+        FeatureRequirementsToml {
+            entries: BTreeMap::from([("respect_system_proxy".to_string(), true)]),
+        },
+        RequirementSource::Unknown,
+    );
+    assert!(resolve_bootstrap_respect_system_proxy(
+        &configured,
+        Some(&enabled)
+    )?);
+    Ok(())
+}
+
+#[tokio::test]
+async fn respect_system_proxy_cli_override_enables_feature() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    std::fs::write(
+        codex_home.path().join(CONFIG_TOML_FILE),
+        r#"
+[features]
+respect_system_proxy = false
+"#,
+    )?;
+
+    let config = ConfigBuilder::without_managed_config_for_tests()
+        .codex_home(codex_home.path().to_path_buf())
+        .cli_overrides(vec![(
+            "features.respect_system_proxy".to_string(),
+            toml::Value::Boolean(true),
+        )])
+        .build()
+        .await?;
+
+    assert!(config.respect_system_proxy);
     Ok(())
 }
 
@@ -4387,8 +4599,13 @@ async fn rebuild_preserving_session_layers_refreshes_plugin_derived_mcp_config()
         Some(&http_mcp("https://sample.example/mcp"))
     );
     assert_eq!(
-        mcp_config.mcp_server_catalog.plugin_ids_by_server_name(),
-        HashMap::from([("sample".to_string(), "sample@test".to_string())])
+        mcp_config
+            .mcp_server_catalog
+            .plugin_attributions_by_server_name(),
+        HashMap::from([(
+            "sample".to_string(),
+            McpPluginAttribution::new("sample@test".to_string(), "sample".to_string()),
+        )])
     );
 
     Ok(())
@@ -4446,7 +4663,7 @@ enabled = true
     assert!(
         mcp_config
             .mcp_server_catalog
-            .plugin_ids_by_server_name()
+            .plugin_attributions_by_server_name()
             .is_empty()
     );
 
@@ -4454,7 +4671,7 @@ enabled = true
 }
 
 #[tokio::test]
-async fn to_mcp_config_applies_plugin_mcp_cloud_config_bundle() -> anyhow::Result<()> {
+async fn selected_plugin_wins_after_discovered_plugin_requirements() -> anyhow::Result<()> {
     let codex_home = TempDir::new()?;
     let plugin_root = codex_home
         .path()
@@ -4525,6 +4742,36 @@ url = "https://sample.example/mcp"
                     name: "Base requirements".to_string(),
                 },
             })
+        ))
+    );
+
+    let selected = http_mcp("https://selected.example/mcp");
+    let mcp_config = config
+        .to_mcp_config_with_plugin_registrations(
+            &plugins_manager,
+            [McpServerRegistration::from_selected_plugin(
+                "unlisted".to_string(),
+                McpPluginAttribution::new(
+                    "selected-root".to_string(),
+                    "Selected Plugin".to_string(),
+                ),
+                /*selection_order*/ 0,
+                selected.clone(),
+            )],
+        )
+        .await;
+
+    assert_eq!(
+        mcp_config
+            .mcp_server_catalog
+            .server("unlisted")
+            .map(|server| (server.source().clone(), server.config().clone())),
+        Some((
+            codex_mcp::McpServerSource::SelectedPlugin(McpPluginAttribution::new(
+                "selected-root".to_string(),
+                "Selected Plugin".to_string(),
+            )),
+            selected,
         ))
     );
     Ok(())
@@ -9909,13 +10156,16 @@ max_concurrent_threads_per_session = 17
 
     let config = resolve_multi_agent_v2_config(&config_toml);
     let concurrency_guidance = "There are 17 available concurrency slots, meaning that up to 17 agents can be active at once, including you.";
+    let expected_suffix = format!(
+        "{DEFAULT_MULTI_AGENT_V2_SHARED_USAGE_HINT_TEXT}\n{concurrency_guidance}\n\n{DEFAULT_MULTI_AGENT_V2_NO_SPAWN_HINT_TEXT}"
+    );
     assert!(
         [
             config.root_agent_usage_hint_text,
             config.subagent_usage_hint_text,
         ]
         .into_iter()
-        .all(|hint| hint.is_some_and(|hint| hint.ends_with(concurrency_guidance)))
+        .all(|hint| hint.is_some_and(|hint| hint.ends_with(expected_suffix.as_str())))
     );
 }
 
@@ -10746,7 +10996,6 @@ async fn realtime_loads_from_config_toml() -> std::io::Result<()> {
     let cfg: ConfigToml = toml::from_str(
         r#"
 [realtime]
-architecture = "avas"
 version = "v2"
 type = "transcription"
 transport = "webrtc"
@@ -10758,7 +11007,6 @@ voice = "cedar"
     assert_eq!(
         cfg.realtime,
         Some(RealtimeToml {
-            architecture: Some(RealtimeArchitecture::Avas),
             version: Some(RealtimeWsVersion::V2),
             session_type: Some(RealtimeWsMode::Transcription),
             transport: Some(RealtimeTransport::WebRtc),
@@ -10777,7 +11025,6 @@ voice = "cedar"
     assert_eq!(
         config.realtime,
         RealtimeConfig {
-            architecture: RealtimeArchitecture::Avas,
             version: RealtimeWsVersion::V2,
             session_type: RealtimeWsMode::Transcription,
             transport: RealtimeTransport::WebRtc,

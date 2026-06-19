@@ -42,6 +42,7 @@ use crate::models::MessagePhase;
 use crate::models::PermissionProfile;
 use crate::models::ResponseInputItem;
 use crate::models::ResponseItem;
+use crate::models::ResponseItemMetadata;
 use crate::models::SandboxEnforcement;
 use crate::models::WebSearchAction;
 use crate::num_format::format_with_separators;
@@ -53,6 +54,7 @@ use crate::request_permissions::RequestPermissionsResponse;
 use crate::request_user_input::RequestUserInputResponse;
 use crate::user_input::UserInput;
 use codex_utils_absolute_path::AbsolutePathBuf;
+use codex_utils_path_uri::PathUri;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
@@ -109,10 +111,12 @@ pub const REALTIME_CONVERSATION_OPEN_TAG: &str = "<realtime_conversation>";
 pub const REALTIME_CONVERSATION_CLOSE_TAG: &str = "</realtime_conversation>";
 pub const USER_MESSAGE_BEGIN: &str = "## My request for Codex:";
 
+// TODO(anp): Replace `TurnEnvironmentSelection` with `PathUri` once path URIs carry environment
+// identifiers.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TurnEnvironmentSelection {
     pub environment_id: String,
-    pub cwd: AbsolutePathBuf,
+    pub cwd: PathUri,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -126,19 +130,9 @@ impl TurnEnvironmentSelections {
         legacy_fallback_cwd: AbsolutePathBuf,
         environments: Vec<TurnEnvironmentSelection>,
     ) -> Self {
-        let mut settings = Self {
+        Self {
             legacy_fallback_cwd,
             environments,
-        };
-        settings.sync_primary_environment_cwd();
-        settings
-    }
-
-    fn sync_primary_environment_cwd(&mut self) {
-        if let Some(turn_environment) = self.environments.first_mut()
-            && turn_environment.cwd != self.legacy_fallback_cwd
-        {
-            turn_environment.cwd = self.legacy_fallback_cwd.clone();
         }
     }
 }
@@ -189,12 +183,22 @@ pub struct McpServerRefreshConfig {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConversationStartParams {
-    /// Overrides the configured realtime architecture for this session only.
-    pub architecture: Option<RealtimeConversationArchitecture>,
+    /// Whether Codex response handoffs are managed through explicit client append calls.
+    pub client_managed_handoffs: bool,
+    /// Sends automatic Codex responses as realtime conversation items instead of handoff appends.
+    pub codex_responses_as_items: bool,
+    /// Optional prefix added to automatic Codex response items when `codex_responses_as_items` is set.
+    pub codex_response_item_prefix: Option<String>,
+    /// Optional prefix added to automatic V1 Codex commentary sent with
+    /// `conversation.handoff.append` when `codex_responses_as_items` is not set. Final answers are
+    /// sent without the prefix.
+    pub codex_response_handoff_prefix: Option<String>,
     /// Overrides the configured realtime model for this session only.
     pub model: Option<String>,
     /// Selects whether the realtime session should produce text or audio output.
     pub output_modality: RealtimeOutputModality,
+    /// Whether to append Codex's startup context to the realtime backend prompt.
+    pub include_startup_context: bool,
     pub prompt: Option<Option<String>>,
     pub realtime_session_id: Option<String>,
     pub transport: Option<ConversationStartTransport>,
@@ -414,6 +418,12 @@ pub enum ConversationTextRole {
     #[default]
     User,
     Developer,
+    Assistant,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConversationSpeechParams {
+    pub text: String,
 }
 
 /// Persistent thread-settings overrides that can be applied before user input or
@@ -511,6 +521,9 @@ pub enum Op {
 
     /// Send text input to the running realtime conversation stream.
     RealtimeConversationText(ConversationTextParams),
+
+    /// Append speakable text to the running realtime conversation stream.
+    RealtimeConversationSpeech(ConversationSpeechParams),
 
     /// Close the running realtime conversation stream.
     RealtimeConversationClose,
@@ -679,6 +692,9 @@ pub struct InterAgentCommunication {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub encrypted_content: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub metadata: Option<ResponseItemMetadata>,
     pub trigger_turn: bool,
 }
 
@@ -696,6 +712,7 @@ impl InterAgentCommunication {
             other_recipients,
             content,
             encrypted_content: None,
+            metadata: None,
             trigger_turn,
         }
     }
@@ -713,6 +730,7 @@ impl InterAgentCommunication {
             other_recipients,
             content: String::new(),
             encrypted_content: Some(encrypted_content),
+            metadata: None,
             trigger_turn,
         }
     }
@@ -729,17 +747,34 @@ impl InterAgentCommunication {
 
     pub fn to_model_input_item(&self) -> ResponseItem {
         let content = match &self.encrypted_content {
-            Some(encrypted_content) => AgentMessageInputContent::EncryptedContent {
-                encrypted_content: encrypted_content.clone(),
-            },
-            None => AgentMessageInputContent::InputText {
+            Some(encrypted_content) => {
+                let message_type = if self.trigger_turn {
+                    "NEW_TASK"
+                } else {
+                    "MESSAGE"
+                };
+                vec![
+                    AgentMessageInputContent::InputText {
+                        text: format!(
+                            "Message Type: {message_type}\nTask name: {}\nSender: {}\nPayload:\n",
+                            self.recipient, self.author
+                        ),
+                    },
+                    AgentMessageInputContent::EncryptedContent {
+                        encrypted_content: encrypted_content.clone(),
+                    },
+                ]
+            }
+            None => vec![AgentMessageInputContent::InputText {
                 text: self.content.clone(),
-            },
+            }],
         };
         ResponseItem::AgentMessage {
+            id: None,
             author: self.author.to_string(),
             recipient: self.recipient.to_string(),
-            content: vec![content],
+            content,
+            metadata: self.metadata.clone(),
         }
     }
 
@@ -765,6 +800,7 @@ impl Op {
             Self::RealtimeConversationStart(_) => "realtime_conversation_start",
             Self::RealtimeConversationAudio(_) => "realtime_conversation_audio",
             Self::RealtimeConversationText(_) => "realtime_conversation_text",
+            Self::RealtimeConversationSpeech(_) => "realtime_conversation_speech",
             Self::RealtimeConversationClose => "realtime_conversation_close",
             Self::RealtimeConversationListVoices => "realtime_conversation_list_voices",
             Self::UserInput { .. } => "user_input",
@@ -1544,15 +1580,6 @@ pub enum RealtimeConversationVersion {
     V2,
 }
 
-#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
-#[serde(rename_all = "snake_case")]
-pub enum RealtimeConversationArchitecture {
-    #[default]
-    #[serde(rename = "realtimeapi")]
-    RealtimeApi,
-    Avas,
-}
-
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, JsonSchema, TS)]
 pub struct RealtimeConversationStartedEvent {
     pub realtime_session_id: Option<String>,
@@ -2319,7 +2346,13 @@ pub struct McpToolCallBeginEvent {
     pub invocation: McpInvocation,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
+    pub connector_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub mcp_app_resource_uri: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub link_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub plugin_id: Option<String>,
@@ -2332,7 +2365,13 @@ pub struct McpToolCallEndEvent {
     pub invocation: McpInvocation,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
+    pub connector_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub mcp_app_resource_uri: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub link_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub plugin_id: Option<String>,
@@ -2898,7 +2937,11 @@ pub struct SessionMeta {
     /// but may be missing for older sessions. If not present, fall back to rendering the base_instructions
     /// from ModelsManager.
     pub base_instructions: Option<BaseInstructions>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "crate::dynamic_tools::deserialize_dynamic_tool_specs",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub dynamic_tools: Option<Vec<DynamicToolSpec>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub memory_mode: Option<String>,
@@ -2950,13 +2993,17 @@ pub enum RolloutItem {
     EventMsg(EventMsg),
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, TS)]
+#[derive(Serialize, Clone, Debug, PartialEq, JsonSchema, TS)]
 pub struct CompactedItem {
     pub message: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replacement_history: Option<Vec<ResponseItem>>,
+    /// Monotonic position of this context window within the thread.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub window_id: Option<u64>,
+    pub window_number: Option<u64>,
+    /// UUIDv7 identity of this context window.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_id: Option<String>,
 }
 
 impl From<CompactedItem> for ResponseItem {
@@ -2968,6 +3015,7 @@ impl From<CompactedItem> for ResponseItem {
                 text: value.message,
             }],
             phase: None,
+            metadata: None,
         }
     }
 }
@@ -2982,11 +3030,11 @@ pub struct TurnContextNetworkItem {
 /// context updates, and again after mid-turn compaction when replacement
 /// history re-establishes full context, so resume/fork replay can recover the
 /// latest durable baseline.
-#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, TS)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema, TS)]
 pub struct TurnContextItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn_id: Option<String>,
-    pub cwd: PathBuf,
+    pub cwd: AbsolutePathBuf,
     /// Effective workspace roots used to materialize symbolic
     /// `:workspace_roots` filesystem permissions in `permission_profile`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3030,7 +3078,7 @@ impl TurnContextItem {
                 self.file_system_sandbox_policy.clone().unwrap_or_else(|| {
                     FileSystemSandboxPolicy::from_legacy_sandbox_policy_for_cwd(
                         &self.sandbox_policy,
-                        &self.cwd,
+                        self.cwd.as_path(),
                     )
                 });
             PermissionProfile::from_runtime_permissions_with_enforcement(
@@ -3236,7 +3284,7 @@ pub struct ExecCommandBeginEvent {
     /// The command to be executed.
     pub command: Vec<String>,
     /// The command's working directory if not the default cwd for the agent.
-    pub cwd: AbsolutePathBuf,
+    pub cwd: PathUri,
     pub parsed_cmd: Vec<ParsedCommand>,
     /// Where the command originated. Defaults to Agent for backward compatibility.
     #[serde(default)]
@@ -3262,7 +3310,7 @@ pub struct ExecCommandEndEvent {
     /// The command that was executed.
     pub command: Vec<String>,
     /// The command's working directory if not the default cwd for the agent.
-    pub cwd: AbsolutePathBuf,
+    pub cwd: PathUri,
     pub parsed_cmd: Vec<ParsedCommand>,
     /// Where the command originated. Defaults to Agent for backward compatibility.
     #[serde(default)]
@@ -4148,6 +4196,59 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn session_meta_normalizes_legacy_dynamic_tools() -> Result<()> {
+        let mut value = serde_json::to_value(SessionMeta::default())?;
+        value["dynamic_tools"] = json!([
+            {
+                "namespace": "legacy_app",
+                "name": "lookup_ticket",
+                "description": "Look up a ticket",
+                "inputSchema": {"type": "object", "properties": {}},
+                "exposeToContext": false
+            },
+            {
+                "namespace": "legacy_app",
+                "name": "update_ticket",
+                "description": "Update a ticket",
+                "inputSchema": {"type": "object", "properties": {}},
+                "deferLoading": false,
+                "exposeToContext": false
+            }
+        ]);
+
+        let meta: SessionMeta = serde_json::from_value(value)?;
+
+        assert_eq!(
+            meta.dynamic_tools,
+            Some(vec![DynamicToolSpec::Namespace(
+                crate::dynamic_tools::DynamicToolNamespaceSpec {
+                    name: "legacy_app".to_string(),
+                    description: String::new(),
+                    tools: vec![
+                        crate::dynamic_tools::DynamicToolNamespaceTool::Function(
+                            crate::dynamic_tools::DynamicToolFunctionSpec {
+                                name: "lookup_ticket".to_string(),
+                                description: "Look up a ticket".to_string(),
+                                input_schema: json!({"type": "object", "properties": {}}),
+                                defer_loading: true,
+                            },
+                        ),
+                        crate::dynamic_tools::DynamicToolNamespaceTool::Function(
+                            crate::dynamic_tools::DynamicToolFunctionSpec {
+                                name: "update_ticket".to_string(),
+                                description: "Update a ticket".to_string(),
+                                input_schema: json!({"type": "object", "properties": {}}),
+                                defer_loading: false,
+                            },
+                        ),
+                    ],
+                },
+            )])
+        );
+        Ok(())
+    }
+
     fn sorted_writable_roots(roots: Vec<WritableRoot>) -> Vec<(PathBuf, Vec<PathBuf>)> {
         let mut sorted_roots: Vec<(PathBuf, Vec<PathBuf>)> = roots
             .into_iter()
@@ -4200,6 +4301,7 @@ mod tests {
             other_recipients: vec![AgentPath::root().join("worker").expect("recipient path")],
             content: "review the diff".to_string(),
             encrypted_content: None,
+            metadata: None,
             trigger_turn: true,
         };
 
@@ -4211,6 +4313,36 @@ mod tests {
                     text: serde_json::to_string(&communication).expect("serialize communication"),
                 }],
                 phase: Some(MessagePhase::Commentary),
+            }
+        );
+    }
+
+    #[test]
+    fn queued_encrypted_inter_agent_communication_renders_message_envelope() {
+        let communication = InterAgentCommunication::new_encrypted(
+            AgentPath::root().join("worker").expect("author path"),
+            AgentPath::root(),
+            Vec::new(),
+            "encrypted payload".to_string(),
+            /*trigger_turn*/ false,
+        );
+
+        assert_eq!(
+            communication.to_model_input_item(),
+            ResponseItem::AgentMessage {
+                id: None,
+                author: "/root/worker".to_string(),
+                recipient: "/root".to_string(),
+                content: vec![
+                    AgentMessageInputContent::InputText {
+                        text: "Message Type: MESSAGE\nTask name: /root\nSender: /root/worker\nPayload:\n"
+                            .to_string(),
+                    },
+                    AgentMessageInputContent::EncryptedContent {
+                        encrypted_content: "encrypted payload".to_string(),
+                    },
+                ],
+                metadata: None,
             }
         );
     }
@@ -4846,7 +4978,9 @@ mod tests {
                 server: "server".into(),
                 tool: "tool".into(),
                 arguments: json!({"arg": "value"}),
+                connector_id: Some("connector".into()),
                 mcp_app_resource_uri: Some("app://connector".into()),
+                link_id: Some("link_123".into()),
                 plugin_id: Some("sample@test".into()),
                 status: McpToolCallStatus::InProgress,
                 result: None,
@@ -4862,10 +4996,12 @@ mod tests {
                 assert_eq!(event.call_id, "mcp-1");
                 assert_eq!(event.invocation.server, "server");
                 assert_eq!(event.invocation.tool, "tool");
+                assert_eq!(event.connector_id.as_deref(), Some("connector"));
                 assert_eq!(
                     event.mcp_app_resource_uri.as_deref(),
                     Some("app://connector")
                 );
+                assert_eq!(event.link_id.as_deref(), Some("link_123"));
                 assert_eq!(event.plugin_id.as_deref(), Some("sample@test"));
             }
             _ => panic!("expected McpToolCallBegin event"),
@@ -4953,7 +5089,9 @@ mod tests {
                 server: "server".into(),
                 tool: "tool".into(),
                 arguments: json!({"arg": "value"}),
+                connector_id: Some("connector".into()),
                 mcp_app_resource_uri: Some("app://connector".into()),
+                link_id: Some("link_123".into()),
                 plugin_id: Some("sample@test".into()),
                 status: McpToolCallStatus::Completed,
                 result: Some(CallToolResult {
@@ -4974,10 +5112,12 @@ mod tests {
                 assert_eq!(event.call_id, "mcp-1");
                 assert_eq!(event.invocation.server, "server");
                 assert_eq!(event.invocation.tool, "tool");
+                assert_eq!(event.connector_id.as_deref(), Some("connector"));
                 assert_eq!(
                     event.mcp_app_resource_uri.as_deref(),
                     Some("app://connector")
                 );
+                assert_eq!(event.link_id.as_deref(), Some("link_123"));
                 assert_eq!(event.plugin_id.as_deref(), Some("sample@test"));
                 assert_eq!(event.duration, Duration::from_millis(42));
                 assert!(event.is_success());
@@ -5268,7 +5408,7 @@ mod tests {
     fn turn_context_item_serializes_network_when_present() -> Result<()> {
         let item = TurnContextItem {
             turn_id: None,
-            cwd: test_path_buf("/tmp"),
+            cwd: test_path_buf("/tmp").abs(),
             workspace_roots: None,
             current_date: None,
             timezone: None,

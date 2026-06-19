@@ -25,7 +25,6 @@ use codex_utils_output_truncation::approx_token_count;
 use codex_utils_output_truncation::approx_tokens_from_byte_count_i64;
 use codex_utils_output_truncation::truncate_function_output_items_with_policy;
 use codex_utils_output_truncation::truncate_text;
-use std::collections::HashMap;
 use std::num::NonZeroUsize;
 use std::ops::Deref;
 use std::sync::LazyLock;
@@ -94,36 +93,13 @@ impl ContextManager {
         I: IntoIterator,
         I::Item: std::ops::Deref<Target = ResponseItem>,
     {
-        let mut custom_tool_names = self
-            .items
-            .iter()
-            .filter_map(|item| match item {
-                ResponseItem::CustomToolCall { call_id, name, .. } => {
-                    Some((call_id.clone(), name.clone()))
-                }
-                _ => None,
-            })
-            .collect::<HashMap<_, _>>();
-
         for item in items {
             let item_ref = item.deref();
             if !is_api_message(item_ref) {
                 continue;
             }
 
-            let preserve_code_mode_output = match item_ref {
-                ResponseItem::CustomToolCallOutput { call_id, name, .. } => {
-                    name.as_deref()
-                        .or_else(|| custom_tool_names.get(call_id).map(String::as_str))
-                        == Some(codex_code_mode::PUBLIC_TOOL_NAME)
-                }
-                _ => false,
-            };
-
-            let processed = self.process_item(item_ref, policy, preserve_code_mode_output);
-            if let ResponseItem::CustomToolCall { call_id, name, .. } = item_ref {
-                custom_tool_names.insert(call_id.clone(), name.clone());
-            }
+            let processed = self.process_item(item_ref, policy);
             self.items.push(processed);
         }
     }
@@ -359,39 +335,33 @@ impl ContextManager {
         normalize::strip_images_when_unsupported(input_modalities, &mut self.items);
     }
 
-    fn process_item(
-        &self,
-        item: &ResponseItem,
-        policy: TruncationPolicy,
-        preserve_code_mode_output: bool,
-    ) -> ResponseItem {
+    fn process_item(&self, item: &ResponseItem, policy: TruncationPolicy) -> ResponseItem {
         let policy_with_serialization_budget = policy * 1.2;
         match item {
-            ResponseItem::FunctionCallOutput { call_id, output } => {
-                ResponseItem::FunctionCallOutput {
-                    call_id: call_id.clone(),
-                    output: truncate_function_output_payload(
-                        output,
-                        policy_with_serialization_budget,
-                    ),
-                }
-            }
+            ResponseItem::FunctionCallOutput {
+                id,
+                call_id,
+                output,
+                metadata,
+            } => ResponseItem::FunctionCallOutput {
+                id: id.clone(),
+                call_id: call_id.clone(),
+                output: truncate_function_output_payload(output, policy_with_serialization_budget),
+                metadata: metadata.clone(),
+            },
             ResponseItem::CustomToolCallOutput {
+                id,
                 call_id,
                 name,
                 output,
-            } => {
-                let output = if preserve_code_mode_output {
-                    output.clone()
-                } else {
-                    truncate_function_output_payload(output, policy_with_serialization_budget)
-                };
-                ResponseItem::CustomToolCallOutput {
-                    call_id: call_id.clone(),
-                    name: name.clone(),
-                    output,
-                }
-            }
+                metadata,
+            } => ResponseItem::CustomToolCallOutput {
+                call_id: call_id.clone(),
+                name: name.clone(),
+                output: truncate_function_output_payload(output, policy_with_serialization_budget),
+                id: id.clone(),
+                metadata: metadata.clone(),
+            },
             ResponseItem::Message { .. }
             | ResponseItem::AgentMessage { .. }
             | ResponseItem::Reasoning { .. }
@@ -403,7 +373,7 @@ impl ContextManager {
             | ResponseItem::ImageGenerationCall { .. }
             | ResponseItem::CustomToolCall { .. }
             | ResponseItem::Compaction { .. }
-            | ResponseItem::CompactionTrigger
+            | ResponseItem::CompactionTrigger { .. }
             | ResponseItem::ContextCompaction { .. }
             | ResponseItem::Other => item.clone(),
         }
@@ -495,7 +465,7 @@ fn is_api_message(message: &ResponseItem) -> bool {
         | ResponseItem::ImageGenerationCall { .. }
         | ResponseItem::Compaction { .. }
         | ResponseItem::ContextCompaction { .. } => true,
-        ResponseItem::CompactionTrigger => false,
+        ResponseItem::CompactionTrigger { .. } => false,
         ResponseItem::Other => false,
     }
 }
@@ -547,9 +517,11 @@ fn estimate_response_item_model_visible_bytes(item: &ResponseItem) -> i64 {
         }
         | ResponseItem::Compaction {
             encrypted_content: content,
+            ..
         }
         | ResponseItem::ContextCompaction {
             encrypted_content: Some(content),
+            ..
         } => i64::try_from(estimate_reasoning_length(content.len())).unwrap_or(i64::MAX),
         item => {
             let raw = serde_json::to_string(item)
@@ -725,7 +697,7 @@ fn is_model_generated_item(item: &ResponseItem) -> bool {
         | ResponseItem::LocalShellCall { .. }
         | ResponseItem::Compaction { .. }
         | ResponseItem::ContextCompaction { .. } => true,
-        ResponseItem::CompactionTrigger => false,
+        ResponseItem::CompactionTrigger { .. } => false,
         ResponseItem::FunctionCallOutput { .. }
         | ResponseItem::ToolSearchOutput { .. }
         | ResponseItem::CustomToolCallOutput { .. }

@@ -174,8 +174,13 @@ impl ToolExecutor<ToolInvocation> for PyReplHandler {
                 ));
             };
             let cwd = turn_environment.cwd().clone();
+            let native_cwd = cwd.to_abs_path().map_err(|err| {
+                FunctionCallError::RespondToModel(format!(
+                    "py_repl cwd `{cwd}` is not valid on this host: {err}"
+                ))
+            })?;
             let started_at = Instant::now();
-            emit_py_repl_exec_begin(session.as_ref(), turn.as_ref(), &call_id, &cwd).await;
+            emit_py_repl_exec_begin(session.as_ref(), turn.as_ref(), &call_id, &native_cwd).await;
             let result = manager
                 .execute(
                     Arc::clone(&session),
@@ -196,7 +201,7 @@ impl ToolExecutor<ToolInvocation> for PyReplHandler {
                         "",
                         Some(&message),
                         started_at.elapsed(),
-                        &cwd,
+                        &native_cwd,
                     )
                     .await;
                     return Err(err);
@@ -219,7 +224,7 @@ impl ToolExecutor<ToolInvocation> for PyReplHandler {
                 &content,
                 None,
                 started_at.elapsed(),
-                &cwd,
+                &native_cwd,
             )
             .await;
 
@@ -446,6 +451,13 @@ mod tests {
     #[tokio::test]
     async fn emit_py_repl_exec_end_sends_event() {
         let (session, turn, rx) = make_session_and_context_with_rx().await;
+        let native_cwd = turn
+            .environments
+            .primary()
+            .expect("primary environment")
+            .cwd()
+            .to_abs_path()
+            .expect("local test cwd");
         super::emit_py_repl_exec_end(
             session.as_ref(),
             turn.as_ref(),
@@ -453,10 +465,7 @@ mod tests {
             "hello",
             None,
             Duration::from_millis(12),
-            turn.environments
-                .primary()
-                .expect("primary environment")
-                .cwd(),
+            &native_cwd,
         )
         .await;
 

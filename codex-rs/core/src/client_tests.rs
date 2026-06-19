@@ -76,6 +76,7 @@ fn test_model_client(session_source: SessionSource) -> ModelClient {
         /*enable_request_compression*/ false,
         /*include_timing_metrics*/ false,
         /*beta_features_header*/ None,
+        /*item_ids_enabled*/ false,
         /*attestation_provider*/ None,
     )
 }
@@ -225,6 +226,7 @@ fn output_message(id: &str, text: &str) -> ResponseItem {
             text: text.to_string(),
         }],
         phase: None,
+        metadata: None,
     }
 }
 
@@ -565,6 +567,7 @@ fn model_client_with_counting_attestation(
         /*enable_request_compression*/ false,
         /*include_timing_metrics*/ false,
         /*beta_features_header*/ None,
+        /*item_ids_enabled*/ false,
         Some(Arc::new(CountingAttestationProvider {
             calls: attestation_calls.clone(),
         })),
@@ -585,7 +588,7 @@ async fn websocket_handshake_includes_attestation_for_chatgpt_codex_responses() 
     );
 
     let headers = model_client
-        .build_websocket_headers(&responses_metadata, /*turn_state*/ None)
+        .build_websocket_headers(&responses_metadata)
         .await;
 
     assert_eq!(

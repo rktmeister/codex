@@ -719,7 +719,7 @@ impl PyReplManager {
             .await
             .map_err(|err| err.to_string())?;
 
-        let mut env = create_env(&turn.shell_environment_policy, thread_id);
+        let mut env = create_env(&turn.config.permissions.shell_environment_policy, thread_id);
         env.insert(
             "CODEX_PY_REPL_TMP_DIR".to_string(),
             self.tmp_dir.path().to_string_lossy().to_string(),
@@ -738,11 +738,13 @@ impl PyReplManager {
             return Err("py_repl is unavailable without a selected turn environment".to_string());
         };
         let cwd = turn_environment.cwd().clone();
-        let cwd_uri = PathUri::from_abs_path(&cwd);
+        let native_cwd = cwd
+            .to_abs_path()
+            .map_err(|err| format!("py_repl cwd `{cwd}` is not valid on this host: {err}"))?;
         let command = SandboxCommand {
             program: self.python_path.clone().into_os_string(),
             args: vec!["-u".to_string(), kernel_path.to_string_lossy().to_string()],
-            cwd: cwd_uri.clone(),
+            cwd: cwd.clone(),
             env,
             additional_permissions: None,
         };
@@ -770,7 +772,7 @@ impl PyReplManager {
         let windows_sandbox_workspace_roots = {
             let workspace_roots = turn.config.effective_workspace_roots();
             if workspace_roots.is_empty() {
-                vec![cwd]
+                vec![native_cwd]
             } else {
                 workspace_roots
             }
@@ -781,12 +783,13 @@ impl PyReplManager {
                 permissions: &turn.permission_profile,
                 sandbox: sandbox_type,
                 enforce_managed_network: has_managed_network_requirements,
+                environment_id: Some(&turn_environment.environment_id),
                 network: None,
-                sandbox_policy_cwd: &cwd_uri,
+                sandbox_policy_cwd: &cwd,
                 #[cfg(target_os = "macos")]
                 macos_seatbelt_profile_extensions: None,
-                codex_linux_sandbox_exe: turn.codex_linux_sandbox_exe.as_deref(),
-                use_legacy_landlock: turn.features.use_legacy_landlock(),
+                codex_linux_sandbox_exe: turn.config.codex_linux_sandbox_exe.as_deref(),
+                use_legacy_landlock: turn.config.features.use_legacy_landlock(),
                 windows_sandbox_level: turn.windows_sandbox_level,
                 windows_sandbox_private_desktop: turn
                     .config
@@ -814,7 +817,13 @@ impl PyReplManager {
                 .clone()
                 .unwrap_or_else(|| exec_env.command.first().cloned().unwrap_or_default()),
         );
-        cmd.current_dir(&exec_env.cwd);
+        let exec_cwd = exec_env.cwd.to_abs_path().map_err(|err| {
+            format!(
+                "py_repl sandbox cwd `{}` is not valid on this host: {err}",
+                exec_env.cwd
+            )
+        })?;
+        cmd.current_dir(exec_cwd.as_path());
         cmd.env_clear();
         cmd.envs(exec_env.env);
         cmd.stdin(std::process::Stdio::piped())
@@ -1528,12 +1537,13 @@ impl PyReplManager {
             ToolRouterParams {
                 deferred_mcp_tools: None,
                 mcp_tools: Some(mcp_tools),
-                discoverable_tools: None,
+                tool_suggest_candidates: None,
                 extension_tool_executors: crate::tools::router::extension_tool_executors(
                     exec.session.as_ref(),
                 ),
                 dynamic_tools: exec.turn.dynamic_tools.as_slice(),
             },
+            &exec.session.services.tool_search_handler_cache,
         );
 
         let specs = router.model_visible_specs();
@@ -1674,7 +1684,7 @@ impl PyReplManager {
                 input: "",
                 yield_time_ms: (timeout_ms - elapsed_ms).clamp(1, PY_REPL_DEFAULT_TIMEOUT_MS),
                 max_output_tokens,
-                truncation_policy: exec.turn.truncation_policy,
+                truncation_policy: exec.turn.model_info.truncation_policy.into(),
             };
             let poll_output = tokio::select! {
                 _ = reset_cancel.cancelled() => {
@@ -1798,7 +1808,7 @@ impl PyReplManager {
             input: "",
             yield_time_ms: timeout_ms,
             max_output_tokens: req.max_output_tokens,
-            truncation_policy: exec.turn.truncation_policy,
+            truncation_policy: exec.turn.model_info.truncation_policy.into(),
         };
         let poll_output = tokio::select! {
             _ = reset_cancel.cancelled() => {
@@ -1903,17 +1913,23 @@ impl PyReplManager {
                 "unified exec is unavailable in this session",
             ));
         };
-        let cwd = req
-            .cwd
-            .clone()
-            .filter(|value| !value.is_empty())
-            .map_or_else(
-                || turn_environment.cwd().clone(),
-                |cwd| turn_environment.cwd().join(cwd),
-            );
+        let cwd = match req.cwd.clone().filter(|value| !value.is_empty()) {
+            Some(cwd) => turn_environment.cwd().join(&cwd).map_err(|err| {
+                Self::run_process_error(
+                    request_id.clone(),
+                    format!("invalid cwd `{cwd}` for py_repl process: {err}"),
+                )
+            })?,
+            None => turn_environment.cwd().clone(),
+        };
+        let native_cwd = cwd.to_abs_path().map_err(|err| {
+            Self::run_process_error(
+                request_id.clone(),
+                format!("py_repl process cwd `{cwd}` is not valid on this host: {err}"),
+            )
+        })?;
         let hook_command = codex_shell_command::parse_command::shlex_join(&req.command);
         let process_id = manager.allocate_process_id().await;
-        let environment = Arc::clone(&turn_environment.environment);
 
         let exec_permission_approvals_enabled = exec
             .session
@@ -1923,7 +1939,7 @@ impl PyReplManager {
         let effective_additional_permissions = apply_granted_turn_permissions(
             exec.session.as_ref(),
             &turn_environment.environment_id,
-            cwd.as_path(),
+            native_cwd.as_path(),
             req.sandbox_permissions,
             req.additional_permissions.clone(),
         )
@@ -1969,7 +1985,7 @@ impl PyReplManager {
                         .additional_permissions
                         .clone(),
                     effective_additional_permissions.permissions_preapproved,
-                    cwd.as_path(),
+                    native_cwd.as_path(),
                 )
             },
             |permissions| Ok(Some(permissions)),
@@ -1990,7 +2006,7 @@ impl PyReplManager {
             max_output_tokens: req.max_output_tokens,
             cwd: cwd.clone(),
             sandbox_cwd: cwd,
-            environment,
+            turn_environment: turn_environment.clone(),
             env: req.env,
             shell_mode: shell_mode_for_environment(
                 &exec.turn.unified_exec_shell_mode,
@@ -2433,7 +2449,6 @@ mod tests {
     use crate::config::ConfigBuilder;
     use crate::session::tests::make_session_and_context;
     use codex_exec_server::LOCAL_FS;
-    use codex_features::Feature;
     use codex_protocol::models::FunctionCallOutputContentItem;
     use codex_protocol::models::ImageDetail;
     use codex_utils_absolute_path::AbsolutePathBuf;
@@ -2530,13 +2545,6 @@ mod tests {
     #[tokio::test]
     async fn emitted_image_content_item_does_not_force_original_when_enabled() {
         let (_session, mut turn) = make_session_and_context().await;
-        Arc::make_mut(&mut turn.config)
-            .features
-            .enable(Feature::ImageDetailOriginal)
-            .expect("test config should allow feature update");
-        turn.features
-            .enable(Feature::ImageDetailOriginal)
-            .expect("test turn features should allow feature update");
         turn.model_info.supports_image_detail_original = true;
 
         let content_item =
@@ -2554,13 +2562,6 @@ mod tests {
     #[tokio::test]
     async fn emitted_image_content_item_allows_explicit_original_detail_when_enabled() {
         let (_session, mut turn) = make_session_and_context().await;
-        Arc::make_mut(&mut turn.config)
-            .features
-            .enable(Feature::ImageDetailOriginal)
-            .expect("test config should allow feature update");
-        turn.features
-            .enable(Feature::ImageDetailOriginal)
-            .expect("test turn features should allow feature update");
         turn.model_info.supports_image_detail_original = true;
 
         let content_item = emitted_image_content_item(
