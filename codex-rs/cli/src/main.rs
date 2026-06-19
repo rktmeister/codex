@@ -38,6 +38,7 @@ use codex_utils_cli::ProfileV2Name;
 use codex_utils_cli::SharedCliOptions;
 use owo_colors::OwoColorize;
 use std::collections::HashSet;
+use std::ffi::OsString;
 use std::io::IsTerminal;
 use std::io::Write;
 use std::path::PathBuf;
@@ -57,6 +58,7 @@ mod remote_control_cmd;
 #[cfg(target_os = "windows")]
 mod sandbox_setup;
 mod state_db_recovery;
+mod tmux;
 #[cfg(not(windows))]
 mod wsl_paths;
 
@@ -112,6 +114,9 @@ struct MultitoolCli {
 
     #[clap(flatten)]
     remote: InteractiveRemoteOptions,
+
+    #[clap(flatten)]
+    tmux: TmuxCliOptions,
 
     #[clap(flatten)]
     interactive: TuiCli,
@@ -898,6 +903,33 @@ struct InteractiveRemoteOptions {
     remote_auth_token_env: Option<String>,
 }
 
+#[derive(Debug, Default, Args, Clone, Copy)]
+struct TmuxCliOptions {
+    /// Launch interactive Codex inside a tmux session. Use --tmux=classic to skip iTerm2 control mode.
+    #[arg(long = "tmux", default_value_t = false)]
+    tmux: bool,
+
+    #[arg(
+        long = "tmux-classic",
+        hide = true,
+        default_value_t = false,
+        conflicts_with = "tmux"
+    )]
+    tmux_classic: bool,
+}
+
+impl TmuxCliOptions {
+    fn mode(self) -> Option<tmux::TmuxMode> {
+        match (self.tmux, self.tmux_classic) {
+            (true, false) => Some(tmux::TmuxMode::Auto),
+            (false, true) => Some(tmux::TmuxMode::Classic),
+            (false, false) => None,
+            // Clap rejects this combination via conflicts_with.
+            (true, true) => None,
+        }
+    }
+}
+
 impl FeatureToggles {
     fn to_overrides(&self) -> anyhow::Result<Vec<String>> {
         let mut v = Vec::new();
@@ -954,24 +986,22 @@ fn stage_str(stage: Stage) -> &'static str {
 }
 
 fn main() -> anyhow::Result<()> {
-    let remote_control_disabled = codex_app_server::take_remote_control_disabled_env();
     arg0_dispatch_or_else(move |arg0_paths: Arg0DispatchPaths| async move {
-        cli_main(arg0_paths, remote_control_disabled).await?;
+        cli_main(arg0_paths).await?;
         Ok(())
     })
 }
 
-async fn cli_main(
-    arg0_paths: Arg0DispatchPaths,
-    remote_control_disabled: bool,
-) -> anyhow::Result<()> {
+async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
+    let raw_args = std::env::args_os().collect::<Vec<_>>();
     let MultitoolCli {
         config_overrides: mut root_config_overrides,
         feature_toggles,
         remote,
+        tmux: tmux_options,
         mut interactive,
         subcommand,
-    } = MultitoolCli::parse();
+    } = parse_multitool_cli_from(raw_args.clone()).unwrap_or_else(|err| err.exit());
 
     // Fold --enable/--disable into config overrides so they flow to all subcommands.
     let toggle_overrides = feature_toggles.to_overrides()?;
@@ -983,6 +1013,17 @@ async fn cli_main(
     if let Some(subcommand) = subcommand.as_ref() {
         profile_v2_for_subcommand(&interactive, subcommand)?;
     }
+    if let Some(tmux_mode) = tmux_options.mode() {
+        reject_tmux_for_subcommand(&subcommand)?;
+        tmux::launch(tmux::LaunchOptions {
+            mode: tmux_mode,
+            raw_args: &raw_args,
+            arg0_paths: &arg0_paths,
+        })?;
+        return Ok(());
+    }
+
+    let remote_control_disabled = codex_app_server::take_remote_control_disabled_env();
 
     match subcommand {
         None => {
@@ -1647,6 +1688,15 @@ async fn cli_main(
     Ok(())
 }
 
+fn parse_multitool_cli_from<I, T>(args: I) -> Result<MultitoolCli, clap::Error>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString>,
+{
+    let args = args.into_iter().map(Into::into);
+    MultitoolCli::try_parse_from(tmux::rewrite_classic_args(args))
+}
+
 fn profile_v2_for_subcommand<'a>(
     interactive: &'a TuiCli,
     subcommand: &Subcommand,
@@ -2064,6 +2114,54 @@ fn reject_remote_mode_for_subcommand(
         );
     }
     Ok(())
+}
+
+fn reject_tmux_for_subcommand(subcommand: &Option<Subcommand>) -> anyhow::Result<()> {
+    match subcommand {
+        None | Some(Subcommand::Resume(_)) | Some(Subcommand::Fork(_)) => Ok(()),
+        Some(subcommand) => {
+            let subcommand = subcommand_name_for_tmux_reject(subcommand);
+            anyhow::bail!(
+                "`--tmux` is only supported for interactive TUI commands, not `codex {subcommand}`"
+            );
+        }
+    }
+}
+
+fn subcommand_name_for_tmux_reject(subcommand: &Subcommand) -> &'static str {
+    match subcommand {
+        Subcommand::Exec(_) => "exec",
+        Subcommand::Review(_) => "review",
+        Subcommand::Login(_) => "login",
+        Subcommand::Logout(_) => "logout",
+        Subcommand::Mcp(_) => "mcp",
+        Subcommand::Plugin(_) => "plugin",
+        Subcommand::McpServer(_) => "mcp-server",
+        Subcommand::AppServer(app_server) => match app_server.subcommand.as_ref() {
+            Some(subcommand) => app_server_subcommand_name(Some(subcommand)),
+            None => "app-server",
+        },
+        Subcommand::RemoteControl(remote_control) => remote_control.subcommand_name(),
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        Subcommand::App(_) => "app",
+        Subcommand::Completion(_) => "completion",
+        Subcommand::Update => "update",
+        Subcommand::Doctor(_) => "doctor",
+        Subcommand::Sandbox(_) => "sandbox",
+        Subcommand::Debug(_) => "debug",
+        Subcommand::Execpolicy(_) => "execpolicy",
+        Subcommand::Apply(_) => "apply",
+        Subcommand::Resume(_) => "resume",
+        Subcommand::Archive(_) => "archive",
+        Subcommand::Delete(_) => "delete",
+        Subcommand::Unarchive(_) => "unarchive",
+        Subcommand::Fork(_) => "fork",
+        Subcommand::Cloud(_) => "cloud",
+        Subcommand::ResponsesApiProxy(_) => "responses-api-proxy",
+        Subcommand::StdioToUds(_) => "stdio-to-uds",
+        Subcommand::ExecServer(_) => "exec-server",
+        Subcommand::Features(_) => "features",
+    }
 }
 
 fn reject_root_strict_config_for_subcommand(
@@ -2558,6 +2656,7 @@ mod tests {
             subcommand,
             feature_toggles: _,
             remote: _,
+            tmux: _,
         } = cli;
 
         let Subcommand::Resume(ResumeCommand {
@@ -2592,6 +2691,7 @@ mod tests {
             subcommand,
             feature_toggles: _,
             remote: _,
+            tmux: _,
         } = cli;
 
         let Subcommand::Fork(ForkCommand {
@@ -2617,6 +2717,7 @@ mod tests {
             subcommand,
             feature_toggles: _,
             remote: _,
+            tmux: _,
         } = cli;
 
         let Subcommand::Archive(SessionArchiveCommand {
@@ -2957,6 +3058,53 @@ mod tests {
             err.to_string(),
             "--force requires a session UUID; names must be confirmed interactively"
         );
+    }
+
+    #[test]
+    fn tmux_flag_does_not_consume_prompt() {
+        let cli = parse_multitool_cli_from(["codex", "--tmux", "hello"]).expect("parse");
+
+        assert_eq!(cli.tmux.mode(), Some(tmux::TmuxMode::Auto));
+        assert_eq!(cli.interactive.prompt.as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn tmux_classic_compatibility_form_parses() {
+        let cli = parse_multitool_cli_from(["codex", "--tmux=classic", "hello"]).expect("parse");
+
+        assert_eq!(cli.tmux.mode(), Some(tmux::TmuxMode::Classic));
+        assert_eq!(cli.interactive.prompt.as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn tmux_classic_conflicts_with_plain_tmux_flag() {
+        let err = parse_multitool_cli_from(["codex", "--tmux", "--tmux=classic"])
+            .expect_err("conflicting tmux flags should fail");
+
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn tmux_rejects_non_interactive_subcommands() {
+        let cli = parse_multitool_cli_from(["codex", "--tmux", "exec", "hello"]).expect("parse");
+        let err = reject_tmux_for_subcommand(&cli.subcommand)
+            .expect_err("exec should not run through tmux launcher");
+
+        assert_eq!(
+            err.to_string(),
+            "`--tmux` is only supported for interactive TUI commands, not `codex exec`"
+        );
+    }
+
+    #[test]
+    fn tmux_allows_interactive_session_subcommands() {
+        let resume = parse_multitool_cli_from(["codex", "--tmux", "resume", "--last"])
+            .expect("parse resume");
+        let fork =
+            parse_multitool_cli_from(["codex", "--tmux", "fork", "--last"]).expect("parse fork");
+
+        assert!(reject_tmux_for_subcommand(&resume.subcommand).is_ok());
+        assert!(reject_tmux_for_subcommand(&fork.subcommand).is_ok());
     }
 
     #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
