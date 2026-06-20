@@ -1,5 +1,7 @@
 use crate::outgoing_message::ConnectionId;
 use crate::outgoing_message::ConnectionRequestId;
+use codex_app_server_protocol::ClientTerminalContext;
+use codex_app_server_protocol::ClientTmuxContext;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ThreadGoal;
 use codex_app_server_protocol::ThreadHistoryBuilder;
@@ -279,9 +281,10 @@ struct ThreadStateManagerInner {
     thread_ids_by_connection: HashMap<ConnectionId, HashSet<ThreadId>>,
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Default)]
 pub(crate) struct ConnectionCapabilities {
     pub(crate) request_attestation: bool,
+    pub(crate) terminal_context: Option<ClientTerminalContext>,
 }
 
 #[derive(Clone, Default)]
@@ -308,6 +311,36 @@ impl ThreadStateManager {
             .await
             .live_connections
             .insert(connection_id, capabilities);
+    }
+
+    pub(crate) async fn connection_terminal_context_updated(
+        &self,
+        connection_id: ConnectionId,
+        terminal_context: ClientTerminalContext,
+    ) {
+        if let Some(capabilities) = self
+            .state
+            .lock()
+            .await
+            .live_connections
+            .get_mut(&connection_id)
+        {
+            capabilities.terminal_context = Some(terminal_context);
+        }
+    }
+
+    pub(crate) async fn first_tmux_context_for_connections(
+        &self,
+        connection_ids: &[ConnectionId],
+    ) -> Option<ClientTmuxContext> {
+        let state = self.state.lock().await;
+        connection_ids.iter().find_map(|connection_id| {
+            state
+                .live_connections
+                .get(connection_id)
+                .and_then(|capabilities| capabilities.terminal_context.as_ref())
+                .and_then(|terminal_context| terminal_context.tmux.clone())
+        })
     }
 
     pub(crate) async fn first_attestation_capable_connection_for_thread(

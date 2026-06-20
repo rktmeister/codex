@@ -1243,6 +1243,7 @@ mod tests {
             experimental_api: true,
             mcp_server_openai_form_elicitation: false,
             opt_out_notification_methods: Vec::new(),
+            terminal_context: None,
             channel_capacity: 8,
         }
     }
@@ -1532,6 +1533,7 @@ mod tests {
             experimental_api: true,
             mcp_server_openai_form_elicitation: false,
             opt_out_notification_methods: Vec::new(),
+            terminal_context: None,
             channel_capacity: 8,
         })
         .await
@@ -1621,6 +1623,7 @@ mod tests {
             experimental_api: true,
             mcp_server_openai_form_elicitation: false,
             opt_out_notification_methods: Vec::new(),
+            terminal_context: None,
             channel_capacity: 8,
         })
         .await
@@ -1641,6 +1644,7 @@ mod tests {
             experimental_api: true,
             mcp_server_openai_form_elicitation: false,
             opt_out_notification_methods: Vec::new(),
+            terminal_context: None,
             channel_capacity: 8,
         })
         .await;

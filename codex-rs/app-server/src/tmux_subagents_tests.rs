@@ -90,6 +90,42 @@ fn launch_args_add_window_for_existing_session() {
 }
 
 #[test]
+fn parent_window_args_create_detached_window_in_parent_session() {
+    let thread_id =
+        ThreadId::from_string("123e4567-e89b-12d3-a456-426614174000").expect("valid thread id");
+    let args = tmux_parent_window_args(
+        "$7:",
+        "pascal",
+        Path::new("/usr/local/bin/codex"),
+        "unix:///tmp/codex.sock",
+        Path::new("/work/repo"),
+        thread_id,
+    );
+
+    assert_eq!(
+        args,
+        vec![
+            "new-window",
+            "-d",
+            "-t",
+            "$7:",
+            "-n",
+            "pascal",
+            "-c",
+            "/work/repo",
+            "--",
+            "/usr/local/bin/codex",
+            "--remote",
+            "unix:///tmp/codex.sock",
+            "-C",
+            "/work/repo",
+            "resume",
+            "123e4567-e89b-12d3-a456-426614174000",
+        ]
+    );
+}
+
+#[test]
 fn window_name_prefers_agent_path_leaf() {
     let thread_id = ThreadId::new();
     let source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {

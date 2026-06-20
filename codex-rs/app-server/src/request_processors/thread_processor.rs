@@ -3,6 +3,7 @@ use crate::error_code::method_not_found;
 use crate::tmux_subagents::TmuxSubagentLaunchRequest;
 use crate::tmux_subagents::TmuxSubagentLauncher;
 use crate::tmux_subagents::is_thread_spawn_subagent;
+use codex_app_server_protocol::ClientTerminalContext;
 use codex_app_server_protocol::SelectedCapabilityRoot;
 use codex_extension_api::ExtensionDataInit;
 use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS;
@@ -2459,6 +2460,16 @@ impl ThreadRequestProcessor {
             .await;
     }
 
+    pub(crate) async fn connection_terminal_context_updated(
+        &self,
+        connection_id: ConnectionId,
+        terminal_context: ClientTerminalContext,
+    ) {
+        self.thread_state_manager
+            .connection_terminal_context_updated(connection_id, terminal_context)
+            .await;
+    }
+
     pub(crate) async fn connection_closed(&self, connection_id: ConnectionId) {
         let thread_ids = self
             .thread_state_manager
@@ -2503,6 +2514,24 @@ impl ThreadRequestProcessor {
                     .await
                     .experimental_raw_events;
             }
+            let tmux_connection_ids =
+                if let Some(parent_thread_id) = config_snapshot.parent_thread_id {
+                    let parent_connection_ids = self
+                        .thread_state_manager
+                        .subscribed_connection_ids(parent_thread_id)
+                        .await;
+                    if parent_connection_ids.is_empty() {
+                        connection_ids.clone()
+                    } else {
+                        parent_connection_ids
+                    }
+                } else {
+                    connection_ids.clone()
+                };
+            let parent_tmux = self
+                .thread_state_manager
+                .first_tmux_context_for_connections(&tmux_connection_ids)
+                .await;
             if let Some(launcher) = self.tmux_subagent_launcher.as_ref()
                 && is_thread_spawn_subagent(&config_snapshot.session_source)
                 && let Err(err) = launcher
@@ -2510,6 +2539,7 @@ impl ThreadRequestProcessor {
                         thread_id,
                         cwd: config_snapshot.cwd().to_path_buf(),
                         session_source: config_snapshot.session_source.clone(),
+                        parent_tmux,
                     })
                     .await
             {

@@ -1405,7 +1405,7 @@ macro_rules! client_notification_definitions {
     (
         $(
             $(#[$variant_meta:meta])*
-            $variant:ident $( ( $payload:ty ) )?
+            $variant:ident $(=> $wire:literal)? $( ( $payload:ty ) )?
         ),* $(,)?
     ) => {
         #[derive(Serialize, Deserialize, Debug, Clone, JsonSchema, TS, Display)]
@@ -1414,14 +1414,24 @@ macro_rules! client_notification_definitions {
         pub enum ClientNotification {
             $(
                 $(#[$variant_meta])*
+                $(#[serde(rename = $wire)] #[ts(rename = $wire)] #[strum(serialize = $wire)])?
                 $variant $( ( $payload ) )?,
             )*
         }
 
+        impl TryFrom<JSONRPCNotification> for ClientNotification {
+            type Error = serde_json::Error;
+
+            fn try_from(value: JSONRPCNotification) -> Result<Self, serde_json::Error> {
+                serde_json::from_value(serde_json::to_value(value)?)
+            }
+        }
+
+        #[allow(clippy::vec_init_then_push)]
         pub fn export_client_notification_schemas(
             _out_dir: &::std::path::Path,
         ) -> ::anyhow::Result<Vec<GeneratedSchema>> {
-            let schemas = Vec::new();
+            let mut schemas = Vec::new();
             $( $(schemas.push(crate::export::write_json_schema::<$payload>(_out_dir, stringify!($payload))?);)? )*
             Ok(schemas)
         }
@@ -1691,6 +1701,7 @@ server_notification_definitions! {
 
 client_notification_definitions! {
     Initialized,
+    ClientTerminalContextUpdated => "client/terminalContextUpdated" (v1::ClientTerminalContextUpdatedNotification),
 }
 
 #[cfg(test)]
@@ -2298,6 +2309,36 @@ mod tests {
         assert_eq!(
             json!({
                 "method": "initialized",
+            }),
+            serde_json::to_value(&notification)?,
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn serialize_client_terminal_context_notification() -> Result<()> {
+        let notification = ClientNotification::ClientTerminalContextUpdated(
+            v1::ClientTerminalContextUpdatedNotification {
+                terminal_context: v1::ClientTerminalContext {
+                    tmux: Some(v1::ClientTmuxContext {
+                        pane_id: "%7".to_string(),
+                        socket_path: Some(PathBuf::from("/tmp/tmux-1000/default")),
+                    }),
+                },
+            },
+        );
+
+        assert_eq!(
+            json!({
+                "method": "client/terminalContextUpdated",
+                "params": {
+                    "terminalContext": {
+                        "tmux": {
+                            "paneId": "%7",
+                            "socketPath": "/tmp/tmux-1000/default"
+                        }
+                    }
+                }
             }),
             serde_json::to_value(&notification)?,
         );

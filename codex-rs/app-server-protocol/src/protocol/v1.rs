@@ -40,6 +40,31 @@ pub struct ClientInfo {
     pub version: String,
 }
 
+/// Client terminal details that are not part of thread state, but can help the
+/// app-server integrate spawned helper UI with the user's current terminal.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientTerminalContext {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub tmux: Option<ClientTmuxContext>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientTmuxContext {
+    pub pane_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub socket_path: Option<PathBuf>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientTerminalContextUpdatedNotification {
+    pub terminal_context: ClientTerminalContext,
+}
+
 /// Client-declared capabilities negotiated during initialize.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]

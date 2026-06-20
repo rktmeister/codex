@@ -694,17 +694,38 @@ impl MessageProcessor {
         .await;
     }
 
-    pub(crate) async fn process_notification(&self, notification: JSONRPCNotification) {
-        // Currently, we do not expect to receive any notifications from the
-        // client, so we just log them.
-        tracing::info!("<- notification: {:?}", notification);
+    pub(crate) async fn process_notification(
+        &self,
+        connection_id: ConnectionId,
+        notification: JSONRPCNotification,
+    ) {
+        match ClientNotification::try_from(notification.clone()) {
+            Ok(ClientNotification::ClientTerminalContextUpdated(params)) => {
+                self.thread_processor
+                    .connection_terminal_context_updated(connection_id, params.terminal_context)
+                    .await;
+            }
+            Ok(ClientNotification::Initialized) => {}
+            Err(err) => {
+                tracing::info!(%err, "<- unknown notification: {:?}", notification);
+            }
+        }
     }
 
     /// Handles typed notifications from in-process clients.
-    pub(crate) async fn process_client_notification(&self, notification: ClientNotification) {
-        // Currently, we do not expect to receive any typed notifications from
-        // in-process clients, so we just log them.
-        tracing::info!("<- typed notification: {:?}", notification);
+    pub(crate) async fn process_client_notification(
+        &self,
+        connection_id: ConnectionId,
+        notification: ClientNotification,
+    ) {
+        match notification {
+            ClientNotification::ClientTerminalContextUpdated(params) => {
+                self.thread_processor
+                    .connection_terminal_context_updated(connection_id, params.terminal_context)
+                    .await;
+            }
+            ClientNotification::Initialized => {}
+        }
     }
 
     async fn run_request_with_context<F>(
@@ -743,6 +764,7 @@ impl MessageProcessor {
                 connection_id,
                 ConnectionCapabilities {
                     request_attestation,
+                    ..Default::default()
                 },
             )
             .await;
@@ -857,6 +879,7 @@ impl MessageProcessor {
                         connection_id,
                         ConnectionCapabilities {
                             request_attestation: session.request_attestation(),
+                            ..Default::default()
                         },
                     )
                     .await;

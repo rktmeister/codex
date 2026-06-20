@@ -32,6 +32,8 @@ pub use codex_app_server_client::RemoteAppServerEndpoint;
 use codex_app_server_protocol::Account as AppServerAccount;
 use codex_app_server_protocol::AskForApproval;
 use codex_app_server_protocol::AuthMode as AppServerAuthMode;
+use codex_app_server_protocol::ClientTerminalContext;
+use codex_app_server_protocol::ClientTmuxContext;
 use codex_app_server_protocol::ConfigWarningNotification;
 use codex_app_server_protocol::Thread as AppServerThread;
 use codex_app_server_protocol::ThreadListCwdFilter;
@@ -403,11 +405,33 @@ async fn connect_remote_app_server(
         experimental_api: true,
         mcp_server_openai_form_elicitation: false,
         opt_out_notification_methods: Vec::new(),
+        terminal_context: detect_client_terminal_context(),
         channel_capacity: DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
     })
     .await
     .wrap_err("failed to connect to remote app server")?;
     Ok(AppServerClient::Remote(app_server))
+}
+
+fn detect_client_terminal_context() -> Option<ClientTerminalContext> {
+    let pane_id = std::env::var("TMUX_PANE")
+        .ok()
+        .filter(|value| !value.is_empty())?;
+    Some(ClientTerminalContext {
+        tmux: Some(ClientTmuxContext {
+            pane_id,
+            socket_path: tmux_socket_path_from_env(std::env::var("TMUX").ok().as_deref()),
+        }),
+    })
+}
+
+fn tmux_socket_path_from_env(tmux: Option<&str>) -> Option<PathBuf> {
+    let (socket_path, _rest) = tmux?.split_once(',')?;
+    if socket_path.is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(socket_path))
+    }
 }
 
 #[cfg(unix)]
@@ -2028,6 +2052,16 @@ mod tests {
             .expect("spawn large-stack test thread")
             .join()
             .expect("large-stack test thread panicked")
+    }
+
+    #[test]
+    fn tmux_socket_path_from_env_uses_path_before_first_comma() {
+        assert_eq!(
+            tmux_socket_path_from_env(Some("/tmp/tmux-1000/default,1234,0")),
+            Some(PathBuf::from("/tmp/tmux-1000/default"))
+        );
+        assert_eq!(tmux_socket_path_from_env(Some("")), None);
+        assert_eq!(tmux_socket_path_from_env(None), None);
     }
 
     async fn build_config(temp_dir: &TempDir) -> std::io::Result<Config> {

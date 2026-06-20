@@ -25,6 +25,8 @@ use crate::request_method_name;
 use codex_app_server_protocol::ClientInfo;
 use codex_app_server_protocol::ClientNotification;
 use codex_app_server_protocol::ClientRequest;
+use codex_app_server_protocol::ClientTerminalContext;
+use codex_app_server_protocol::ClientTerminalContextUpdatedNotification;
 use codex_app_server_protocol::InitializeCapabilities;
 use codex_app_server_protocol::InitializeParams;
 use codex_app_server_protocol::JSONRPCError;
@@ -88,6 +90,7 @@ pub struct RemoteAppServerConnectArgs {
     pub experimental_api: bool,
     pub mcp_server_openai_form_elicitation: bool,
     pub opt_out_notification_methods: Vec<String>,
+    pub terminal_context: Option<ClientTerminalContext>,
     pub channel_capacity: usize,
 }
 impl RemoteAppServerConnectArgs {
@@ -166,6 +169,7 @@ impl RemoteAppServerClient {
     pub async fn connect(args: RemoteAppServerConnectArgs) -> IoResult<Self> {
         let channel_capacity = args.channel_capacity.max(1);
         let initialize_params = args.initialize_params();
+        let terminal_context = args.terminal_context.clone();
         match args.endpoint {
             RemoteAppServerEndpoint::WebSocket {
                 websocket_url,
@@ -173,13 +177,25 @@ impl RemoteAppServerClient {
             } => {
                 let (endpoint, stream) =
                     connect_websocket_endpoint(websocket_url, auth_token).await?;
-                Self::connect_with_stream(channel_capacity, endpoint, stream, initialize_params)
-                    .await
+                Self::connect_with_stream(
+                    channel_capacity,
+                    endpoint,
+                    stream,
+                    initialize_params,
+                    terminal_context,
+                )
+                .await
             }
             RemoteAppServerEndpoint::UnixSocket { socket_path } => {
                 let (endpoint, stream) = connect_unix_socket_endpoint(socket_path).await?;
-                Self::connect_with_stream(channel_capacity, endpoint, stream, initialize_params)
-                    .await
+                Self::connect_with_stream(
+                    channel_capacity,
+                    endpoint,
+                    stream,
+                    initialize_params,
+                    terminal_context,
+                )
+                .await
             }
         }
     }
@@ -197,6 +213,7 @@ impl RemoteAppServerClient {
         endpoint: String,
         stream: WebSocketStream<S>,
         initialize_params: InitializeParams,
+        terminal_context: Option<ClientTerminalContext>,
     ) -> IoResult<Self>
     where
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
@@ -206,6 +223,7 @@ impl RemoteAppServerClient {
             &mut stream,
             &endpoint,
             initialize_params,
+            terminal_context,
             INITIALIZE_TIMEOUT,
         )
         .await?;
@@ -795,6 +813,7 @@ async fn initialize_remote_connection<S>(
     stream: &mut WebSocketStream<S>,
     endpoint: &str,
     params: InitializeParams,
+    terminal_context: Option<ClientTerminalContext>,
     initialize_timeout: Duration,
 ) -> IoResult<(Vec<AppServerEvent>, Option<String>, Option<String>)>
 where
@@ -931,6 +950,19 @@ where
         endpoint,
     )
     .await?;
+
+    if let Some(terminal_context) = terminal_context {
+        write_jsonrpc_message(
+            stream,
+            JSONRPCMessage::Notification(jsonrpc_notification_from_client_notification(
+                ClientNotification::ClientTerminalContextUpdated(
+                    ClientTerminalContextUpdatedNotification { terminal_context },
+                ),
+            )),
+            endpoint,
+        )
+        .await?;
+    }
 
     Ok((pending_events, server_version, codex_home))
 }

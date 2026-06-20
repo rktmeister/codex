@@ -1,4 +1,5 @@
 use crate::transport::AppServerTransport;
+use codex_app_server_protocol::ClientTmuxContext;
 use codex_arg0::Arg0DispatchPaths;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::SessionSource;
@@ -49,6 +50,7 @@ pub(crate) struct TmuxSubagentLaunchRequest {
     pub(crate) thread_id: ThreadId,
     pub(crate) cwd: PathBuf,
     pub(crate) session_source: SessionSource,
+    pub(crate) parent_tmux: Option<ClientTmuxContext>,
 }
 
 impl TmuxSubagentLauncher {
@@ -110,12 +112,57 @@ impl TmuxSubagentLauncher {
     }
 
     async fn launch_subagent_once(&self, request: &TmuxSubagentLaunchRequest) -> io::Result<()> {
-        let session_name = session_name_for_cwd(&request.cwd);
         let window_name = window_name_for_subagent(&request.session_source, request.thread_id);
+        if let Some(parent_tmux) = request.parent_tmux.as_ref() {
+            return self
+                .launch_subagent_in_parent_tmux(request, parent_tmux, &window_name)
+                .await;
+        }
+
+        self.launch_subagent_in_detached_session(request, &window_name)
+            .await
+    }
+
+    async fn launch_subagent_in_parent_tmux(
+        &self,
+        request: &TmuxSubagentLaunchRequest,
+        parent_tmux: &ClientTmuxContext,
+        window_name: &str,
+    ) -> io::Result<()> {
+        let session_target = tmux_parent_session_target(parent_tmux).await?;
+        let args = tmux_parent_window_args(
+            &session_target,
+            window_name,
+            &self.codex_exe,
+            &self.remote_endpoint,
+            &request.cwd,
+            request.thread_id,
+        );
+        let status = tmux_command(Some(parent_tmux))
+            .args(&args)
+            .stdin(Stdio::null())
+            .status()
+            .await?;
+        ensure_status(status, args.first().map(String::as_str).unwrap_or("tmux"))?;
+        info!(
+            thread_id = %request.thread_id,
+            tmux_target = %session_target,
+            tmux_window = %window_name,
+            "launched tmux subagent observer in parent tmux session"
+        );
+        Ok(())
+    }
+
+    async fn launch_subagent_in_detached_session(
+        &self,
+        request: &TmuxSubagentLaunchRequest,
+        window_name: &str,
+    ) -> io::Result<()> {
+        let session_name = session_name_for_cwd(&request.cwd);
         let session_exists = tmux_has_session(&session_name).await?;
         let args = tmux_launch_args(
             &session_name,
-            &window_name,
+            window_name,
             &self.codex_exe,
             &self.remote_endpoint,
             &request.cwd,
@@ -183,7 +230,7 @@ async fn ensure_tmux_available() -> io::Result<()> {
 }
 
 async fn tmux_has_session(session_name: &str) -> io::Result<bool> {
-    let status = Command::new("tmux")
+    let status = tmux_command(/*parent_tmux*/ None)
         .arg("has-session")
         .arg("-t")
         .arg(session_name)
@@ -202,6 +249,38 @@ fn ensure_status(status: std::process::ExitStatus, command_name: &str) -> io::Re
         Err(io::Error::other(format!(
             "`tmux {command_name}` exited with {status}"
         )))
+    }
+}
+
+fn tmux_command(parent_tmux: Option<&ClientTmuxContext>) -> Command {
+    let mut command = Command::new("tmux");
+    if let Some(socket_path) = parent_tmux.and_then(|tmux| tmux.socket_path.as_ref()) {
+        command.arg("-S").arg(socket_path);
+    }
+    command
+}
+
+async fn tmux_parent_session_target(parent_tmux: &ClientTmuxContext) -> io::Result<String> {
+    let output = tmux_command(Some(parent_tmux))
+        .args([
+            "display-message",
+            "-t",
+            parent_tmux.pane_id.as_str(),
+            "-p",
+            "#{session_id}:",
+        ])
+        .stdin(Stdio::null())
+        .output()
+        .await?;
+    ensure_status(output.status, "display-message")?;
+    let target = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if target.is_empty() {
+        Err(io::Error::new(
+            ErrorKind::InvalidData,
+            "tmux did not report a parent session id",
+        ))
+    } else {
+        Ok(target)
     }
 }
 
@@ -248,6 +327,37 @@ fn tmux_launch_args(
         thread_id,
     ]);
     args
+}
+
+fn tmux_parent_window_args(
+    session_target: &str,
+    window_name: &str,
+    codex_exe: &Path,
+    remote_endpoint: &str,
+    cwd: &Path,
+    thread_id: ThreadId,
+) -> Vec<String> {
+    let cwd = cwd.to_string_lossy().to_string();
+    let codex_exe = codex_exe.to_string_lossy().to_string();
+    let thread_id = thread_id.to_string();
+    vec![
+        "new-window".to_string(),
+        "-d".to_string(),
+        "-t".to_string(),
+        session_target.to_string(),
+        "-n".to_string(),
+        window_name.to_string(),
+        "-c".to_string(),
+        cwd.clone(),
+        "--".to_string(),
+        codex_exe,
+        "--remote".to_string(),
+        remote_endpoint.to_string(),
+        "-C".to_string(),
+        cwd,
+        "resume".to_string(),
+        thread_id,
+    ]
 }
 
 fn session_name_for_cwd(cwd: &Path) -> String {

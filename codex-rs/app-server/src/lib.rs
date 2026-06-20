@@ -1099,7 +1099,9 @@ pub async fn run_main_with_transport_options(
                                             warn!("dropping notification from unknown connection: {connection_id:?}");
                                             continue;
                                         }
-                                        processor.process_notification(notification).await;
+                                        processor
+                                            .process_notification(connection_id, notification)
+                                            .await;
                                     }
                                     JSONRPCMessage::Error(err) => {
                                         if !connections.contains_key(&connection_id) {

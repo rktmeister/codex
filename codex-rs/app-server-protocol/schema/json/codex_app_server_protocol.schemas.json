@@ -195,6 +195,26 @@
           ],
           "title": "InitializedNotification",
           "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
+                "client/terminalContextUpdated"
+              ],
+              "title": "Client/terminalContextUpdatedNotificationMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/ClientTerminalContextUpdatedNotification"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "title": "Client/terminalContextUpdatedNotification",
+          "type": "object"
         }
       ],
       "title": "ClientNotification"
@@ -2268,6 +2288,50 @@
         }
       ],
       "title": "ClientRequest"
+    },
+    "ClientTerminalContext": {
+      "description": "Client terminal details that are not part of thread state, but can help the app-server integrate spawned helper UI with the user's current terminal.",
+      "properties": {
+        "tmux": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ClientTmuxContext"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "ClientTerminalContextUpdatedNotification": {
+      "properties": {
+        "terminalContext": {
+          "$ref": "#/definitions/ClientTerminalContext"
+        }
+      },
+      "required": [
+        "terminalContext"
+      ],
+      "type": "object"
+    },
+    "ClientTmuxContext": {
+      "properties": {
+        "paneId": {
+          "type": "string"
+        },
+        "socketPath": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "paneId"
+      ],
+      "type": "object"
     },
     "CommandExecutionApprovalDecision": {
       "oneOf": [
