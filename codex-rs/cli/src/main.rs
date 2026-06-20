@@ -1,6 +1,7 @@
 use clap::Args;
 use clap::CommandFactory;
 use clap::Parser;
+use clap::ValueEnum;
 use clap_complete::Shell;
 use clap_complete::generate;
 use codex_app_server_daemon::BootstrapOptions as AppServerBootstrapOptions;
@@ -547,6 +548,10 @@ struct AppServerCommand {
     #[arg(long = "tmux-subagents", hide = true)]
     tmux_subagents: bool,
 
+    /// Controls when tmux windows are opened for app-server subagent threads.
+    #[arg(long = "tmux-subagents-mode", hide = true, value_enum)]
+    tmux_subagents_mode: Option<AppServerTmuxSubagentsMode>,
+
     /// Controls whether analytics are enabled by default.
     ///
     /// Analytics are disabled by default for app-server. Users have to explicitly opt in
@@ -567,6 +572,24 @@ struct AppServerCommand {
 
     #[command(flatten)]
     auth: codex_app_server::AppServerWebsocketAuthArgs,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[value(rename_all = "kebab-case")]
+enum AppServerTmuxSubagentsMode {
+    ParentContext,
+    Always,
+}
+
+impl AppServerTmuxSubagentsMode {
+    fn into_options(self) -> codex_app_server::TmuxSubagentOptions {
+        match self {
+            AppServerTmuxSubagentsMode::ParentContext => {
+                codex_app_server::TmuxSubagentOptions::parent_context()
+            }
+            AppServerTmuxSubagentsMode::Always => codex_app_server::TmuxSubagentOptions::always(),
+        }
+    }
 }
 
 #[derive(Debug, Parser)]
@@ -1150,6 +1173,7 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
                 stdio,
                 remote_control,
                 tmux_subagents,
+                tmux_subagents_mode,
                 analytics_default_enabled,
                 auth,
             } = app_server_cli;
@@ -1181,8 +1205,10 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
                                 codex_app_server::RemoteControlStartupMode::ResolvePersisted
                             }
                         },
-                        tmux_subagents: if tmux_subagents {
-                            codex_app_server::TmuxSubagentOptions::window()
+                        tmux_subagents: if tmux_subagents || tmux_subagents_mode.is_some() {
+                            tmux_subagents_mode
+                                .unwrap_or(AppServerTmuxSubagentsMode::ParentContext)
+                                .into_options()
                         } else {
                             codex_app_server::TmuxSubagentOptions::default()
                         },
@@ -3601,6 +3627,17 @@ mod tests {
     fn app_server_tmux_subagents_flag_enables_tmux_subagents() {
         let enabled = app_server_from_args(["codex", "app-server", "--tmux-subagents"].as_ref());
         assert!(enabled.tmux_subagents);
+    }
+
+    #[test]
+    fn app_server_tmux_subagents_mode_enables_tmux_subagents() {
+        let enabled = app_server_from_args(
+            ["codex", "app-server", "--tmux-subagents-mode", "always"].as_ref(),
+        );
+        assert_eq!(
+            enabled.tmux_subagents_mode,
+            Some(AppServerTmuxSubagentsMode::Always)
+        );
     }
 
     #[test]

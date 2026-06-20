@@ -1,4 +1,5 @@
 use super::AppServerArgs;
+use super::AppServerTmuxSubagentsMode;
 use clap::Parser;
 use pretty_assertions::assert_eq;
 use toml::Value as TomlValue;
@@ -33,5 +34,22 @@ fn app_server_accepts_cli_config_overrides() {
                 TomlValue::String("read-only".to_string()),
             ),
         ]
+    );
+}
+
+#[test]
+fn app_server_accepts_tmux_subagents_mode() {
+    let args = AppServerArgs::try_parse_from([
+        "codex-app-server",
+        "--listen",
+        "off",
+        "--tmux-subagents-mode",
+        "always",
+    ])
+    .expect("parse app-server args");
+
+    assert_eq!(
+        args.tmux_subagents_mode,
+        Some(AppServerTmuxSubagentsMode::Always)
     );
 }

@@ -1,4 +1,5 @@
 use clap::Parser;
+use clap::ValueEnum;
 use codex_app_server::AppServerRuntimeOptions;
 use codex_app_server::AppServerTransport;
 use codex_app_server::AppServerWebsocketAuthArgs;
@@ -61,6 +62,26 @@ struct AppServerArgs {
     /// Open tmux windows for app-server subagent threads.
     #[arg(long = "tmux-subagents", hide = true)]
     tmux_subagents: bool,
+
+    /// Controls when tmux windows are opened for app-server subagent threads.
+    #[arg(long = "tmux-subagents-mode", hide = true, value_enum)]
+    tmux_subagents_mode: Option<AppServerTmuxSubagentsMode>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[value(rename_all = "kebab-case")]
+enum AppServerTmuxSubagentsMode {
+    ParentContext,
+    Always,
+}
+
+impl AppServerTmuxSubagentsMode {
+    fn into_options(self) -> TmuxSubagentOptions {
+        match self {
+            AppServerTmuxSubagentsMode::ParentContext => TmuxSubagentOptions::parent_context(),
+            AppServerTmuxSubagentsMode::Always => TmuxSubagentOptions::always(),
+        }
+    }
 }
 
 fn main() -> anyhow::Result<()> {
@@ -76,6 +97,7 @@ fn main() -> anyhow::Result<()> {
             disable_plugin_startup_tasks_for_tests,
             remote_control,
             tmux_subagents,
+            tmux_subagents_mode,
         } = AppServerArgs::parse();
         let loader_overrides = if disable_managed_config_from_debug_env() {
             LoaderOverrides::without_managed_config_for_tests()
@@ -97,8 +119,10 @@ fn main() -> anyhow::Result<()> {
                 (false, true) => codex_app_server::RemoteControlStartupMode::DisabledEphemeral,
                 (false, false) => codex_app_server::RemoteControlStartupMode::ResolvePersisted,
             };
-        if tmux_subagents {
-            runtime_options.tmux_subagents = TmuxSubagentOptions::window();
+        if tmux_subagents || tmux_subagents_mode.is_some() {
+            runtime_options.tmux_subagents = tmux_subagents_mode
+                .unwrap_or(AppServerTmuxSubagentsMode::ParentContext)
+                .into_options();
         }
 
         run_main_with_transport_options(

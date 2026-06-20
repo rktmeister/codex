@@ -26,6 +26,49 @@ fn remote_endpoint_rejects_stdio_transport() {
 }
 
 #[test]
+fn tmux_subagent_options_default_to_parent_context_when_enabled() {
+    assert!(!TmuxSubagentOptions::default().is_enabled());
+
+    let parent_context = TmuxSubagentOptions::parent_context();
+    assert!(parent_context.is_enabled());
+    assert!(!parent_context.allows_detached_fallback());
+
+    let always = TmuxSubagentOptions::always();
+    assert!(always.is_enabled());
+    assert!(always.allows_detached_fallback());
+}
+
+#[tokio::test]
+async fn parent_context_without_parent_tmux_skips_without_marking_thread_launched() {
+    let launcher = TmuxSubagentLauncher {
+        options: TmuxSubagentOptions::parent_context(),
+        codex_exe: PathBuf::from("/usr/local/bin/codex"),
+        remote_endpoint: "unix:///tmp/codex.sock".to_string(),
+        launched_threads: Arc::new(Mutex::new(HashSet::new())),
+    };
+    let thread_id =
+        ThreadId::from_string("123e4567-e89b-12d3-a456-426614174000").expect("valid thread id");
+
+    launcher
+        .launch_subagent(TmuxSubagentLaunchRequest {
+            thread_id,
+            cwd: PathBuf::from("/work/repo"),
+            session_source: SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: ThreadId::new(),
+                depth: 1,
+                agent_path: None,
+                agent_nickname: Some("Pascal".to_string()),
+                agent_role: None,
+            }),
+            parent_tmux: None,
+        })
+        .await
+        .expect("missing parent context should skip cleanly");
+
+    assert!(launcher.launched_threads.lock().await.is_empty());
+}
+
+#[test]
 fn launch_args_create_session_for_first_subagent_window() {
     let thread_id =
         ThreadId::from_string("123e4567-e89b-12d3-a456-426614174000").expect("valid thread id");

@@ -16,31 +16,43 @@ use tokio::sync::Mutex;
 use tracing::info;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-enum TmuxSubagentMode {
+enum TmuxSubagentPolicy {
     #[default]
     Disabled,
-    Window,
+    ParentContext,
+    Always,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TmuxSubagentOptions {
-    mode: TmuxSubagentMode,
+    policy: TmuxSubagentPolicy,
 }
 
 impl TmuxSubagentOptions {
-    pub fn window() -> Self {
+    pub fn parent_context() -> Self {
         Self {
-            mode: TmuxSubagentMode::Window,
+            policy: TmuxSubagentPolicy::ParentContext,
+        }
+    }
+
+    pub fn always() -> Self {
+        Self {
+            policy: TmuxSubagentPolicy::Always,
         }
     }
 
     pub(crate) fn is_enabled(self) -> bool {
-        !matches!(self.mode, TmuxSubagentMode::Disabled)
+        !matches!(self.policy, TmuxSubagentPolicy::Disabled)
+    }
+
+    fn allows_detached_fallback(self) -> bool {
+        matches!(self.policy, TmuxSubagentPolicy::Always)
     }
 }
 
 #[derive(Clone)]
 pub(crate) struct TmuxSubagentLauncher {
+    options: TmuxSubagentOptions,
     codex_exe: PathBuf,
     remote_endpoint: String,
     launched_threads: Arc<Mutex<HashSet<ThreadId>>>,
@@ -84,6 +96,7 @@ impl TmuxSubagentLauncher {
             })?;
 
         Ok(Some(Self {
+            options,
             codex_exe,
             remote_endpoint,
             launched_threads: Arc::new(Mutex::new(HashSet::new())),
@@ -101,26 +114,47 @@ impl TmuxSubagentLauncher {
             }
         }
 
-        if let Err(err) = self.launch_subagent_once(&request).await {
-            self.launched_threads
-                .lock()
-                .await
-                .remove(&request.thread_id);
-            return Err(err);
+        match self.launch_subagent_once(&request).await {
+            Ok(TmuxSubagentLaunchOutcome::Launched) => {}
+            Ok(TmuxSubagentLaunchOutcome::SkippedNoParentContext) => {
+                self.launched_threads
+                    .lock()
+                    .await
+                    .remove(&request.thread_id);
+            }
+            Err(err) => {
+                self.launched_threads
+                    .lock()
+                    .await
+                    .remove(&request.thread_id);
+                return Err(err);
+            }
         }
         Ok(())
     }
 
-    async fn launch_subagent_once(&self, request: &TmuxSubagentLaunchRequest) -> io::Result<()> {
+    async fn launch_subagent_once(
+        &self,
+        request: &TmuxSubagentLaunchRequest,
+    ) -> io::Result<TmuxSubagentLaunchOutcome> {
         let window_name = window_name_for_subagent(&request.session_source, request.thread_id);
         if let Some(parent_tmux) = request.parent_tmux.as_ref() {
-            return self
-                .launch_subagent_in_parent_tmux(request, parent_tmux, &window_name)
-                .await;
+            self.launch_subagent_in_parent_tmux(request, parent_tmux, &window_name)
+                .await?;
+            return Ok(TmuxSubagentLaunchOutcome::Launched);
+        }
+
+        if !self.options.allows_detached_fallback() {
+            tracing::debug!(
+                thread_id = %request.thread_id,
+                "skipping tmux subagent observer because no parent tmux context is available"
+            );
+            return Ok(TmuxSubagentLaunchOutcome::SkippedNoParentContext);
         }
 
         self.launch_subagent_in_detached_session(request, &window_name)
-            .await
+            .await?;
+        Ok(TmuxSubagentLaunchOutcome::Launched)
     }
 
     async fn launch_subagent_in_parent_tmux(
@@ -183,6 +217,12 @@ impl TmuxSubagentLauncher {
         );
         Ok(())
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TmuxSubagentLaunchOutcome {
+    Launched,
+    SkippedNoParentContext,
 }
 
 pub(crate) fn is_thread_spawn_subagent(session_source: &SessionSource) -> bool {
