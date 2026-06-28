@@ -16,10 +16,9 @@
 //! 3.  We do **not** walk past the project root.
 
 use crate::config::Config;
-use crate::context::ContextualUserFragment;
 use crate::context::UserInstructions as ContextUserInstructions;
 use crate::environment_selection::TurnEnvironmentSnapshot;
-use codex_app_server_protocol::ConfigLayerSource;
+use codex_config::ConfigLayerSource;
 use codex_config::ConfigLayerStackOrdering;
 use codex_config::default_project_root_markers;
 use codex_config::merge_toml_values;
@@ -27,6 +26,8 @@ use codex_config::project_root_markers_from_config;
 use codex_exec_server::ExecutorFileSystem;
 use codex_extension_api::UserInstructions;
 use codex_features::Feature;
+use codex_file_system::FindUpErrorPolicy;
+use codex_file_system::find_nearest_ancestor_with_markers;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path_uri::PathUri;
 use std::io;
@@ -57,25 +58,15 @@ async fn discover_project_root_for_cwd(
     fs: &dyn ExecutorFileSystem,
 ) -> io::Result<PathUri> {
     let project_root_markers = project_root_markers_for_config(config);
-    if !project_root_markers.is_empty() {
-        for ancestor in cwd.ancestors() {
-            for marker in &project_root_markers {
-                let marker_path = ancestor
-                    .join(marker)
-                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
-                let marker_exists = match fs.get_metadata(&marker_path, /*sandbox*/ None).await {
-                    Ok(_) => true,
-                    Err(err) if err.kind() == io::ErrorKind::NotFound => false,
-                    Err(err) => return Err(err),
-                };
-                if marker_exists {
-                    return Ok(ancestor.clone());
-                }
-            }
-        }
-    }
-
-    Ok(cwd.clone())
+    Ok(find_nearest_ancestor_with_markers(
+        fs,
+        cwd,
+        project_root_markers,
+        FindUpErrorPolicy::Propagate,
+        /*sandbox*/ None,
+    )
+    .await?
+    .unwrap_or_else(|| cwd.clone()))
 }
 
 fn project_root_markers_for_config(config: &Config) -> Vec<String> {
@@ -273,25 +264,24 @@ async fn agents_md_paths(
         vec![dir]
     };
 
-    let mut found: Vec<PathUri> = Vec::new();
+    let mut found = Vec::new();
     let candidate_filenames = candidate_filenames(config);
-    for d in search_dirs {
+    for directory in search_dirs {
         for name in &candidate_filenames {
-            let candidate = d
+            let candidate = directory
                 .join(name)
                 .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
             match fs.get_metadata(&candidate, /*sandbox*/ None).await {
-                Ok(md) if md.is_file => {
+                Ok(metadata) if metadata.is_file => {
                     found.push(candidate);
                     break;
                 }
                 Ok(_) => {}
-                Err(err) if err.kind() == io::ErrorKind::NotFound => continue,
+                Err(err) if err.kind() == io::ErrorKind::NotFound => {}
                 Err(err) => return Err(err),
             }
         }
     }
-
     Ok(found)
 }
 
@@ -453,8 +443,7 @@ impl LoadedAgentsMd {
         output
     }
 
-    /// Returns the complete model-visible contextual user fragment.
-    pub(crate) fn render(&self) -> String {
+    pub(crate) fn contextual_user_fragment(&self) -> ContextUserInstructions {
         // One contributing project environment retains the legacy cwd wrapper. With two or more,
         // the body labels every contributing environment itself, so the outer cwd is omitted.
         let directory = if self.has_multiple_project_environments() {
@@ -467,12 +456,6 @@ impl LoadedAgentsMd {
             directory,
             text: self.text(),
         }
-        .render()
-    }
-
-    /// Returns the host-provided user instructions.
-    pub(crate) fn user_instructions(&self) -> Option<&UserInstructions> {
-        self.user_instructions.as_ref()
     }
 
     /// Returns the AGENTS.md files that supplied instruction entries.
