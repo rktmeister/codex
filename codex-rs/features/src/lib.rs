@@ -194,7 +194,7 @@ pub enum Feature {
     ///
     /// Requirements-only gate: this should be set from requirements, not user config.
     ComputerUse,
-    /// Temporary internal-only flag for PS-backed remote plugin catalog development.
+    /// Enable the PS-backed remote plugin catalog.
     RemotePlugin,
     /// Enable remote plugin sharing flows.
     PluginSharing,
@@ -1169,8 +1169,8 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::RemotePlugin,
         key: "remote_plugin",
-        stage: Stage::UnderDevelopment,
-        default_enabled: false,
+        stage: Stage::Stable,
+        default_enabled: true,
     },
     FeatureSpec {
         id: Feature::PluginSharing,
