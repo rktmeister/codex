@@ -1224,8 +1224,9 @@ fn record_items_truncates_code_mode_text_output_and_preserves_image_content() {
         status: None,
         call_id: "exec-call".to_string(),
         name: codex_code_mode::PUBLIC_TOOL_NAME.to_string(),
+        namespace: None,
         input: "text('code mode output')".to_string(),
-        metadata: None,
+        internal_chat_message_metadata_passthrough: None,
     };
     let output = ResponseItem::CustomToolCallOutput {
         id: None,
@@ -1240,7 +1241,7 @@ fn record_items_truncates_code_mode_text_output_and_preserves_image_content() {
                 detail: Some(DEFAULT_IMAGE_DETAIL),
             },
         ]),
-        metadata: None,
+        internal_chat_message_metadata_passthrough: None,
     };
 
     history.record_items([&call, &output], policy);

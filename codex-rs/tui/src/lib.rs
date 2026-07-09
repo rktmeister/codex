@@ -32,7 +32,6 @@ use codex_app_server_client::RemoteAppServerConnectArgs;
 pub use codex_app_server_client::RemoteAppServerEndpoint;
 use codex_app_server_protocol::Account as AppServerAccount;
 use codex_app_server_protocol::AskForApproval;
-use codex_app_server_protocol::AuthMode as AppServerAuthMode;
 use codex_app_server_protocol::ClientTerminalContext;
 use codex_app_server_protocol::ClientTmuxContext;
 use codex_app_server_protocol::ConfigWarningNotification;

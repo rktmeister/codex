@@ -3054,14 +3054,17 @@ async fn unrelated_thread_started_notification_does_not_enter_agent_navigation()
         ServerNotification::ThreadStarted(ThreadStartedNotification {
             thread: Thread {
                 id: unrelated_thread_id.to_string(),
+                extra: None,
                 session_id: unrelated_thread_id.to_string(),
                 forked_from_id: None,
                 parent_thread_id: None,
                 preview: "unrelated thread".to_string(),
                 ephemeral: false,
+                history_mode: Default::default(),
                 model_provider: "agent-provider".to_string(),
                 created_at: 1,
                 updated_at: 2,
+                recency_at: Some(2),
                 status: codex_app_server_protocol::ThreadStatus::Idle,
                 path: None,
                 cwd: test_path_buf("/tmp/unrelated").abs(),

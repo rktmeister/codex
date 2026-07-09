@@ -151,8 +151,11 @@ build-for-release:
     bazel build //codex-rs/cli:release_binaries
 
 # Build local release Codex CLI binary using Cargo (no Bazel required).
-build-local-release:
-    CARGO_TARGET_DIR=target-cli cargo build -p codex-cli --release
+#
+# This is a developer convenience build, not the packaging release path. Keep
+# memory bounded so it can finish on smaller hosts.
+build-local-release jobs="1":
+    CARGO_TARGET_DIR=target-cli CARGO_PROFILE_RELEASE_LTO=false CARGO_PROFILE_RELEASE_DEBUG=0 CARGO_PROFILE_RELEASE_STRIP=symbols cargo build -p codex-cli --release --jobs {{ jobs }}
     @echo "Built ./target-cli/release/codex"
 
 # Run the MCP server

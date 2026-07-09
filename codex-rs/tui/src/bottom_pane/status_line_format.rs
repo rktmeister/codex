@@ -59,7 +59,7 @@ fn status_line_segment(item: StatusLineItem, value: String) -> Vec<Span<'static>
         StatusLineItem::Permissions => labeled_segment("perm", value),
         StatusLineItem::ApprovalMode => labeled_segment("approval", value),
         StatusLineItem::RawOutput => vec![Span::from(value).dim()],
-        StatusLineItem::ThreadTitle => vec![value.into()],
+        StatusLineItem::ThreadTitle | StatusLineItem::WorkspaceHeadline => vec![value.into()],
         StatusLineItem::TaskProgress => vec![Span::from(value).dim()],
     }
 }

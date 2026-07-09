@@ -144,6 +144,7 @@ impl ToolExecutor<ToolInvocation> for PyReplHandler {
             let ToolInvocation {
                 session,
                 turn,
+                step_context,
                 cancellation_token,
                 tracker,
                 payload,
@@ -184,6 +185,7 @@ impl ToolExecutor<ToolInvocation> for PyReplHandler {
             let result = manager
                 .execute(
                     Arc::clone(&session),
+                    Arc::clone(&step_context),
                     Arc::clone(&turn),
                     cancellation_token,
                     tracker,

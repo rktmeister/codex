@@ -993,12 +993,12 @@ async fn py_repl_can_emit_images_via_canonical_and_alias_helpers() -> Result<()>
                 .map(str::to_string)
         })
         .collect::<Vec<_>>();
-    assert_eq!(
-        emitted_urls,
-        vec![
-            VALID_PNG_DATA_URL.to_string(),
-            VALID_GIF_DATA_URL.to_string(),
-        ]
+    assert_eq!(emitted_urls.len(), 2);
+    assert_eq!(emitted_urls[0], VALID_PNG_DATA_URL);
+    assert!(
+        emitted_urls[1].starts_with("data:image/png;base64,"),
+        "expected prepared GIF emit to be represented as a PNG data URL, got {}",
+        emitted_urls[1]
     );
     assert_py_repl_ok(&req, "call-1", "done");
 

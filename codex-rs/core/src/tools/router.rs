@@ -224,6 +224,7 @@ impl ToolRouter {
             call_id,
             payload,
         } = call;
+        let turn = Arc::clone(&step_context.turn);
 
         let direct_py_repl_call = tool_name.namespace.is_none()
             && matches!(tool_name.name.as_str(), "py_repl" | "py_repl_reset");
@@ -238,7 +239,6 @@ impl ToolRouter {
         }
 
         // Keep the legacy ToolInvocation.turn field tied to the same request state until handlers migrate.
-        let turn = Arc::clone(&step_context.turn);
         let invocation = ToolInvocation {
             session,
             turn,

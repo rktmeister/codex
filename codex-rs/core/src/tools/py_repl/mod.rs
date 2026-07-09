@@ -42,6 +42,7 @@ use crate::original_image_detail::normalize_output_image_detail;
 use crate::sandboxing::ExecOptions;
 use crate::sandboxing::SandboxPermissions;
 use crate::session::session::Session;
+use crate::session::step_context::StepContext;
 use crate::session::turn_context::TurnContext;
 use crate::tools::ToolRouter;
 use crate::tools::context::SharedTurnDiffTracker;
@@ -134,6 +135,7 @@ struct KernelState {
 #[derive(Clone)]
 struct ExecContext {
     session: Arc<Session>,
+    step_context: Arc<StepContext>,
     turn: Arc<TurnContext>,
     cancellation_token: CancellationToken,
     tracker: SharedTurnDiffTracker,
@@ -402,6 +404,7 @@ impl PyReplManager {
     pub(crate) async fn execute(
         &self,
         session: Arc<Session>,
+        step_context: Arc<StepContext>,
         turn: Arc<TurnContext>,
         cancellation_token: CancellationToken,
         tracker: SharedTurnDiffTracker,
@@ -446,6 +449,7 @@ impl PyReplManager {
                 req_id.clone(),
                 ExecContext {
                     session: Arc::clone(&session),
+                    step_context,
                     turn: Arc::clone(&turn),
                     cancellation_token,
                     tracker,
@@ -746,6 +750,7 @@ impl PyReplManager {
             args: vec!["-u".to_string(), kernel_path.to_string_lossy().to_string()],
             cwd: cwd.clone(),
             env,
+            managed_network: None,
             additional_permissions: None,
         };
         let options = ExecOptions {
@@ -1532,8 +1537,8 @@ impl PyReplManager {
         let manager = exec.session.services.mcp_connection_manager.load_full();
         let mcp_tools = manager.list_all_tools().await;
 
-        let router = ToolRouter::from_turn_context(
-            exec.turn.as_ref(),
+        let router = ToolRouter::from_context(
+            exec.step_context.as_ref(),
             ToolRouterParams {
                 deferred_mcp_tools: None,
                 mcp_tools: Some(mcp_tools),
@@ -1593,7 +1598,7 @@ impl PyReplManager {
         match router
             .dispatch_tool_call_with_code_mode_result(
                 Arc::clone(&exec.session),
-                Arc::clone(&exec.turn),
+                Arc::clone(&exec.step_context),
                 exec.cancellation_token.child_token(),
                 exec.tracker,
                 call,
