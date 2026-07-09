@@ -129,7 +129,11 @@ async fn managed_requirements_reject_all_remote_control_rpcs() -> Result<()> {
         codex_home.path().join("requirements.toml"),
         "allow_remote_control = false\n",
     )?;
-    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .without_auto_env()
+        .build()
+        .await?;
     timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
 
     let notification = timeout(
@@ -187,7 +191,11 @@ async fn managed_requirements_allow_remote_control_true_does_not_enable_or_block
         codex_home.path().join("requirements.toml"),
         "allow_remote_control = true\n",
     )?;
-    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .without_auto_env()
+        .build()
+        .await?;
     timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
 
     let request_id = mcp.send_remote_control_status_read_request().await?;
@@ -271,7 +279,12 @@ async fn listen_off_honors_persisted_remote_control_enable() -> Result<()> {
         })
         .await?;
 
-    let _app_server = TestAppServer::new_with_args(codex_home.path(), &["--listen", "off"]).await?;
+    let _app_server = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .without_auto_env()
+        .with_args(&["--listen", "off"])
+        .build()
+        .await?;
     let request = timeout(STARTUP_TIMEOUT, read_http_request(&listener)).await??;
     assert!(
         request
@@ -310,8 +323,12 @@ async fn listen_off_ignores_persisted_enable_when_disabled_by_requirements() -> 
         })
         .await?;
 
-    let mut app_server =
-        TestAppServer::new_with_args(codex_home.path(), &["--listen", "off"]).await?;
+    let mut app_server = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .without_auto_env()
+        .with_args(&["--listen", "off"])
+        .build()
+        .await?;
     let status = timeout(STARTUP_TIMEOUT, app_server.wait_for_exit()).await??;
     assert!(!status.success());
     timeout(Duration::from_millis(100), listener.accept())
@@ -358,8 +375,12 @@ async fn listen_off_exits_without_persisted_remote_control_enable() -> Result<()
                 .await?;
         }
 
-        let mut app_server =
-            TestAppServer::new_with_args(codex_home.path(), &["--listen", "off"]).await?;
+        let mut app_server = TestAppServer::builder()
+            .with_codex_home(codex_home.path())
+            .without_auto_env()
+            .with_args(&["--listen", "off"])
+            .build()
+            .await?;
         let status = timeout(STARTUP_TIMEOUT, app_server.wait_for_exit()).await??;
         assert!(!status.success());
     }
@@ -370,7 +391,11 @@ async fn listen_off_exits_without_persisted_remote_control_enable() -> Result<()
 async fn remote_control_disable_returns_disabled_status() -> Result<()> {
     let codex_home = TempDir::new()?;
     let _listener = configured_remote_control_listener(codex_home.path()).await?;
-    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .without_auto_env()
+        .build()
+        .await?;
     timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
 
     let request_id = mcp.send_remote_control_disable_request().await?;
@@ -391,7 +416,11 @@ async fn remote_control_disable_returns_disabled_status() -> Result<()> {
 #[tokio::test]
 async fn remote_control_status_read_returns_disabled_status() -> Result<()> {
     let codex_home = TempDir::new()?;
-    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .without_auto_env()
+        .build()
+        .await?;
     timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
 
     let request_id = mcp.send_remote_control_status_read_request().await?;
@@ -413,7 +442,11 @@ async fn remote_control_status_read_returns_disabled_status() -> Result<()> {
 async fn remote_control_enable_returns_connecting_status() -> Result<()> {
     let codex_home = TempDir::new()?;
     let mut backend = BlockingRemoteControlBackend::start(codex_home.path()).await?;
-    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .without_auto_env()
+        .build()
+        .await?;
     timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
 
     let request_id = mcp.send_remote_control_enable_request().await?;
@@ -449,7 +482,11 @@ async fn disable_waits_for_in_flight_durable_enable() -> Result<()> {
     let websocket_url = backend.websocket_url().to_string();
     let state_db =
         StateRuntime::init(codex_home.path().to_path_buf(), "test-provider".to_string()).await?;
-    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .without_auto_env()
+        .build()
+        .await?;
     timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
 
     mcp.send_remote_control_enable_request().await?;
@@ -481,7 +518,11 @@ async fn rpc_updates_durable_preference_but_ephemeral_does_not() -> Result<()> {
     let state_db =
         StateRuntime::init(codex_home.path().to_path_buf(), "test-provider".to_string()).await?;
 
-    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .without_auto_env()
+        .build()
+        .await?;
     timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
 
     let request_id = mcp.send_remote_control_enable_request().await?;
@@ -538,7 +579,11 @@ async fn rpc_updates_durable_preference_but_ephemeral_does_not() -> Result<()> {
 async fn remote_control_status_read_returns_connecting_status_after_enable() -> Result<()> {
     let codex_home = TempDir::new()?;
     let mut backend = BlockingRemoteControlBackend::start(codex_home.path()).await?;
-    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .without_auto_env()
+        .build()
+        .await?;
     timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
 
     let request_id = mcp.send_remote_control_enable_request().await?;
@@ -573,7 +618,11 @@ async fn remote_control_status_read_returns_connecting_status_after_enable() -> 
 async fn remote_control_pairing_start_returns_pairing_artifacts() -> Result<()> {
     let codex_home = TempDir::new()?;
     let mut backend = PairingRemoteControlBackend::start(codex_home.path()).await?;
-    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .without_auto_env()
+        .build()
+        .await?;
     timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
 
     let request_id = mcp.send_remote_control_enable_request().await?;
@@ -670,7 +719,11 @@ async fn remote_control_pairing_start_returns_pairing_artifacts() -> Result<()> 
 async fn pairing_start_works_after_ephemeral_enable() -> Result<()> {
     let codex_home = TempDir::new()?;
     let mut backend = PairingRemoteControlBackend::start(codex_home.path()).await?;
-    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .without_auto_env()
+        .build()
+        .await?;
     timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
     let request_id = mcp.send_remote_control_ephemeral_enable_request().await?;
     wait_for_response(&mut mcp, request_id).await?;
@@ -708,7 +761,11 @@ async fn pairing_start_works_after_ephemeral_enable() -> Result<()> {
 async fn remote_control_client_management_works_while_disabled() -> Result<()> {
     let codex_home = TempDir::new()?;
     let mut backend = ClientManagementRemoteControlBackend::start(codex_home.path()).await?;
-    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .without_auto_env()
+        .build()
+        .await?;
     timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
 
     let request_id = mcp
