@@ -636,7 +636,12 @@ impl Session {
                                 },
                             },
                         };
-                        LiveThread::resume(Arc::clone(&thread_store), params).await?
+                        LiveThread::resume(
+                            Arc::clone(&thread_store),
+                            session_configuration.history_mode,
+                            params,
+                        )
+                        .await?
                     }
                 };
                 Ok(Some(live_thread))
@@ -669,6 +674,7 @@ impl Session {
         let mcp_manager_for_mcp = Arc::clone(&mcp_manager);
         let mcp_thread_init_for_startup = &mcp_thread_init;
         let thread_extension_data_for_mcp = &thread_extension_data;
+        let mcp_originator = session_configuration.originator.clone();
         let mcp_runtime_cwd = session_configuration
             .environment_selections()
             .first()
@@ -685,6 +691,7 @@ impl Session {
                     &config_for_mcp,
                     mcp_thread_init_for_startup,
                     thread_extension_data_for_mcp,
+                    &mcp_originator,
                     /*available_environment_ids*/ &[],
                 )
                 .await;
@@ -1112,7 +1119,11 @@ impl Session {
                     config.features.enabled(Feature::EnableRequestCompression),
                     config.features.enabled(Feature::RuntimeMetrics),
                     Self::build_model_client_beta_features_header(config.as_ref()),
-                    /*item_ids_enabled*/ config.features.enabled(Feature::ItemIds),
+                    /*item_ids_enabled*/ config.features.enabled(Feature::ItemIds)
+                        || matches!(
+                            session_configuration.history_mode,
+                            ThreadHistoryMode::Paginated
+                        ),
                     /*concurrent_reasoning_summaries_enabled*/ config
                         .features
                         .enabled(Feature::ConcurrentReasoningSummaries),

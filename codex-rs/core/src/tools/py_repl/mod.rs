@@ -1571,8 +1571,7 @@ impl PyReplManager {
                         }
                     })
                 }
-                codex_tools::ToolSpec::ImageGeneration { .. }
-                | codex_tools::ToolSpec::ToolSearch { .. }
+                codex_tools::ToolSpec::ToolSearch { .. }
                 | codex_tools::ToolSpec::WebSearch { .. }
                 | codex_tools::ToolSpec::Function(_)
                 | codex_tools::ToolSpec::Freeform(_) => None,
