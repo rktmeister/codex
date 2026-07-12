@@ -5329,10 +5329,6 @@
     "model_reasoning_summary": {
       "$ref": "#/definitions/ReasoningSummary"
     },
-    "model_supports_reasoning_summaries": {
-      "description": "Override to force-enable reasoning summaries for the configured model.",
-      "type": "boolean"
-    },
     "model_verbosity": {
       "allOf": [
         {
