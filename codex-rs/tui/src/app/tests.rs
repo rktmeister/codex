@@ -1169,7 +1169,7 @@ async fn token_usage_update_refreshes_status_line_with_runtime_context_window() 
 
     assert_eq!(
         app.chat_widget.status_line_text(),
-        Some("ctx 950K window".into())
+        Some("950K window".into())
     );
 }
 
