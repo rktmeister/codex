@@ -332,7 +332,11 @@ async fn py_repl_can_invoke_builtin_tools() -> Result<()> {
         &server,
         "use py_repl to call a tool",
         "call-1",
-        "tool_out = await codex.tool(\"list_mcp_resources\", {})\nprint(tool_out[\"type\"])",
+        concat!(
+            "tool_out = await codex.tool(\"update_plan\", {",
+            "\"plan\": [{\"step\": \"test nested tool\", \"status\": \"in_progress\"}]",
+            "})\nprint(tool_out[\"type\"])"
+        ),
     )
     .await?;
 
@@ -893,7 +897,11 @@ async fn py_repl_drains_unawaited_tool_calls_before_cell_completion() -> Result<
         &server,
         "schedule nested tool work",
         "call-1",
-        "tool_task = codex.tool(\"list_mcp_resources\", {})\nprint(\"scheduled\")",
+        concat!(
+            "tool_task = codex.tool(\"update_plan\", {",
+            "\"plan\": [{\"step\": \"test unawaited tool\", \"status\": \"in_progress\"}]",
+            "})\nprint(\"scheduled\")"
+        ),
     )
     .await?;
     assert_py_repl_ok(&scheduled.single_request(), "call-1", "scheduled");

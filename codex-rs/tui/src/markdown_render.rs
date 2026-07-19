@@ -78,7 +78,11 @@ use unicode_width::UnicodeWidthChar;
 use unicode_width::UnicodeWidthStr;
 use url::Url;
 
+mod streaming;
 mod table_key_value;
+
+pub(crate) use streaming::StreamingMarkdownRender;
+pub(crate) use streaming::render_streaming_markdown_lines_with_width_and_cwd;
 
 const TABLE_COLUMN_GAP: usize = 2;
 const TABLE_CELL_PADDING: usize = 1;
@@ -344,13 +348,31 @@ pub(crate) fn render_markdown_lines_with_width_and_cwd(
     width: Option<usize>,
     cwd: Option<&Path>,
 ) -> Vec<HyperlinkLine> {
+    render_markdown_lines_with_width_cwd_and_hidden_link_destinations(
+        input,
+        width,
+        cwd,
+        &never_hide_link_destination,
+    )
+}
+
+fn never_hide_link_destination(_: &str) -> bool {
+    false
+}
+
+pub(crate) fn render_markdown_lines_with_width_cwd_and_hidden_link_destinations(
+    input: &str,
+    width: Option<usize>,
+    cwd: Option<&Path>,
+    is_hidden_link_destination: &dyn Fn(&str) -> bool,
+) -> Vec<HyperlinkLine> {
     let mut options = Options::empty();
     options.insert(Options::ENABLE_STRIKETHROUGH);
     options.insert(Options::ENABLE_TABLES);
     options.insert(Options::ENABLE_FOOTNOTES);
     options.insert(Options::ENABLE_TASKLISTS);
     let parser = DecodedTextMerge::new(Parser::new_ext(input, options).into_offset_iter());
-    let mut w = Writer::new(input, parser, width, cwd);
+    let mut w = Writer::new(input, parser, width, cwd, is_hidden_link_destination);
     w.run();
     w.text
 }
@@ -359,6 +381,7 @@ pub(crate) fn render_markdown_lines_with_width_and_cwd(
 struct LinkState {
     destination: String,
     show_destination: bool,
+    style_label: bool,
     /// Pre-rendered display text for local file links.
     ///
     /// When this is present, the markdown label is intentionally suppressed so the rendered
@@ -412,7 +435,7 @@ fn is_html_line_break(html: &str) -> bool {
 /// and an optional `TableState` for accumulating table events.  The
 /// `wrap_width` field enables width-aware line wrapping and table column
 /// allocation; when `None`, lines keep their intrinsic width.
-struct Writer<'a, I>
+struct Writer<'a, 'policy, I>
 where
     I: Iterator<Item = (Event<'a>, Range<usize>)>,
 {
@@ -434,6 +457,7 @@ where
     code_block_buffer: String,
     wrap_width: Option<usize>,
     cwd: Option<PathBuf>,
+    is_hidden_link_destination: &'policy dyn Fn(&str) -> bool,
     line_ends_with_local_link_target: bool,
     pending_local_link_soft_break: bool,
     current_line_content: Option<HyperlinkLine>,
@@ -446,11 +470,17 @@ where
     pending_callout: Option<PendingCallout>,
 }
 
-impl<'a, I> Writer<'a, I>
+impl<'a, 'policy, I> Writer<'a, 'policy, I>
 where
     I: Iterator<Item = (Event<'a>, Range<usize>)>,
 {
-    fn new(input: &'a str, iter: I, wrap_width: Option<usize>, cwd: Option<&Path>) -> Self {
+    fn new(
+        input: &'a str,
+        iter: I,
+        wrap_width: Option<usize>,
+        cwd: Option<&Path>,
+        is_hidden_link_destination: &'policy dyn Fn(&str) -> bool,
+    ) -> Self {
         Self {
             input,
             iter,
@@ -470,6 +500,7 @@ where
             code_block_buffer: String::new(),
             wrap_width,
             cwd: cwd.map(Path::to_path_buf),
+            is_hidden_link_destination,
             line_ends_with_local_link_target: false,
             pending_local_link_soft_break: false,
             current_line_content: None,
@@ -1862,9 +1893,14 @@ where
     }
 
     fn push_link(&mut self, dest_url: String) {
-        let show_destination = should_render_link_destination(&dest_url);
+        let style_label = (self.is_hidden_link_destination)(&dest_url);
+        if style_label {
+            self.push_inline_style(self.styles.link);
+        }
+        let show_destination = !style_label && should_render_link_destination(&dest_url);
         self.link = Some(LinkState {
             show_destination,
+            style_label,
             local_target_display: if is_local_path_like_link(&dest_url) {
                 render_local_link_target(&dest_url, self.cwd.as_deref())
             } else {
@@ -1876,6 +1912,9 @@ where
 
     fn pop_link(&mut self) {
         if let Some(link) = self.link.take() {
+            if link.style_label {
+                self.pop_inline_style();
+            }
             if link.show_destination {
                 // Link destinations are rendered as " (url)" suffixes. When parsing table cells,
                 // append the suffix into the active cell buffer rather than the outer paragraph
@@ -2649,7 +2688,13 @@ mod tests {
         cell.hard_break();
         cell.push_span("second line".into());
 
-        let writer = W::new("", std::iter::empty(), Some(80), /*cwd*/ None);
+        let writer = W::new(
+            "",
+            std::iter::empty(),
+            /*wrap_width*/ Some(80),
+            /*cwd*/ None,
+            &never_hide_link_destination,
+        );
         let wrapped = writer.wrap_cell(&cell, /*width*/ 40);
         let rendered = wrapped
             .iter()
@@ -2671,7 +2716,7 @@ mod tests {
     // ---------------------------------------------------------------
     // Type alias for calling private associated functions on Writer.
     // ---------------------------------------------------------------
-    type W<'a> = Writer<'a, std::iter::Empty<(Event<'a>, Range<usize>)>>;
+    type W<'a> = Writer<'a, 'a, std::iter::Empty<(Event<'a>, Range<usize>)>>;
 
     /// Build a single-line `TableCell` from plain text.
     fn make_cell(text: &str) -> TableCell {

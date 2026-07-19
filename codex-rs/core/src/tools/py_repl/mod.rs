@@ -44,7 +44,6 @@ use crate::sandboxing::SandboxPermissions;
 use crate::session::session::Session;
 use crate::session::step_context::StepContext;
 use crate::session::turn_context::TurnContext;
-use crate::tools::ToolRouter;
 use crate::tools::context::SharedTurnDiffTracker;
 use crate::tools::flat_tool_name;
 use crate::tools::handlers::apply_granted_turn_permissions;
@@ -52,7 +51,6 @@ use crate::tools::handlers::implicit_granted_permissions;
 use crate::tools::handlers::normalize_and_validate_additional_permissions;
 use crate::tools::handlers::unified_exec::shell_mode_for_environment;
 use crate::tools::repl_image::validate_repl_image_data_url;
-use crate::tools::router::ToolRouterParams;
 use crate::unified_exec::ExecCommandRequest;
 use crate::unified_exec::UnifiedExecContext;
 use crate::unified_exec::UnifiedExecError;
@@ -1534,22 +1532,23 @@ impl PyReplManager {
             };
         }
 
-        let manager = exec.session.services.mcp_connection_manager.load_full();
-        let mcp_tools = manager.list_all_tools().await;
-
-        let router = ToolRouter::from_context(
+        let router = match crate::session::turn::built_tools(
+            exec.session.as_ref(),
             exec.step_context.as_ref(),
-            ToolRouterParams {
-                deferred_mcp_tools: None,
-                mcp_tools: Some(mcp_tools),
-                tool_suggest_candidates: None,
-                extension_tool_executors: crate::tools::router::extension_tool_executors(
-                    exec.session.as_ref(),
-                ),
-                dynamic_tools: exec.turn.dynamic_tools.as_slice(),
-            },
-            &exec.session.services.tool_search_handler_cache,
-        );
+            &exec.cancellation_token,
+        )
+        .await
+        {
+            Ok(router) => router,
+            Err(err) => {
+                return RunToolResult {
+                    id: req.id,
+                    ok: false,
+                    response: None,
+                    error: Some(format!("failed to build tool router: {err}")),
+                };
+            }
+        };
 
         let specs = router.model_visible_specs();
         let (requested_tool_name, requested_spec_is_freeform) = specs
