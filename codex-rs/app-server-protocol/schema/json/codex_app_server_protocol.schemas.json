@@ -4193,11 +4193,26 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "User has denied this command and the agent should not execute it, but it should continue the session and try something else.",
-          "enum": [
+          "properties": {
+            "denied": {
+              "properties": {
+                "rejection": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "rejection"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
             "denied"
           ],
-          "type": "string"
+          "title": "DeniedReviewDecision",
+          "type": "object"
         },
         {
           "description": "Automatic approval review timed out before reaching a decision.",
@@ -8825,6 +8840,15 @@
         "oneOf": [
           {
             "properties": {
+              "additionalContextLimit": {
+                "description": "Approximate token threshold for spilling this hook's `additionalContext` to disk. `null` uses 2,500 tokens; `0` disables spilling for this hook. The threshold is evaluated against the original context; a spilled preview also includes recovery metadata.",
+                "format": "uint",
+                "minimum": 0.0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
               "async": {
                 "type": "boolean"
               },
@@ -8930,7 +8954,19 @@
               "null"
             ]
           },
+          "distributionChannel": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "iconUrl": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "iconUrlDark": {
             "type": [
               "string",
               "null"
@@ -8939,8 +8975,21 @@
           "id": {
             "type": "string"
           },
+          "installUrl": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "name": {
             "type": "string"
+          },
+          "pluginDisplayNames": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "toolSummaries": {
             "items": {
@@ -9592,6 +9641,24 @@
             "description": "If true, include detection under the user's home directory.",
             "type": "boolean"
           },
+          "maxSessionAgeDays": {
+            "description": "Maximum age in days for detected sessions. Missing values use the default limit.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "maxSessions": {
+            "description": "Maximum number of sessions to detect. Missing values use the default limit.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "migrationSource": {
             "description": "Optional migration-source selector. Missing or unrecognized values use the default source.",
             "type": [
@@ -9782,6 +9849,13 @@
           },
           "migrationSource": {
             "description": "Migration-source selector used to produce the migration items. Pass the same value to detection and import; missing or unrecognized values use the default source.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "providerId": {
+            "description": "Opaque provider identifier supplied by the caller for analytics attribution. This does not select the migration source.",
             "type": [
               "string",
               "null"
@@ -11275,6 +11349,15 @@
       },
       "HookMetadata": {
         "properties": {
+          "additionalContextLimit": {
+            "description": "Configured `additionalContext` spill threshold. `null` uses 2,500 tokens; `0` disables spilling.",
+            "format": "uint",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "command": {
             "type": [
               "string",

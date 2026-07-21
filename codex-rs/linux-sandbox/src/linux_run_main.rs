@@ -27,7 +27,11 @@ use crate::proxy_routing::activate_proxy_routes_in_netns;
 use crate::proxy_routing::prepare_host_proxy_route_spec;
 use codex_protocol::error::Result as CodexResult;
 use codex_protocol::models::PermissionProfile;
+use codex_protocol::protocol::FileSystemAccessMode;
+use codex_protocol::protocol::FileSystemPath;
+use codex_protocol::protocol::FileSystemSandboxEntry;
 use codex_protocol::protocol::FileSystemSandboxPolicy;
+use codex_protocol::protocol::FileSystemSpecialPath;
 use codex_protocol::protocol::NetworkSandboxPolicy;
 use codex_sandboxing::landlock::CODEX_LINUX_SANDBOX_ARG0;
 
@@ -485,12 +489,7 @@ fn preflight_bwrap_support(
     network_mode: BwrapNetworkMode,
 ) -> CodexResult<BwrapPreflightSupport> {
     let preflight_argv = if mount_proc {
-        build_preflight_bwrap_argv(
-            sandbox_policy_cwd,
-            command_cwd,
-            file_system_sandbox_policy,
-            network_mode,
-        )?
+        build_preflight_bwrap_argv(network_mode)?
     } else {
         let preflight_command = vec![resolve_true_command()];
         build_bwrap_argv(
@@ -513,17 +512,21 @@ fn preflight_bwrap_support(
 }
 
 fn build_preflight_bwrap_argv(
-    sandbox_policy_cwd: &Path,
-    command_cwd: &Path,
-    file_system_sandbox_policy: &FileSystemSandboxPolicy,
     network_mode: BwrapNetworkMode,
 ) -> CodexResult<crate::bwrap::BwrapArgs> {
+    let file_system_sandbox_policy =
+        FileSystemSandboxPolicy::restricted(vec![FileSystemSandboxEntry {
+            path: FileSystemPath::Special {
+                value: FileSystemSpecialPath::Minimal,
+            },
+            access: FileSystemAccessMode::Read,
+        }]);
     let preflight_command = vec![resolve_true_command()];
     build_bwrap_argv(
         preflight_command,
-        file_system_sandbox_policy,
-        sandbox_policy_cwd,
-        command_cwd,
+        &file_system_sandbox_policy,
+        Path::new("/"),
+        Path::new("/"),
         BwrapOptions {
             mount_proc: true,
             network_mode,
