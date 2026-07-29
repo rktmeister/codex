@@ -94,13 +94,16 @@ fn set_py_repl_python_path(config: &mut codex_core::config::Config, path: impl A
     let path = path.as_ref();
     config.py_repl_python_path = Some(path.to_path_buf());
     let path = path.display().to_string();
-    config.config_layer_stack = config.config_layer_stack.with_user_config(
-        &config_path,
-        toml! {
-            py_repl_python_path = path
-        }
-        .into(),
-    );
+    config.config_layer_stack = config
+        .config_layer_stack
+        .with_user_config(
+            &config_path,
+            toml! {
+                py_repl_python_path = path
+            }
+            .into(),
+        )
+        .expect("py_repl user config should be valid");
 }
 
 fn write_too_old_python_script(dir: &Path) -> Result<std::path::PathBuf> {

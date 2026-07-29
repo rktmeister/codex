@@ -540,7 +540,7 @@ pub(crate) fn goal_status_indicator_line(
             }
         }
         GoalStatusIndicator::Paused => "Goal paused (/goal resume)".to_string(),
-        GoalStatusIndicator::Blocked => "Goal blocked (/goal resume)".to_string(),
+        GoalStatusIndicator::Blocked => "Goal stalled (/goal resume)".to_string(),
         GoalStatusIndicator::UsageLimited => "Goal hit usage limits (/goal resume)".to_string(),
         GoalStatusIndicator::BudgetLimited { usage } => {
             if let Some(usage) = usage {
@@ -593,7 +593,7 @@ pub(crate) fn side_conversation_context_line(label: &str) -> Line<'static> {
     if let Some(rest) = label.strip_prefix("Side ") {
         Line::from(vec!["Side".magenta().bold(), format!(" {rest}").magenta()])
     } else {
-        Line::from(label.to_string()).magenta()
+        Line::from(vec![Span::from(label.to_string()).magenta()])
     }
 }
 

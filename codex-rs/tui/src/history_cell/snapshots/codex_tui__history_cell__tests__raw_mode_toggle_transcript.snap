@@ -9,11 +9,11 @@ rich before:
 
 • • first item
   • second item
-  
+
    Col     Value
   ━━━━━━  ━━━━━━━
    code    x = 1
-  
+
   ╭─[text]
   │ copy me
   ╰─
@@ -47,11 +47,11 @@ rich after:
 
 • • first item
   • second item
-  
+
    Col     Value
   ━━━━━━  ━━━━━━━
    code    x = 1
-  
+
   ╭─[text]
   │ copy me
   ╰─

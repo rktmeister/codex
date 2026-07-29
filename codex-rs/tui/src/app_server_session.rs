@@ -823,6 +823,7 @@ impl AppServerSession {
                 request_id,
                 params: ThreadMetadataUpdateParams {
                     thread_id: thread_id.to_string(),
+                    section_id: None,
                     git_info: Some(ThreadMetadataGitInfoUpdateParams {
                         sha: None,
                         branch: Some(Some(branch)),
@@ -1270,7 +1271,7 @@ impl AppServerSession {
         self.client.request_handle()
     }
 
-    fn next_request_id(&mut self) -> RequestId {
+    pub(crate) fn next_request_id(&mut self) -> RequestId {
         let request_id = self.next_request_id;
         self.next_request_id += 1;
         RequestId::Integer(request_id)
@@ -2230,10 +2231,12 @@ mod tests {
                             value: FileSystemSpecialPath::Root,
                         },
                         access: FileSystemAccessMode::Read,
+                        missing_path_behavior: None,
                     },
                     FileSystemSandboxEntry {
                         path: FileSystemPath::Path { path: extra_root },
                         access: FileSystemAccessMode::Write,
+                        missing_path_behavior: None,
                     },
                 ],
                 glob_scan_max_depth: None,
@@ -2258,12 +2261,14 @@ mod tests {
                             value: FileSystemSpecialPath::Root,
                         },
                         access: FileSystemAccessMode::Read,
+                        missing_path_behavior: None,
                     },
                     FileSystemSandboxEntry {
                         path: FileSystemPath::Special {
                             value: FileSystemSpecialPath::ProjectRoots { subpath: None },
                         },
                         access: FileSystemAccessMode::Write,
+                        missing_path_behavior: None,
                     },
                 ],
                 glob_scan_max_depth: None,
@@ -2674,6 +2679,7 @@ mod tests {
                 parent_thread_id: None,
                 preview: "hello".to_string(),
                 ephemeral: false,
+                section: None,
                 history_mode: Default::default(),
                 model_provider: "openai".to_string(),
                 created_at: 1,
@@ -2933,6 +2939,18 @@ mod tests {
         );
         assert!(matches!(
             team,
+            Some(StatusAccountDisplay::ChatGpt {
+                email: None,
+                plan: Some(ref plan),
+            }) if plan == "Business"
+        ));
+
+        let business_prolite = status_account_display_from_auth_mode(
+            Some(AuthMode::Chatgpt),
+            Some(codex_protocol::account::PlanType::SelfServeBusinessProLite),
+        );
+        assert!(matches!(
+            business_prolite,
             Some(StatusAccountDisplay::ChatGpt {
                 email: None,
                 plan: Some(ref plan),

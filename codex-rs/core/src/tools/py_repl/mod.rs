@@ -1532,23 +1532,7 @@ impl PyReplManager {
             };
         }
 
-        let router = match crate::session::turn::built_tools(
-            exec.session.as_ref(),
-            exec.step_context.as_ref(),
-            &exec.cancellation_token,
-        )
-        .await
-        {
-            Ok(router) => router,
-            Err(err) => {
-                return RunToolResult {
-                    id: req.id,
-                    ok: false,
-                    response: None,
-                    error: Some(format!("failed to build tool router: {err}")),
-                };
-            }
-        };
+        let router = Arc::clone(&exec.step_context.tool_router);
 
         let specs = router.model_visible_specs();
         let (requested_tool_name, requested_spec_is_freeform) = specs
@@ -1591,6 +1575,7 @@ impl PyReplManager {
             tool_name: requested_tool_name,
             call_id: req.id.clone(),
             payload,
+            encrypted_function_args: None,
         };
 
         match router
@@ -1688,6 +1673,7 @@ impl PyReplManager {
                 yield_time_ms: (timeout_ms - elapsed_ms).clamp(1, PY_REPL_DEFAULT_TIMEOUT_MS),
                 max_output_tokens,
                 truncation_policy: exec.turn.model_info.truncation_policy.into(),
+                interaction_event: None,
             };
             let poll_output = tokio::select! {
                 _ = reset_cancel.cancelled() => {
@@ -1812,6 +1798,7 @@ impl PyReplManager {
             yield_time_ms: timeout_ms,
             max_output_tokens: req.max_output_tokens,
             truncation_policy: exec.turn.model_info.truncation_policy.into(),
+            interaction_event: None,
         };
         let poll_output = tokio::select! {
             _ = reset_cancel.cancelled() => {

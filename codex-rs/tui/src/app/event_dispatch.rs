@@ -8,7 +8,7 @@ use super::session_lifecycle::ThreadAttachPresentation;
 use super::*;
 use crate::app_server_session::ForkGoalContinuation;
 use crate::config_update::format_config_error;
-use crate::external_agent_config_migration_flow::ExternalAgentConfigMigrationFlowOutcome;
+use crate::external_agent_config_migration::flow::ExternalAgentConfigMigrationFlowOutcome;
 #[cfg(target_os = "windows")]
 use codex_config::types::WindowsSandboxModeToml;
 
@@ -22,10 +22,10 @@ impl App {
         event: AppEvent,
     ) -> Result<AppRunControl> {
         match event {
-            AppEvent::NewSession => {
+            AppEvent::NewSession { name } => {
                 self.start_fresh_session_with_summary_hint(
                     tui, app_server, /*session_start_source*/ None,
-                    /*initial_user_message*/ None,
+                    /*initial_user_message*/ None, name,
                 )
                 .await;
             }
@@ -33,7 +33,7 @@ impl App {
                 self.handle_startup_thread_started(app_server, result)
                     .await?;
             }
-            AppEvent::ClearUi => {
+            AppEvent::ClearUi { name } => {
                 self.clear_terminal_ui(tui, /*redraw_header*/ false)?;
                 self.reset_app_ui_state_after_clear();
 
@@ -42,6 +42,7 @@ impl App {
                     app_server,
                     Some(ThreadStartSource::Clear),
                     /*initial_user_message*/ None,
+                    name,
                 )
                 .await;
             }
@@ -61,6 +62,7 @@ impl App {
                         Vec::new(),
                         Vec::new(),
                     ),
+                    /*new_thread_name*/ None,
                 )
                 .await;
             }
@@ -78,6 +80,7 @@ impl App {
                         self.chat_widget.add_error_message(format!(
                             "Failed to start TUI session picker: {err}"
                         ));
+                        self.chat_widget.maybe_send_next_queued_input();
                         return Ok(AppRunControl::Continue);
                     }
                 };
@@ -110,11 +113,12 @@ impl App {
                     SessionSelection::Fork(_) => {}
                 }
 
+                self.chat_widget.maybe_send_next_queued_input();
                 // Leaving alt-screen may blank the inline viewport; force a redraw either way.
                 tui.frame_requester().schedule_frame();
             }
             AppEvent::OpenExternalAgentConfigMigration => {
-                match crate::external_agent_config_migration_flow::handle_external_agent_config_migration_prompt(
+                match crate::external_agent_config_migration::flow::handle_external_agent_config_migration_prompt(
                     tui,
                     app_server,
                     &self.config,
@@ -126,7 +130,7 @@ impl App {
                     }
                     Ok(ExternalAgentConfigMigrationFlowOutcome::NoItems) => {
                         self.chat_widget.add_info_message(
-                            crate::external_agent_config_migration_flow::EXTERNAL_AGENT_CONFIG_MIGRATION_NO_ITEMS_MESSAGE
+                            crate::external_agent_config_migration::flow::EXTERNAL_AGENT_CONFIG_MIGRATION_NO_ITEMS_MESSAGE
                                 .to_string(),
                             /*hint*/ None,
                         );
@@ -227,6 +231,7 @@ impl App {
                     );
                 }
 
+                self.chat_widget.maybe_send_next_queued_input();
                 tui.frame_requester().schedule_frame();
             }
             AppEvent::ForkSessionForPromptEdit {
@@ -411,7 +416,8 @@ impl App {
                 return Ok(AppRunControl::Exit(ExitReason::Fatal(message)));
             }
             AppEvent::CodexOp(op) => {
-                if matches!(&op, AppCommand::UserTurn { .. }) {
+                let is_user_turn = matches!(&op, AppCommand::UserTurn { .. });
+                if is_user_turn {
                     self.handle_draw_pre_render(tui)?;
                     if self.transcript_reflow.has_pending_reflow() {
                         self.transcript_reflow.schedule_immediate();
@@ -421,7 +427,21 @@ impl App {
                     self.render_chat_widget_frame(tui)?;
                 }
                 self.chat_widget.prepare_local_op_submission(&op);
-                self.submit_active_thread_op(app_server, op).await?;
+                if let Err(err) = self.submit_active_thread_op(app_server, op).await {
+                    let handled = is_user_turn
+                        && matches!(
+                            err.downcast_ref::<TypedRequestError>(),
+                            Some(TypedRequestError::Server { method, .. })
+                                if method == "turn/start"
+                        )
+                        && self
+                            .chat_widget
+                            .handle_turn_start_rejection(format!("Failed to start turn: {err:#}"));
+                    if !handled {
+                        return Err(err);
+                    }
+                    tracing::error!(error = ?err, "failed to start turn through app server");
+                }
             }
             AppEvent::RetrySafetyBufferedTurn {
                 thread_id,
@@ -1987,6 +2007,13 @@ impl App {
             AppEvent::OpenAgentPicker => {
                 self.open_agent_picker(app_server).await;
             }
+            AppEvent::AgentPickerThreadsLoaded {
+                primary_thread_id,
+                request_id,
+                result,
+            } => {
+                self.apply_agent_picker_thread_refresh(primary_thread_id, request_id, result);
+            }
             AppEvent::SelectAgentThread(thread_id) => {
                 self.select_agent_thread_and_discard_side(tui, app_server, thread_id)
                     .await?;
@@ -2392,6 +2419,7 @@ impl App {
                 self.keymap = runtime_keymap.clone();
                 self.chat_widget
                     .apply_keymap_update(keymap_config, &runtime_keymap);
+                self.sync_side_thread_ui();
                 self.chat_widget
                     .return_to_keymap_picker(&context, &action, &runtime_keymap);
                 self.chat_widget.add_info_message(message, /*hint*/ None);
@@ -2442,6 +2470,7 @@ impl App {
                 self.keymap = runtime_keymap.clone();
                 self.chat_widget
                     .apply_keymap_update(keymap_config, &runtime_keymap);
+                self.sync_side_thread_ui();
                 self.chat_widget
                     .return_to_keymap_picker(&context, &action, &runtime_keymap);
                 self.chat_widget.add_info_message(

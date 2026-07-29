@@ -89,6 +89,7 @@ async fn emit_py_repl_exec_begin(
         vec!["py_repl".to_string()],
         cwd.clone(),
         ExecCommandSource::Agent,
+        /*plugin_attribution*/ None,
     );
     let ctx = ToolEventCtx::new(session, turn, call_id, None);
     emitter.emit(ctx, ToolEventStage::Begin).await;
@@ -108,6 +109,7 @@ async fn emit_py_repl_exec_end(
         vec!["py_repl".to_string()],
         cwd.clone(),
         ExecCommandSource::Agent,
+        /*plugin_attribution*/ None,
     );
     let ctx = ToolEventCtx::new(session, turn, call_id, None);
     let stage = if error.is_some() {

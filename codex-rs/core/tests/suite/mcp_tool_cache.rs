@@ -2,7 +2,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
+use codex_config::Constrained;
 use codex_core::NewThread;
+use codex_core::StartThreadOptions;
 use codex_exec_server::ExecutorFileSystem;
 use codex_exec_server::RemoveOptions;
 use codex_protocol::models::PermissionProfile;
@@ -106,6 +108,11 @@ async fn regular_mcp_definition_cache_preserves_live_session_state() -> anyhow::
     let fixture = test_codex()
         .with_model_info_override("gpt-5.4", |model| model.supports_search_tool = false)
         .with_config(move |config| {
+            config.permissions.approval_policy = Constrained::allow_any(AskForApproval::Never);
+            config
+                .permissions
+                .set_permission_profile(PermissionProfile::Disabled)
+                .expect("test config should allow disabled permissions");
             let app_only_cwd_marker_file = config.cwd.join("cwd-app-only");
             let barrier_file = config.cwd.join("allow-initialize");
             let pid_file = config.cwd.join("mcp.pid");
@@ -183,12 +190,13 @@ async fn regular_mcp_definition_cache_preserves_live_session_state() -> anyhow::
         ..
     } = fixture
         .thread_manager
-        .start_thread(fixture.config.clone())
+        .start_thread(StartThreadOptions::new(fixture.config.clone()))
         .await?;
     let second_pid = wait_for_new_pid(fs.as_ref(), &pid_file, Some(&first_pid)).await?;
     let second_process = process_label(&second_pid);
 
     let app_only_call_id = "cached-app-only-call";
+    let unrelated_call_id = "cached-unrelated-plan";
     let cached_response = mount_sse_once(
         &responses_server,
         responses::sse(vec![
@@ -200,6 +208,11 @@ async fn regular_mcp_definition_cache_preserves_live_session_state() -> anyhow::
                 r#"{"message":"hello"}"#,
             ),
             responses::ev_function_call_with_namespace(app_only_call_id, NAMESPACE, "cwd", "{}"),
+            responses::ev_function_call(
+                unrelated_call_id,
+                "update_plan",
+                r#"{"plan":[{"step":"Continue while MCP starts","status":"in_progress"}]}"#,
+            ),
             responses::ev_completed("cached-call"),
         ]),
     )
@@ -213,12 +226,19 @@ async fn regular_mcp_definition_cache_preserves_live_session_state() -> anyhow::
         ]),
     )
     .await;
+    let (unrelated_finished_tx, unrelated_finished_rx) = tokio::sync::oneshot::channel();
     let second_for_turn = Arc::clone(&second_thread);
     let cached_turn = tokio::spawn(async move {
         second_for_turn
             .submit(user_turn("call the echo and cwd tools"))
             .await?;
+        let mut unrelated_finished_tx = Some(unrelated_finished_tx);
         let end = wait_for_event(&second_for_turn, |event| {
+            if matches!(event, EventMsg::PlanUpdate(_))
+                && let Some(sender) = unrelated_finished_tx.take()
+            {
+                let _ = sender.send(());
+            }
             matches!(
                 event,
                 EventMsg::McpToolCallEnd(end) if end.call_id == "cached-call"
@@ -253,6 +273,10 @@ async fn regular_mcp_definition_cache_preserves_live_session_state() -> anyhow::
         &format!("Tools in the {NAMESPACE} namespace."),
         &format!("Echo from {first_process}."),
     );
+    tokio::time::timeout(Duration::from_secs(2), unrelated_finished_rx)
+        .await
+        .context("an unrelated tool should complete while cached MCP startup is pending")?
+        .context("the unrelated tool should emit its plan update")?;
 
     fixture.codex.shutdown_and_wait().await?;
     fs.write_file(&barrier_file, b"ready".to_vec(), /*sandbox*/ None)
@@ -274,6 +298,13 @@ async fn regular_mcp_definition_cache_preserves_live_session_state() -> anyhow::
     assert!(
         output.contains(&second_process),
         "model-visible tool output should come from the live server: {output}"
+    );
+    assert_eq!(
+        cached_done_response
+            .single_request()
+            .function_call_output_text(unrelated_call_id)
+            .as_deref(),
+        Some("Plan updated")
     );
 
     second_thread.shutdown_and_wait().await?;
