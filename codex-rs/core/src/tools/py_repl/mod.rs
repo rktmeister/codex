@@ -763,11 +763,8 @@ impl PyReplManager {
             .requirements_toml()
             .network
             .is_some();
-        let file_system_sandbox_policy = turn.file_system_sandbox_policy();
-        let network_sandbox_policy = turn.network_sandbox_policy();
         let sandbox_type = sandbox.select_initial(
-            &file_system_sandbox_policy,
-            network_sandbox_policy,
+            &turn.permission_profile,
             SandboxablePreference::Auto,
             turn.windows_sandbox_level,
             has_managed_network_requirements,

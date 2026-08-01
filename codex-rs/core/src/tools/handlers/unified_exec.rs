@@ -41,7 +41,7 @@ pub(crate) struct ExecCommandArgs {
     #[serde(default)]
     env: HashMap<String, String>,
     #[serde(default)]
-    sandbox_permissions: SandboxPermissions,
+    sandbox_permissions: Option<SandboxPermissions>,
     #[serde(default)]
     additional_permissions: Option<AdditionalPermissionProfile>,
     #[serde(default)]

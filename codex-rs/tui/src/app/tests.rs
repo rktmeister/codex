@@ -3481,6 +3481,7 @@ async fn inactive_thread_started_notification_initializes_replay_session() -> Re
                 preview: "agent thread".to_string(),
                 ephemeral: false,
                 section: None,
+                section_entered_at: None,
                 history_mode: Default::default(),
                 model_provider: "agent-provider".to_string(),
                 created_at: 1,
@@ -3578,6 +3579,7 @@ async fn inactive_thread_started_notification_preserves_primary_model_when_path_
                 preview: "agent thread".to_string(),
                 ephemeral: false,
                 section: None,
+                section_entered_at: None,
                 history_mode: Default::default(),
                 model_provider: "agent-provider".to_string(),
                 created_at: 1,
@@ -3706,6 +3708,7 @@ async fn thread_read_session_state_does_not_reuse_primary_permission_profile() {
         preview: "read thread".to_string(),
         ephemeral: false,
         section: None,
+        section_entered_at: None,
         history_mode: Default::default(),
         model_provider: "read-provider".to_string(),
         created_at: 1,
@@ -5624,6 +5627,7 @@ fn request_user_input_request(thread_id: ThreadId, turn_id: &str, item_id: &str)
             turn_id: turn_id.to_string(),
             item_id: item_id.to_string(),
             questions: Vec::new(),
+            is_blocking: true,
             auto_resolution_ms: None,
         },
     }
@@ -6370,9 +6374,12 @@ async fn in_app_resume_uses_configured_or_explicit_cwd() -> Result<()> {
         ));
         assert_eq!(app.chat_widget.thread_id(), Some(thread_id));
 
-        let control =
-            Box::pin(app.handle_event(&mut tui, &mut app_server, AppEvent::ForkCurrentSession))
-                .await?;
+        let control = Box::pin(app.handle_event(
+            &mut tui,
+            &mut app_server,
+            AppEvent::ForkCurrentSession { name: None },
+        ))
+        .await?;
 
         assert!(matches!(control, AppRunControl::Continue));
         assert!(!crate::session_resume::cwds_differ(
