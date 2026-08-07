@@ -15,7 +15,6 @@ use anyhow::anyhow;
 use codex_config::ConfigLayerEntry;
 use codex_config::ConfigLayerSource;
 use codex_config::ConfigLayerStack;
-use codex_config::ConfigLayerStackOrdering;
 use codex_config::config_toml::ConfigToml;
 use codex_config::loader::resolve_relative_paths_in_config_toml;
 use codex_exec_server::LOCAL_FS;
@@ -236,11 +235,7 @@ mod reload {
     fn existing_layers(config: &Config) -> Vec<ConfigLayerEntry> {
         config
             .config_layer_stack
-            .get_layers(
-                ConfigLayerStackOrdering::LowestPrecedenceFirst,
-                /*include_disabled*/ true,
-            )
-            .into_iter()
+            .all_layers_low_to_high()
             .cloned()
             .collect()
     }
@@ -268,6 +263,7 @@ mod reload {
                 .flatten(),
             model_provider: preserve_current_provider.then(|| config.model_provider_id.clone()),
             service_tier: preserve_current_service_tier.then(|| config.service_tier.clone()),
+            psp: Some(config.psp),
             codex_linux_sandbox_exe: config.codex_linux_sandbox_exe.clone(),
             main_execve_wrapper_exe: config.main_execve_wrapper_exe.clone(),
             ..Default::default()

@@ -6,7 +6,9 @@ use codex_analytics::GuardianReviewTerminalStatus;
 use codex_analytics::GuardianReviewTrackContext;
 use codex_analytics::GuardianReviewedAction;
 use codex_core_plugins::PluginCommandAttribution;
+use codex_extension_api::ThreadIdleCause;
 use codex_protocol::config_types::ApprovalsReviewer;
+use codex_protocol::openai_models::MODEL_SPECIALTY_CYBER;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::EventMsg;
@@ -31,12 +33,14 @@ use crate::turn_timing::now_unix_timestamp_ms;
 use crate::util::backoff;
 
 use super::AUTO_REVIEW_DENIAL_WINDOW_SIZE;
+use super::ApprovalRequestReasons;
 use super::GUARDIAN_REVIEW_TIMEOUT;
 use super::GUARDIAN_REVIEWER_NAME;
 use super::GuardianApprovalRequest;
 use super::GuardianAssessment;
 use super::GuardianAssessmentOutcome;
 use super::GuardianRejectionCircuitBreakerAction;
+use super::GuardianRejectionCircuitBreakerPolicy;
 use super::approval_request::guardian_assessment_action;
 use super::approval_request::guardian_request_target_item_id;
 use super::approval_request::guardian_request_turn_id;
@@ -179,7 +183,7 @@ pub(crate) fn routes_approval_to_guardian_with_reviewer(
     turn: &TurnContext,
     approvals_reviewer: ApprovalsReviewer,
 ) -> bool {
-    routes_approval_policy_to_guardian(turn.approval_policy.value(), approvals_reviewer)
+    routes_approval_policy_to_guardian(turn.approval_policy(), approvals_reviewer)
 }
 
 /// Whether an exact approval policy and reviewer should route through Guardian.
@@ -234,12 +238,17 @@ async fn record_guardian_non_denial(session: &Arc<Session>, turn_id: &str) {
 }
 
 async fn record_guardian_denial(session: &Arc<Session>, turn: &Arc<TurnContext>, turn_id: &str) {
+    let policy = if turn.model_info.model_specialty.as_deref() == Some(MODEL_SPECIALTY_CYBER) {
+        GuardianRejectionCircuitBreakerPolicy::CyberModel
+    } else {
+        GuardianRejectionCircuitBreakerPolicy::Standard
+    };
     let action = session
         .services
         .guardian_rejection_circuit_breaker
         .lock()
         .await
-        .record_denial(turn_id);
+        .record_denial(turn_id, policy);
     let GuardianRejectionCircuitBreakerAction::InterruptTurn {
         consecutive_denials,
         recent_denials,
@@ -273,7 +282,9 @@ async fn record_guardian_denial(session: &Arc<Session>, turn: &Arc<TurnContext>,
         if aborted {
             // Guardian aborts bypass normal task completion, so emit its idle lifecycle here.
             // User interrupts deliberately do not take this path.
-            session.emit_thread_idle_lifecycle_if_idle().await;
+            session
+                .emit_thread_idle_lifecycle_if_idle(ThreadIdleCause::Interrupted)
+                .await;
         }
     });
 }
@@ -295,7 +306,7 @@ async fn run_guardian_review(
     turn: Arc<TurnContext>,
     review_id: String,
     request: GuardianApprovalRequest,
-    retry_reason: Option<String>,
+    reasons: ApprovalRequestReasons,
     options: GuardianReviewOptions,
 ) -> ReviewDecision {
     let GuardianReviewOptions {
@@ -392,7 +403,7 @@ async fn run_guardian_review(
         session.clone(),
         turn.clone(),
         request,
-        retry_reason.clone(),
+        reasons,
         schema,
         external_cancel,
         GUARDIAN_REVIEW_MAX_ATTEMPTS,
@@ -635,7 +646,7 @@ pub(crate) async fn review_approval_request(
     turn: &Arc<TurnContext>,
     review_id: String,
     request: GuardianApprovalRequest,
-    retry_reason: Option<String>,
+    reasons: ApprovalRequestReasons,
 ) -> ReviewDecision {
     // Box the delegated review future so callers do not inline the entire
     // guardian session state machine into their own async stack.
@@ -644,7 +655,7 @@ pub(crate) async fn review_approval_request(
         Arc::clone(turn),
         review_id,
         request,
-        retry_reason,
+        reasons,
         GuardianReviewOptions {
             plugin_attribution_override: None,
             approval_request_source: GuardianApprovalRequestSource::MainTurn,
@@ -667,7 +678,10 @@ pub(crate) async fn review_approval_request_with_cancel(
         Arc::clone(turn),
         review_id,
         request,
-        retry_reason,
+        ApprovalRequestReasons {
+            approval: None,
+            retry: retry_reason,
+        },
         options,
     )
     .await
@@ -831,7 +845,7 @@ async fn run_guardian_review_session_before_deadline(
     session: Arc<Session>,
     turn: Arc<TurnContext>,
     request: GuardianApprovalRequest,
-    retry_reason: Option<String>,
+    reasons: ApprovalRequestReasons,
     schema: serde_json::Value,
     external_cancel: Option<CancellationToken>,
     deadline: Instant,
@@ -854,7 +868,7 @@ async fn run_guardian_review_session_before_deadline(
                 parent_turn: turn.clone(),
                 spawn_config: session_config.spawn_config,
                 request,
-                retry_reason,
+                reasons,
                 schema,
                 model: session_config.model,
                 reasoning_effort: session_config.reasoning_effort,
@@ -925,7 +939,7 @@ pub(super) async fn run_guardian_review_session_with_retry(
     session: Arc<Session>,
     turn: Arc<TurnContext>,
     request: GuardianApprovalRequest,
-    retry_reason: Option<String>,
+    reasons: ApprovalRequestReasons,
     schema: serde_json::Value,
     external_cancel: Option<CancellationToken>,
     max_attempts: i64,
@@ -938,7 +952,7 @@ pub(super) async fn run_guardian_review_session_with_retry(
             Arc::clone(&session),
             Arc::clone(&turn),
             request.clone(),
-            retry_reason.clone(),
+            reasons.clone(),
             schema.clone(),
             external_cancel.clone(),
             deadline,

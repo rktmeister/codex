@@ -763,8 +763,9 @@ impl PyReplManager {
             .requirements_toml()
             .network
             .is_some();
+        let permission_profile = turn.permission_profile();
         let sandbox_type = sandbox.select_initial(
-            &turn.permission_profile,
+            &permission_profile,
             SandboxablePreference::Auto,
             turn.windows_sandbox_level,
             has_managed_network_requirements,
@@ -780,7 +781,7 @@ impl PyReplManager {
         let exec_env = sandbox
             .transform(SandboxTransformRequest {
                 command,
-                permissions: &turn.permission_profile,
+                permissions: &permission_profile,
                 sandbox: sandbox_type,
                 enforce_managed_network: has_managed_network_requirements,
                 environment_id: Some(&turn_environment.environment_id),
@@ -1549,6 +1550,12 @@ impl PyReplManager {
                             (flat_tool_name(&tool_name) == req.tool_name)
                                 .then_some((tool_name, false))
                         }
+                        ResponsesApiNamespaceTool::Custom(tool) => {
+                            let tool_name =
+                                ToolName::namespaced(namespace.name.clone(), tool.name.clone());
+                            (flat_tool_name(&tool_name) == req.tool_name)
+                                .then_some((tool_name, true))
+                        }
                     })
                 }
                 codex_tools::ToolSpec::ToolSearch { .. }
@@ -1943,11 +1950,11 @@ impl PyReplManager {
             .requests_sandbox_override()
             && !effective_additional_permissions.permissions_preapproved
             && !matches!(
-                exec.turn.approval_policy.value(),
+                exec.turn.approval_policy(),
                 codex_protocol::protocol::AskForApproval::OnRequest
             )
         {
-            let approval_policy = exec.turn.approval_policy.value();
+            let approval_policy = exec.turn.approval_policy();
             manager.release_process_id(process_id).await;
             return Err(Self::run_process_error(
                 request_id,
@@ -1966,7 +1973,7 @@ impl PyReplManager {
             || {
                 normalize_and_validate_additional_permissions(
                     additional_permissions_allowed,
-                    exec.turn.approval_policy.value(),
+                    exec.turn.approval_policy(),
                     effective_additional_permissions.sandbox_permissions,
                     effective_additional_permissions
                         .additional_permissions

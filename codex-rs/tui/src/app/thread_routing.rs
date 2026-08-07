@@ -959,8 +959,10 @@ impl App {
         {
             return Ok(());
         }
-        if matches!(notification, ServerNotification::ThreadSettingsUpdated(_))
-            && self.primary_thread_id.is_some()
+        if matches!(
+            notification,
+            ServerNotification::ThreadSettingsUpdated(_) | ServerNotification::ThreadArchived(_)
+        ) && self.primary_thread_id.is_some()
             && self.primary_thread_id != Some(thread_id)
             && !self.thread_event_channels.contains_key(&thread_id)
         {
@@ -1290,6 +1292,9 @@ impl App {
         self.activate_thread_channel(thread_id).await;
         self.chat_widget
             .set_initial_user_message_submit_suppressed(/*suppressed*/ true);
+        if !turns.is_empty() {
+            self.chat_widget.set_token_info(/*info*/ None);
+        }
         match presentation {
             ThreadAttachPresentation::SessionLineage => {
                 self.chat_widget.handle_thread_session(session);

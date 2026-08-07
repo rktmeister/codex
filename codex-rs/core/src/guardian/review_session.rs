@@ -52,6 +52,7 @@ use codex_features::Feature;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_utils_path_uri::PathUri;
 
+use super::ApprovalRequestReasons;
 use super::GUARDIAN_REVIEWER_NAME;
 use super::GuardianApprovalRequest;
 use super::prompt::BUNDLED_GUARDIAN_POLICY;
@@ -80,7 +81,7 @@ pub(crate) struct GuardianReviewSessionParams {
     pub(crate) parent_turn: Arc<TurnContext>,
     pub(crate) spawn_config: Config,
     pub(crate) request: GuardianApprovalRequest,
-    pub(crate) retry_reason: Option<String>,
+    pub(crate) reasons: ApprovalRequestReasons,
     pub(crate) schema: Value,
     pub(crate) model: String,
     pub(crate) reasoning_effort: Option<ReasoningEffortConfig>,
@@ -135,6 +136,7 @@ fn token_usage_delta(start: &TokenUsage, end: &TokenUsage) -> TokenUsage {
         reasoning_output_tokens: (end.reasoning_output_tokens - start.reasoning_output_tokens)
             .max(0),
         total_tokens: (end.total_tokens - start.total_tokens).max(0),
+        codex_rollout_budget_units: None,
     }
 }
 
@@ -766,7 +768,7 @@ async fn run_review_on_session(
             build_guardian_prompt_items_with_parent_turn(
                 params.parent_session.as_ref(),
                 Some(params.parent_turn.as_ref()),
-                params.retry_reason.clone(),
+                params.reasons.clone(),
                 params.request.clone(),
                 prompt_mode,
             )
@@ -1245,7 +1247,7 @@ mod tests {
                 additional_permissions: None,
                 justification: Some("Inspect repo state.".to_string()),
             },
-            retry_reason: None,
+            reasons: ApprovalRequestReasons::default(),
             schema: super::super::prompt::guardian_output_schema(),
             model,
             reasoning_effort,
@@ -1684,6 +1686,7 @@ mod tests {
             output_tokens: 6,
             reasoning_output_tokens: 4,
             total_tokens: 28,
+            codex_rollout_budget_units: None,
         };
         let end = TokenUsage {
             input_tokens: 15,
@@ -1692,6 +1695,7 @@ mod tests {
             output_tokens: 10,
             reasoning_output_tokens: 2,
             total_tokens: 34,
+            codex_rollout_budget_units: None,
         };
 
         assert_eq!(
@@ -1703,6 +1707,7 @@ mod tests {
                 output_tokens: 4,
                 reasoning_output_tokens: 0,
                 total_tokens: 6,
+                codex_rollout_budget_units: None,
             }
         );
     }

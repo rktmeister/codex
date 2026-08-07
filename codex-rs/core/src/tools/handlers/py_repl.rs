@@ -133,6 +133,7 @@ impl ToolExecutor<ToolInvocation> for PyReplHandler {
             name: "py_repl".to_string(),
             description: "Runs Python in a persistent kernel with top-level await. This is a freeform tool: send raw Python source text, optionally with a first-line pragma like `# codex-py-repl: timeout_ms=15000`; do not send JSON/quotes/markdown fences."
                 .to_string(),
+            defer_loading: None,
             format: FreeformToolFormat {
                 r#type: "grammar".to_string(),
                 syntax: "lark".to_string(),

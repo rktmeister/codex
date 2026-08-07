@@ -572,6 +572,13 @@ impl OutgoingMessageSender {
     }
 
     pub(crate) async fn send_server_notification(&self, notification: ServerNotification) {
+        if matches!(
+            notification,
+            ServerNotification::ThreadArchived(_) | ServerNotification::ThreadUnarchived(_)
+        ) {
+            self.analytics_events_client
+                .track_notification(&notification);
+        }
         self.send_server_notification_to_connections(&[], notification)
             .await;
     }
@@ -760,6 +767,7 @@ mod tests {
                 login_id: Some(Uuid::nil().to_string()),
                 success: true,
                 error: None,
+                onboarding_entrypoint: None,
             });
 
         let jsonrpc_notification =
@@ -774,6 +782,7 @@ mod tests {
                     "loginId": Uuid::nil().to_string(),
                     "success": true,
                     "error": null,
+                    "onboardingEntrypoint": null,
                 },
                 "emittedAtMs": 1_234,
             }),
@@ -790,6 +799,7 @@ mod tests {
                 login_id: Some(Uuid::nil().to_string()),
                 success: true,
                 error: None,
+                onboarding_entrypoint: None,
             });
 
         assert_eq!(
@@ -799,6 +809,7 @@ mod tests {
                     "loginId": Uuid::nil().to_string(),
                     "success": true,
                     "error": null,
+                    "onboardingEntrypoint": null,
                 },
             }),
             serde_json::to_value(notification)

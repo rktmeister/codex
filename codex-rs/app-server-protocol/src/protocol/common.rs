@@ -2483,6 +2483,12 @@ mod tests {
                         "thread/started".to_string(),
                         "item/agentMessage/delta".to_string(),
                     ]),
+                    extensions: Some(std::collections::HashMap::from([(
+                        "io.modelcontextprotocol/ui".to_string(),
+                        json!({
+                            "mimeTypes": ["text/html;profile=mcp-app"],
+                        }),
+                    )])),
                 }),
             },
         };
@@ -2504,7 +2510,12 @@ mod tests {
                         "optOutNotificationMethods": [
                             "thread/started",
                             "item/agentMessage/delta"
-                        ]
+                        ],
+                        "extensions": {
+                            "io.modelcontextprotocol/ui": {
+                                "mimeTypes": ["text/html;profile=mcp-app"]
+                            }
+                        }
                     }
                 }
             }),
@@ -2531,7 +2542,12 @@ mod tests {
                     "optOutNotificationMethods": [
                         "thread/started",
                         "item/agentMessage/delta"
-                    ]
+                    ],
+                    "extensions": {
+                        "io.modelcontextprotocol/ui": {
+                            "mimeTypes": ["text/html;profile=mcp-app"]
+                        }
+                    }
                 }
             }
         }))?;
@@ -2554,6 +2570,12 @@ mod tests {
                             "thread/started".to_string(),
                             "item/agentMessage/delta".to_string(),
                         ]),
+                        extensions: Some(std::collections::HashMap::from([(
+                            "io.modelcontextprotocol/ui".to_string(),
+                            json!({
+                                "mimeTypes": ["text/html;profile=mcp-app"],
+                            }),
+                        )])),
                     }),
                 },
             }

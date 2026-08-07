@@ -45,6 +45,7 @@ pub enum SlashCommand {
     Btw,
     Copy,
     CopyCode,
+    Export,
     Raw,
     Diff,
     Mention,
@@ -100,6 +101,7 @@ impl SlashCommand {
             SlashCommand::CopyCode => {
                 "select a fenced code block from the latest Codex output and copy it"
             }
+            SlashCommand::Export => "export the conversation as markdown",
             SlashCommand::Raw => "toggle raw scrollback mode for copy-friendly terminal selection",
             SlashCommand::Diff => "show git diff (including untracked files)",
             SlashCommand::Mention => "mention a file",
@@ -167,6 +169,7 @@ impl SlashCommand {
                 | SlashCommand::Ide
                 | SlashCommand::Keymap
                 | SlashCommand::Mcp
+                | SlashCommand::Export
                 | SlashCommand::Raw
                 | SlashCommand::Usage
                 | SlashCommand::Pets
@@ -182,6 +185,7 @@ impl SlashCommand {
         matches!(
             self,
             SlashCommand::Copy
+                | SlashCommand::Export
                 | SlashCommand::Raw
                 | SlashCommand::Diff
                 | SlashCommand::Mention
@@ -200,6 +204,7 @@ impl SlashCommand {
             | SlashCommand::Fork
             | SlashCommand::Init
             | SlashCommand::Compact
+            | SlashCommand::Export
             | SlashCommand::Keymap
             | SlashCommand::Vim
             | SlashCommand::ElevateSandbox

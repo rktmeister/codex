@@ -1,5 +1,7 @@
 use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::OnceLock;
@@ -21,7 +23,7 @@ use crate::responses_metadata::subagent_metadata_kind;
 use crate::sandbox_tags::permission_profile_sandbox_tag;
 use codex_git_utils::get_git_remote_urls_assume_git_repo;
 use codex_git_utils::get_git_repo_root;
-use codex_git_utils::get_has_changes;
+use codex_git_utils::get_has_changes_in_repo;
 use codex_git_utils::get_head_commit_hash;
 use codex_protocol::ThreadId;
 use codex_protocol::ToolName;
@@ -86,10 +88,10 @@ pub async fn detached_memory_responses_metadata(
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(crate) struct TurnMetadataState {
     cwd: AbsolutePathBuf,
-    repo_root: Option<String>,
+    repo_root: Option<PathBuf>,
     session_id: String,
     thread_id: String,
     forked_from_thread_id: Option<ThreadId>,
@@ -100,12 +102,12 @@ pub(crate) struct TurnMetadataState {
     thread_source: Option<ThreadSource>,
     turn_id: String,
     sandbox: Option<String>,
-    enriched_workspaces: Arc<RwLock<Option<BTreeMap<String, TurnMetadataWorkspace>>>>,
-    code_mode_tool_names: Arc<RwLock<Option<BTreeMap<String, ToolName>>>>,
-    turn_started_at_unix_ms: Arc<RwLock<Option<i64>>>,
-    responsesapi_client_metadata: Arc<RwLock<BTreeMap<String, String>>>,
-    user_input_requested_during_turn: Arc<AtomicBool>,
-    enrichment_task: Arc<Mutex<Option<JoinHandle<()>>>>,
+    enriched_workspaces: RwLock<Option<BTreeMap<String, TurnMetadataWorkspace>>>,
+    code_mode_tool_names: RwLock<Option<BTreeMap<String, ToolName>>>,
+    turn_started_at_unix_ms: RwLock<Option<i64>>,
+    responsesapi_client_metadata: RwLock<BTreeMap<String, String>>,
+    user_input_requested_during_turn: AtomicBool,
+    enrichment_task: Mutex<Option<JoinHandle<()>>>,
 }
 
 impl TurnMetadataState {
@@ -123,7 +125,7 @@ impl TurnMetadataState {
         windows_sandbox_level: WindowsSandboxLevel,
         enforce_managed_network: bool,
     ) -> Self {
-        let repo_root = get_git_repo_root(&cwd).map(|root| root.to_string_lossy().into_owned());
+        let repo_root = get_git_repo_root(&cwd);
         let sandbox = Some(
             permission_profile_sandbox_tag(
                 permission_profile,
@@ -145,12 +147,12 @@ impl TurnMetadataState {
             thread_source,
             turn_id,
             sandbox,
-            enriched_workspaces: Arc::new(RwLock::new(None)),
-            code_mode_tool_names: Arc::new(RwLock::new(None)),
-            turn_started_at_unix_ms: Arc::new(RwLock::new(None)),
-            responsesapi_client_metadata: Arc::new(RwLock::new(BTreeMap::new())),
-            user_input_requested_during_turn: Arc::new(AtomicBool::new(false)),
-            enrichment_task: Arc::new(Mutex::new(None)),
+            enriched_workspaces: RwLock::new(None),
+            code_mode_tool_names: RwLock::new(None),
+            turn_started_at_unix_ms: RwLock::new(None),
+            responsesapi_client_metadata: RwLock::new(BTreeMap::new()),
+            user_input_requested_during_turn: AtomicBool::new(false),
+            enrichment_task: Mutex::new(None),
         }
     }
 
@@ -303,7 +305,7 @@ impl TurnMetadataState {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(turn_started_at_unix_ms);
     }
 
-    pub(crate) fn spawn_git_enrichment_task(&self) {
+    pub(crate) fn spawn_git_enrichment_task(self: &Arc<Self>) {
         if self.repo_root.is_none() {
             return;
         }
@@ -316,19 +318,22 @@ impl TurnMetadataState {
             return;
         }
 
-        let state = self.clone();
+        let state = Arc::clone(self);
         *task_guard = Some(tokio::spawn(async move {
-            let workspace_git_metadata = state.fetch_workspace_git_metadata().await;
             let Some(repo_root) = state.repo_root.clone() else {
                 return;
             };
+            let workspace_git_metadata = state.fetch_workspace_git_metadata(&repo_root).await;
 
             if workspace_git_metadata.is_empty() {
                 return;
             }
 
             let mut workspaces = BTreeMap::new();
-            workspaces.insert(repo_root, workspace_git_metadata.into());
+            workspaces.insert(
+                repo_root.to_string_lossy().into_owned(),
+                workspace_git_metadata.into(),
+            );
             *state
                 .enriched_workspaces
                 .write()
@@ -346,11 +351,11 @@ impl TurnMetadataState {
         }
     }
 
-    async fn fetch_workspace_git_metadata(&self) -> WorkspaceGitMetadata {
+    async fn fetch_workspace_git_metadata(&self, repo_root: &Path) -> WorkspaceGitMetadata {
         let (head_commit_hash, associated_remote_urls, has_changes) = tokio::join!(
             get_head_commit_hash(&self.cwd),
             get_git_remote_urls_assume_git_repo(&self.cwd),
-            get_has_changes(&self.cwd),
+            get_has_changes_in_repo(&self.cwd, repo_root),
         );
         let latest_git_commit_hash = head_commit_hash.map(|sha| sha.0);
 
@@ -363,11 +368,13 @@ impl TurnMetadataState {
 }
 
 async fn memory_workspaces(cwd: &AbsolutePathBuf) -> BTreeMap<String, TurnMetadataWorkspace> {
-    let repo_root = get_git_repo_root(cwd).map(|root| root.to_string_lossy().into_owned());
+    let Some(repo_root) = get_git_repo_root(cwd) else {
+        return BTreeMap::new();
+    };
     let (head_commit_hash, associated_remote_urls, has_changes) = tokio::join!(
         get_head_commit_hash(cwd),
         get_git_remote_urls_assume_git_repo(cwd),
-        get_has_changes(cwd),
+        get_has_changes_in_repo(cwd, &repo_root),
     );
     let workspace_git_metadata = WorkspaceGitMetadata {
         associated_remote_urls,
@@ -375,10 +382,11 @@ async fn memory_workspaces(cwd: &AbsolutePathBuf) -> BTreeMap<String, TurnMetada
         has_changes,
     };
     let mut workspaces = BTreeMap::new();
-    if let Some(repo_root) = repo_root
-        && !workspace_git_metadata.is_empty()
-    {
-        workspaces.insert(repo_root, workspace_git_metadata.into());
+    if !workspace_git_metadata.is_empty() {
+        workspaces.insert(
+            repo_root.to_string_lossy().into_owned(),
+            workspace_git_metadata.into(),
+        );
     }
     workspaces
 }

@@ -4,6 +4,8 @@ use std::collections::HashSet;
 use codex_code_mode::CellId;
 use codex_protocol::models::ExecutedToolCall;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::models::bound_executed_tool_calls_for_prompt_prioritizing_recent;
+use codex_protocol::models::executed_tool_call_metadata_bytes;
 use codex_protocol::openai_models::ToolMode;
 use serde_json::Value as JsonValue;
 
@@ -27,6 +29,7 @@ struct ExecutedToolCallRecorderState {
     direct_calls: HashMap<String, ExecutedToolCall>,
     cells: HashMap<CellId, RecordedCell>,
     output_cells: HashMap<String, CellId>,
+    retained_calls: HashMap<(std::mem::Discriminant<ResponseItem>, String), Vec<ExecutedToolCall>>,
     pending_nested_calls: usize,
 }
 
@@ -67,7 +70,7 @@ impl ExecutedToolCallRecorder {
     ) {
         if matches!(source, ToolCallSource::Direct)
             && matches!(tool_mode, ToolMode::CodeMode | ToolMode::CodeModeOnly)
-            && call.tool_name.namespace.is_none()
+            && call.tool_name.is_default_namespace()
             && matches!(
                 (call.tool_name.name.as_str(), &call.payload),
                 (
@@ -184,17 +187,24 @@ impl ExecutedToolCallRecorder {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if state.direct_calls.is_empty() && state.output_cells.is_empty() && retry_cache.is_empty()
+        if state.direct_calls.is_empty()
+            && state.output_cells.is_empty()
+            && state.retained_calls.is_empty()
+            && retry_cache.is_empty()
         {
             return false;
         }
 
         let mut pending_retry_outputs = retry_cache.keys().cloned().collect::<HashSet<_>>();
+        let mut pending_retained_outputs =
+            state.retained_calls.keys().cloned().collect::<HashSet<_>>();
         let mut attached = false;
+        let mut retained_bytes = 0_usize;
         for item in items.iter_mut().rev() {
             if state.direct_calls.is_empty()
                 && state.output_cells.is_empty()
                 && pending_retry_outputs.is_empty()
+                && pending_retained_outputs.is_empty()
             {
                 break;
             }
@@ -212,7 +222,13 @@ impl ExecutedToolCallRecorder {
                 if !pending_retry_outputs.remove(&key) {
                     continue;
                 }
+                pending_retained_outputs.remove(&key);
                 cached.clone()
+            } else if let Some(retained) = state.retained_calls.get(&key) {
+                if !pending_retained_outputs.remove(&key) {
+                    continue;
+                }
+                retained.clone()
             } else {
                 let mut calls = state
                     .direct_calls
@@ -233,11 +249,43 @@ impl ExecutedToolCallRecorder {
                 if calls.is_empty() {
                     continue;
                 }
-                retry_cache.insert(key, calls.clone());
+                retry_cache.insert(key.clone(), calls.clone());
+                state.retained_calls.insert(key, calls.clone());
                 calls
             };
             item.append_executed_tool_calls(calls);
+            retained_bytes = retained_bytes.saturating_add(executed_tool_call_metadata_bytes(item));
             attached = true;
+        }
+        if !pending_retained_outputs.is_empty() {
+            state
+                .retained_calls
+                .retain(|key, _| !pending_retained_outputs.contains(key));
+        }
+        if retained_bytes > MAX_EXECUTED_TOOL_CALL_FULL_ARGUMENT_BYTES_PER_OUTPUT {
+            bound_executed_tool_calls_for_prompt_prioritizing_recent(items);
+            state.retained_calls.clear();
+            for item in items {
+                let call_id = match &*item {
+                    ResponseItem::FunctionCallOutput { call_id, .. }
+                    | ResponseItem::CustomToolCallOutput { call_id, .. }
+                    | ResponseItem::ToolSearchOutput {
+                        call_id: Some(call_id),
+                        ..
+                    } => call_id,
+                    _ => continue,
+                };
+                if let Some(calls) = item
+                    .executed_tool_call_metadata()
+                    .and_then(|metadata| metadata.executed_tool_calls.as_ref())
+                    .filter(|calls| !calls.is_empty())
+                {
+                    state.retained_calls.insert(
+                        (std::mem::discriminant(&*item), call_id.clone()),
+                        calls.clone(),
+                    );
+                }
+            }
         }
 
         attached

@@ -70,6 +70,10 @@ struct AppServerArgs {
     /// Controls when tmux windows are opened for app-server subagent threads.
     #[arg(long = "tmux-subagents-mode", hide = true, value_enum)]
     tmux_subagents_mode: Option<AppServerTmuxSubagentsMode>,
+
+    /// Enable process-only PSP routing for first-party ChatGPT requests.
+    #[arg(long, hide = true)]
+    psp: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -103,6 +107,7 @@ fn main() -> anyhow::Result<()> {
             remote_control,
             tmux_subagents,
             tmux_subagents_mode,
+            psp,
         } = AppServerArgs::parse();
         let loader_overrides = if disable_managed_config_from_debug_env() {
             LoaderOverrides::without_managed_config_for_tests()
@@ -115,6 +120,7 @@ fn main() -> anyhow::Result<()> {
         let auth = auth.try_into_settings()?;
         let mut runtime_options = AppServerRuntimeOptions {
             code_mode_host_transport: code_mode_host.into(),
+            psp,
             ..Default::default()
         };
         #[cfg(debug_assertions)]

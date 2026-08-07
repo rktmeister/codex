@@ -345,8 +345,17 @@ where
     where
         F: FnOnce(&mut Frame),
     {
-        self.try_draw(|frame| {
-            render_callback(frame);
+        let screen_size = self.size()?;
+        self.draw_with_size(screen_size, render_callback)
+    }
+
+    /// Draws a single frame using a screen size already obtained by the caller.
+    pub(crate) fn draw_with_size<F>(&mut self, screen_size: Size, render: F) -> io::Result<()>
+    where
+        F: FnOnce(&mut Frame),
+    {
+        self.try_draw_with_size(screen_size, |frame| {
+            render(frame);
             io::Result::Ok(())
         })
     }
@@ -391,10 +400,18 @@ where
         F: FnOnce(&mut Frame) -> Result<(), E>,
         E: Into<io::Error>,
     {
-        // Autoresize - otherwise we get glitches if shrinking or potential desync between widgets
-        // and the terminal (if growing), which may OOB.
-        self.autoresize()?;
+        let screen_size = self.size()?;
+        self.try_draw_with_size(screen_size, render_callback)
+    }
 
+    fn try_draw_with_size<F, E>(&mut self, screen_size: Size, render_callback: F) -> io::Result<()>
+    where
+        F: FnOnce(&mut Frame) -> Result<(), E>,
+        E: Into<io::Error>,
+    {
+        if screen_size != self.last_known_screen_size {
+            self.resize(screen_size)?;
+        }
         let mut frame = self.get_frame();
 
         render_callback(&mut frame).map_err(Into::into)?;
@@ -481,11 +498,16 @@ where
         Ok(())
     }
 
-    /// Force the next draw pass to repaint the entire viewport by resetting the
-    /// diff buffer. Call this after raw terminal operations that move screen
-    /// content outside ratatui's knowledge.
+    /// Force the next draw pass to repaint the entire viewport after raw terminal
+    /// operations move screen content outside ratatui's knowledge. Resetting the
+    /// diff buffer alone would leave default-style spaces equal to their previous
+    /// cells, allowing stale terminal content to show through those spaces.
     pub fn invalidate_viewport(&mut self) {
-        self.previous_buffer_mut().reset();
+        let previous_buffer = self.previous_buffer_mut();
+        previous_buffer.reset();
+        for cell in &mut previous_buffer.content {
+            cell.set_diff_option(CellDiffOption::AlwaysUpdate);
+        }
     }
 
     /// Clear the entire visible screen (not just the viewport) and force a full redraw.
@@ -792,6 +814,8 @@ mod tests {
     use super::*;
     use std::num::NonZeroU16;
 
+    use crate::test_backend::VT100Backend;
+    use insta::assert_snapshot;
     use pretty_assertions::assert_eq;
     use ratatui::backend::WindowSize;
     use ratatui::layout::Rect;
@@ -806,6 +830,7 @@ mod tests {
         output: Vec<u8>,
         size: Size,
         cursor: Position,
+        size_call_count: std::cell::Cell<usize>,
     }
 
     impl CaptureBackend {
@@ -814,6 +839,7 @@ mod tests {
                 output: Vec::new(),
                 size: Size { width, height },
                 cursor: Position { x: 0, y: 0 },
+                size_call_count: std::cell::Cell::new(/*value*/ 0),
             }
         }
 
@@ -889,6 +915,8 @@ mod tests {
         }
 
         fn size(&self) -> io::Result<Size> {
+            self.size_call_count
+                .set(self.size_call_count.get().saturating_add(/*rhs*/ 1));
             Ok(self.size)
         }
 
@@ -902,6 +930,107 @@ mod tests {
         fn flush(&mut self) -> io::Result<()> {
             Ok(())
         }
+    }
+
+    #[test]
+    fn invalidate_viewport_repaints_default_style_spaces_over_stale_terminal_cells() {
+        let width = 32;
+        let height = 2;
+        let area = Rect::new(/*x*/ 0, /*y*/ 0, width, height);
+        let mut terminal =
+            Terminal::with_options(VT100Backend::new(width, height)).expect("terminal");
+        terminal.set_viewport_area(area);
+
+        // History insertion writes directly to the terminal, leaving cells that are absent from
+        // the diff buffers. Interior default-style spaces must still overwrite those stale cells.
+        write!(
+            terminal.backend_mut(),
+            "probe-08tcleantwords stale\r\nprobe-09xcleanxwords stale"
+        )
+        .expect("prefill terminal");
+        assert!(
+            terminal
+                .backend()
+                .vt100()
+                .screen()
+                .contents()
+                .contains("probe-08tcleantwords")
+        );
+
+        terminal.invalidate_viewport();
+        terminal
+            .draw(|frame| {
+                Paragraph::new(vec![
+                    Line::from("probe-08 clean words"),
+                    Line::from("probe-09 clean words"),
+                ])
+                .render(area, frame.buffer_mut());
+            })
+            .expect("redraw invalidated viewport");
+
+        assert_snapshot!(terminal.backend().vt100().screen().contents(), @r"
+        probe-08 clean words
+        probe-09 clean words
+        ");
+    }
+
+    #[test]
+    fn ordinary_redraws_with_known_size_do_not_query_backend_size() {
+        let mut terminal =
+            Terminal::with_options(CaptureBackend::new(/*width*/ 80, /*height*/ 24))
+                .expect("terminal");
+        let screen_size = terminal.last_known_screen_size;
+
+        for _ in 0..3 {
+            terminal.draw_with_size(screen_size, |_| {}).expect("draw");
+        }
+
+        assert_eq!(terminal.backend().size_call_count.get(), 1);
+    }
+
+    #[test]
+    fn resize_draw_applies_event_dimensions_without_querying_backend_size() {
+        let mut terminal =
+            Terminal::with_options(CaptureBackend::new(/*width*/ 12, /*height*/ 4))
+                .expect("terminal");
+        let mut snapshots = Vec::new();
+
+        for width in [12, 8] {
+            let size = Size::new(width, /*height*/ 4);
+            let area = Rect::new(/*x*/ 0, /*y*/ 0, size.width, size.height);
+            terminal.set_viewport_area(area);
+            terminal
+                .draw_with_size(size, |frame| {
+                    Paragraph::new("alpha beta")
+                        .wrap(Wrap { trim: false })
+                        .render(area, frame.buffer_mut());
+                })
+                .expect("draw resized frame");
+
+            let rendered = (0..size.height)
+                .map(|y| {
+                    (0..size.width)
+                        .map(|x| terminal.previous_buffer()[(x, y)].symbol())
+                        .collect::<String>()
+                        .trim_end()
+                        .to_string()
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            snapshots.push(rendered.trim_end().to_string());
+        }
+
+        assert_eq!(terminal.backend().size_call_count.get(), 1);
+        assert_eq!(
+            terminal.last_known_screen_size,
+            Size::new(/*width*/ 8, /*height*/ 4)
+        );
+        assert_snapshot!(snapshots.join("\n\n"), @r"
+        alpha beta
+
+        alpha
+        beta
+        ");
     }
 
     #[test]

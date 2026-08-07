@@ -9,6 +9,7 @@ use super::*;
 use crate::app_server_session::ForkGoalContinuation;
 use crate::config_update::format_config_error;
 use crate::external_agent_config_migration::flow::ExternalAgentConfigMigrationFlowOutcome;
+use crate::pager_overlay::TranscriptHistoryState;
 #[cfg(target_os = "windows")]
 use codex_config::types::WindowsSandboxModeToml;
 
@@ -32,6 +33,47 @@ impl App {
             AppEvent::StartupThreadStarted { result } => {
                 self.handle_startup_thread_started(app_server, result)
                     .await?;
+            }
+            AppEvent::RequestOlderScrollbackHistory { thread_id } => {
+                if self.chat_widget.thread_id() == Some(thread_id)
+                    && self.overlay.is_none()
+                    && self.scrollback_has_older_history
+                {
+                    self.request_older_history_page(app_server, thread_id);
+                }
+            }
+            AppEvent::OlderThreadHistoryLoaded {
+                thread_id,
+                cursor,
+                result,
+            } => {
+                if let Err(err) = self
+                    .handle_older_history_page(tui, app_server, thread_id, &cursor, result)
+                    .await
+                {
+                    app_server.cancel_older_history_page(thread_id);
+                    if self.chat_widget.thread_id() == Some(thread_id)
+                        && let Some(Overlay::Transcript(overlay)) = self.overlay.as_mut()
+                    {
+                        overlay.set_history_state(TranscriptHistoryState::Failed);
+                        tui.frame_requester().schedule_frame();
+                    }
+                    tracing::warn!(%thread_id, error = %err, "failed to load older transcript history");
+                }
+            }
+            AppEvent::OpenTranscriptExportFilePrompt => {
+                self.chat_widget.show_transcript_export_file_prompt();
+            }
+            AppEvent::ExportTranscript { destination } => {
+                if let Err(error) = self.export_transcript(app_server, destination).await {
+                    self.chat_widget
+                        .add_error_message(format!("Export failed: {error}"));
+                }
+                if self.chat_widget.no_modal_or_popup_active() {
+                    self.chat_widget
+                        .set_queue_autosend_suppressed(/*suppressed*/ false);
+                    self.chat_widget.maybe_send_next_queued_input();
+                }
             }
             AppEvent::ClearUi { name } => {
                 self.clear_terminal_ui(tui, /*redraw_header*/ false)?;
@@ -90,6 +132,9 @@ impl App {
                     /*show_all*/ false,
                     /*include_non_interactive*/ false,
                     picker_app_server,
+                    app_server.request_handle(),
+                    self.primary_thread_id
+                        .or(self.current_displayed_thread_id()),
                 )
                 .await?
                 {
@@ -143,7 +188,13 @@ impl App {
                 tui.frame_requester().schedule_frame();
             }
             AppEvent::ResumeSessionByIdOrName(id_or_name) => {
-                match crate::lookup_session_target_with_app_server(app_server, &id_or_name).await? {
+                match crate::lookup_session_target_with_app_server(
+                    app_server,
+                    &self.config,
+                    &id_or_name,
+                )
+                .await?
+                {
                     Some(target_session) => {
                         return self
                             .resume_target_session(tui, app_server, target_session)
@@ -269,27 +320,33 @@ impl App {
                 self.refresh_in_memory_config_from_disk_best_effort("forking the thread")
                     .await;
                 let config = self.fresh_session_config();
-                let started = match app_server
-                    .thread_read(thread_id, /*include_turns*/ true)
-                    .await
-                {
-                    Ok(thread) => match crate::app_backtrack::backtrack_fork_before_turn_id(
-                        &thread.turns,
+                let turns = match self.thread_event_channels.get(&thread_id) {
+                    Some(channel) => Some(channel.store.lock().await.turns.clone()),
+                    None => None,
+                };
+                let started = match turns {
+                    Some(turns) => match crate::app_backtrack::backtrack_fork_before_turn_id(
+                        &turns,
                         nth_user_message,
                         &mut prompt,
                     ) {
-                        Ok(Some(before_turn_id)) => {
+                        Ok(before_turn_id)
+                            if before_turn_id.is_some()
+                                || app_server.has_older_history(thread_id) =>
+                        {
+                            let before_turn_id = before_turn_id
+                                .or_else(|| turns.first().map(|turn| turn.id.clone()));
                             app_server
                                 .fork_thread_at(
                                     config.clone(),
                                     thread_id,
                                     /*last_turn_id*/ None,
-                                    /*before_turn_id*/ Some(before_turn_id),
+                                    before_turn_id,
                                     ForkGoalContinuation::StartIfIdle,
                                 )
                                 .await
                         }
-                        Ok(None) => {
+                        Ok(_) => {
                             app_server
                                 .start_thread_with_session_start_source(
                                     &config, /*session_start_source*/ None,
@@ -298,7 +355,9 @@ impl App {
                         }
                         Err(err) => Err(err),
                     },
-                    Err(err) => Err(err),
+                    None => Err(color_eyre::eyre::eyre!(
+                        "the selected thread is no longer available for prompt editing"
+                    )),
                 };
                 match started {
                     Ok(forked) => {
@@ -334,6 +393,10 @@ impl App {
                 self.insert_history_cell(tui, cell);
             }
             AppEvent::EndInitialHistoryReplayBuffer => {
+                self.scrollback_has_older_history = self
+                    .chat_widget
+                    .thread_id()
+                    .is_some_and(|thread_id| app_server.has_older_history(thread_id));
                 self.finish_initial_history_replay_buffer(tui);
             }
             AppEvent::ConsolidateAgentMessage {
@@ -437,13 +500,14 @@ impl App {
             AppEvent::CodexOp(op) => {
                 let is_user_turn = matches!(&op, AppCommand::UserTurn { .. });
                 if is_user_turn {
-                    self.handle_draw_pre_render(tui)?;
+                    let screen_size = tui.terminal.last_known_screen_size;
+                    self.handle_draw_pre_render(tui, screen_size)?;
                     if self.transcript_reflow.has_pending_reflow() {
                         self.transcript_reflow.schedule_immediate();
-                        self.maybe_run_resize_reflow(tui)?;
+                        self.maybe_run_resize_reflow(tui, screen_size)?;
                     }
                     self.chat_widget.pre_draw_tick();
-                    self.render_chat_widget_frame(tui)?;
+                    self.render_chat_widget_frame(tui, screen_size)?;
                 }
                 self.chat_widget.prepare_local_op_submission(&op);
                 if let Err(err) = self.submit_active_thread_op(app_server, op).await {
@@ -1109,11 +1173,15 @@ impl App {
                     .await;
             }
             AppEvent::UpdateModel(model) => {
-                self.chat_widget.set_model(&model);
-                self.sync_active_thread_model_setting(app_server, model)
-                    .await;
-                self.sync_active_thread_service_tier_to_cached_session()
-                    .await;
+                let model_changed = self.chat_widget.current_model() != model
+                    || self.chat_widget.current_collaboration_mode().model() != model;
+                if model_changed {
+                    self.chat_widget.set_model(&model);
+                    self.sync_active_thread_model_setting(app_server, model, /*effort*/ None)
+                        .await;
+                    self.sync_active_thread_service_tier_to_cached_session()
+                        .await;
+                }
             }
             AppEvent::UpdatePersonality(personality) => {
                 self.on_update_personality(personality);
@@ -1137,12 +1205,22 @@ impl App {
                 self.chat_widget.open_advanced_reasoning_popup(model);
             }
             AppEvent::ApplyAdvancedReasoning { model, effort } => {
+                let model_changed = self.chat_widget.current_model() != model
+                    || self.chat_widget.current_collaboration_mode().model() != model;
                 let default_effort =
                     self.on_apply_advanced_reasoning(model.as_str(), effort.clone());
-                if let Some(mut params) =
-                    self.active_thread_model_setting_update_params(model.clone())
+                if model_changed {
+                    self.sync_active_thread_model_setting(
+                        app_server,
+                        model.clone(),
+                        Some(effort.clone()),
+                    )
+                    .await;
+                } else if let Some(mut params) =
+                    self.active_thread_reasoning_setting_update_params(Some(effort.clone()))
                 {
-                    params.effort = Some(effort.clone());
+                    params.collaboration_mode =
+                        Some(self.chat_widget.effective_collaboration_mode());
                     self.send_thread_settings_update(app_server, params).await;
                 }
                 self.sync_active_thread_service_tier_to_cached_session()
@@ -1714,6 +1792,11 @@ impl App {
                             .add_error_message(format!("Failed to save default model: {error}"));
                     }
                 }
+            }
+            AppEvent::CyberModelAutoReviewNotice => {
+                self.chat_widget.add_warning_message(
+                    "Cyber models default to \"Approve for me\" for safety reasons.".to_string(),
+                );
             }
             AppEvent::PluginUninstallLoaded {
                 cwd,
@@ -2359,9 +2442,15 @@ impl App {
                 context,
                 action,
                 intent,
+                capture_mode,
             } => {
-                self.chat_widget
-                    .open_keymap_capture(context, action, intent, &self.keymap);
+                self.chat_widget.open_keymap_capture(
+                    context,
+                    action,
+                    intent,
+                    capture_mode,
+                    &self.keymap,
+                );
             }
             AppEvent::OpenKeymapDebug => {
                 self.chat_widget.open_keymap_debug(&self.keymap);
@@ -2434,6 +2523,7 @@ impl App {
             .await
         {
             Ok(()) => {
+                self.cancel_pending_key_chord();
                 self.config.tui_keymap = keymap_config.clone();
                 self.keymap = runtime_keymap.clone();
                 self.chat_widget
@@ -2485,6 +2575,7 @@ impl App {
             .await
         {
             Ok(()) => {
+                self.cancel_pending_key_chord();
                 self.config.tui_keymap = keymap_config.clone();
                 self.keymap = runtime_keymap.clone();
                 self.chat_widget

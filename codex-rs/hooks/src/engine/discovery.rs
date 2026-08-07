@@ -7,7 +7,6 @@ use codex_config::CONFIG_TOML_FILE;
 use codex_config::ConfigLayerEntry;
 use codex_config::ConfigLayerSource;
 use codex_config::ConfigLayerStack;
-use codex_config::ConfigLayerStackOrdering;
 use codex_config::HookEventsToml;
 use codex_config::HookHandlerConfig;
 use codex_config::HookStateToml;
@@ -98,10 +97,7 @@ pub(crate) fn discover_handlers(
             policy,
         );
 
-        for layer in config_layer_stack.get_layers(
-            ConfigLayerStackOrdering::LowestPrecedenceFirst,
-            /*include_disabled*/ false,
-        ) {
+        for layer in config_layer_stack.layers_low_to_high() {
             let (hook_source, is_managed) = hook_metadata_for_config_layer_source(&layer.name);
             let policy_path = config_toml_source_path(layer);
             let policy_source = HookHandlerSource {
@@ -587,6 +583,10 @@ fn append_matcher_groups(
                     }
                     *display_order += 1;
                 }
+                HookHandlerConfig::McpTool { .. } => warnings.push(format!(
+                    "skipping MCP tool hook in {}: MCP tool hooks are not supported yet",
+                    source.path.display()
+                )),
                 HookHandlerConfig::Prompt {} => warnings.push(format!(
                     "skipping prompt hook in {}: prompt hooks are not supported yet",
                     source.path.display()
