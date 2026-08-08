@@ -10,6 +10,9 @@ pub struct ToolRegistryConfigToml {
     /// Fail the turn when multiple tools share the same effective name.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_on_tool_collisions: Option<bool>,
+    /// Include authoritative tool information in per-turn request metadata.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub turn_metadata_includes_tool_info: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]

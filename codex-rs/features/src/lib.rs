@@ -105,6 +105,8 @@ pub enum Feature {
     CodeModeBufferedExec,
     /// Run JavaScript code mode in the standalone host process.
     CodeModeHost,
+    /// Terminate active code mode cells when their turn is interrupted.
+    CodeModeInterrupt,
     /// Restrict model-visible tools to code mode entrypoints (`exec`, `wait`).
     CodeModeOnly,
     /// Only expose py_repl tools directly to the model.
@@ -249,6 +251,8 @@ pub enum Feature {
     DefaultModeRequestUserInput,
     /// Enable automatic review for approval prompts.
     GuardianApproval,
+    /// Reuse encrypted parent compaction when restarting Guardian review sessions.
+    GuardianReuseParentCompaction,
     /// Enable Guardian V2 automatic approval reviews.
     GuardianV2,
     /// Enable persisted thread goals and automatic goal continuation.
@@ -952,6 +956,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         default_enabled: true,
     },
     FeatureSpec {
+        id: Feature::CodeModeInterrupt,
+        key: "code_mode_interrupt",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
+    },
+    FeatureSpec {
         id: Feature::CodeModeOnly,
         key: "code_mode_only",
         stage: Stage::UnderDevelopment,
@@ -1380,6 +1390,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         key: "guardian_approval",
         stage: Stage::Stable,
         default_enabled: true,
+    },
+    FeatureSpec {
+        id: Feature::GuardianReuseParentCompaction,
+        key: "guardian_reuse_parent_compaction",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
     },
     FeatureSpec {
         id: Feature::GuardianV2,
