@@ -778,13 +778,13 @@ impl PyReplManager {
                 workspace_roots
             }
         };
-        let exec_env = sandbox
+        let sandbox_request = sandbox
             .transform(SandboxTransformRequest {
                 command,
                 permissions: &permission_profile,
                 sandbox: sandbox_type,
                 enforce_managed_network: has_managed_network_requirements,
-                environment_id: Some(&turn_environment.environment_id),
+                environment_id: Some(&turn_environment.selection.environment_id),
                 network: None,
                 sandbox_policy_cwd: &cwd,
                 #[cfg(target_os = "macos")]
@@ -797,14 +797,13 @@ impl PyReplManager {
                     .permissions
                     .windows_sandbox_private_desktop,
             })
-            .map(|request| {
-                crate::sandboxing::ExecRequest::from_sandbox_exec_request(
-                    request,
-                    options,
-                    windows_sandbox_workspace_roots,
-                )
-            })
-            .map_err(|err| format!("failed to configure sandbox for py_repl: {err}"))?;
+            .map_err(|err| format!("failed to transform py_repl sandbox request: {err}"))?;
+        let exec_env = crate::sandboxing::ExecRequest::from_sandbox_exec_request(
+            sandbox_request,
+            options,
+            windows_sandbox_workspace_roots,
+        )
+        .map_err(|err| format!("failed to configure sandbox for py_repl: {err}"))?;
 
         let mut cmd =
             tokio::process::Command::new(exec_env.command.first().cloned().unwrap_or_default());
@@ -1637,7 +1636,7 @@ impl PyReplManager {
         let manager = &exec.session.services.unified_exec_manager;
         let context = UnifiedExecContext::new(
             Arc::clone(&exec.session),
-            Arc::clone(&exec.turn),
+            Arc::clone(&exec.step_context),
             request_id.clone(),
         );
 
@@ -1737,7 +1736,7 @@ impl PyReplManager {
         let manager = &exec.session.services.unified_exec_manager;
         let context = UnifiedExecContext::new(
             Arc::clone(&exec.session),
-            Arc::clone(&exec.turn),
+            Arc::clone(&exec.step_context),
             request_id.clone(),
         );
         let initial_output = tokio::select! {
@@ -1932,7 +1931,7 @@ impl PyReplManager {
         let requested_additional_permissions = req.additional_permissions.clone();
         let effective_additional_permissions = apply_granted_turn_permissions(
             exec.session.as_ref(),
-            &turn_environment.environment_id,
+            &turn_environment.selection.environment_id,
             native_cwd.as_path(),
             req.sandbox_permissions,
             req.additional_permissions.clone(),
