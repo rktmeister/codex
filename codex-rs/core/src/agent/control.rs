@@ -66,6 +66,7 @@ mod execution;
 mod legacy;
 mod residency;
 mod spawn;
+mod user_authorization;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum SpawnAgentForkMode {

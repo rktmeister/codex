@@ -33,6 +33,7 @@ use codex_tools::ToolExecutorFuture;
 use codex_tools::ToolName;
 use codex_tools::ToolSpec;
 use codex_utils_absolute_path::AbsolutePathBuf;
+use codex_utils_path_uri::PathUri;
 
 pub struct PyReplHandler;
 pub struct PyReplResetHandler;
@@ -85,10 +86,12 @@ async fn emit_py_repl_exec_begin(
     call_id: &str,
     cwd: &AbsolutePathBuf,
 ) {
-    let emitter = ToolEmitter::shell(
-        vec!["py_repl".to_string()],
-        cwd.clone(),
+    let command = ["py_repl".to_string()];
+    let emitter = ToolEmitter::unified_exec(
+        &command,
+        PathUri::from_abs_path(cwd),
         ExecCommandSource::Agent,
+        None,
         /*plugin_attribution*/ None,
     );
     let ctx = ToolEventCtx::new(session, turn, call_id, None);
@@ -105,10 +108,12 @@ async fn emit_py_repl_exec_end(
     cwd: &AbsolutePathBuf,
 ) {
     let exec_output = build_py_repl_exec_output(output, error, duration);
-    let emitter = ToolEmitter::shell(
-        vec!["py_repl".to_string()],
-        cwd.clone(),
+    let command = ["py_repl".to_string()];
+    let emitter = ToolEmitter::unified_exec(
+        &command,
+        PathUri::from_abs_path(cwd),
         ExecCommandSource::Agent,
+        None,
         /*plugin_attribution*/ None,
     );
     let ctx = ToolEventCtx::new(session, turn, call_id, None);

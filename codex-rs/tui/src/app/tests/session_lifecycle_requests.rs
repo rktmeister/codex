@@ -64,7 +64,7 @@ fn take_backfill_counts(requests: &RecordedRequests) -> (usize, usize) {
 }
 
 /// Starts an embedded app server behind a loopback WebSocket proxy that records JSON-RPC methods.
-async fn start_recording_app_server(
+pub(super) async fn start_recording_app_server(
     config: &Config,
     blocked_thread_list: Option<(ThreadId, oneshot::Sender<()>, oneshot::Receiver<()>)>,
     failed_thread_name: Option<&'static str>,
@@ -255,7 +255,18 @@ async fn start_recording_app_server_with_history(
                         )?)
                         .await?;
                 }
-                JSONRPCMessage::Response(_) | JSONRPCMessage::Error(_) => {}
+                JSONRPCMessage::Response(response) => {
+                    request_sink
+                        .lock()
+                        .expect("request recorder lock")
+                        .push(JSONRPCRequest {
+                            id: response.id,
+                            method: "server/request/response".to_string(),
+                            params: Some(response.result),
+                            trace: None,
+                        });
+                }
+                JSONRPCMessage::Error(_) => {}
             }
         }
         embedded.shutdown().await?;
@@ -366,6 +377,7 @@ async fn older_pagination_reconciles_review_prompts_across_page_boundaries() -> 
             }],
             phase: None,
             memory_citation: None,
+            delivery: None,
         })
     }));
     items.extend([
@@ -554,6 +566,7 @@ async fn transcript_home_loads_every_older_history_page() -> Result<()> {
                 }],
                 phase: None,
                 memory_citation: None,
+                delivery: None,
             }),
             started_at_ms: None,
             completed_at_ms: 0,
@@ -919,6 +932,7 @@ async fn underfilled_scrollback_fetches_older_pages_without_opening_the_transcri
                 }],
                 phase: None,
                 memory_citation: None,
+                delivery: None,
             }),
             started_at_ms: None,
             completed_at_ms: 0,
@@ -1123,6 +1137,21 @@ async fn paginated_workflows_never_request_full_thread_history() -> Result<()> {
     assert!(!recorded_params(&requests, "thread/items/list").is_empty());
 
     let previous_read_count = paginated_reads.len();
+    let preview = crate::resume_picker::load_transcript_preview(
+        &mut app_server,
+        legacy_thread_id,
+        Some(&app.config),
+    )
+    .await?;
+    assert!(!preview.is_empty());
+    let preview_reads = recorded_params(&requests, "thread/read");
+    let preview_include_turns = preview_reads[previous_read_count..]
+        .iter()
+        .map(|params| params["includeTurns"].as_bool().unwrap_or(false))
+        .collect::<Vec<_>>();
+    assert_eq!(preview_include_turns, vec![false]);
+
+    let previous_read_count = preview_reads.len();
     crate::thread_transcript::load_session_transcript(
         &mut app_server,
         legacy_thread_id,

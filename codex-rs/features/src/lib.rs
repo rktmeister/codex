@@ -22,6 +22,7 @@ pub use feature_configs::CurrentTimeReminderConfigToml;
 pub use feature_configs::CurrentTimeReminderDeliveryMode;
 pub use feature_configs::CurrentTimeSource;
 pub use feature_configs::GuardianV2ConfigToml;
+pub use feature_configs::GuardianV2ReviewScopeConfigToml;
 pub use feature_configs::GuardianV2TranscriptConfigToml;
 pub use feature_configs::GuardianV2TranscriptSource;
 pub use feature_configs::MultiAgentV2ConfigToml;
@@ -148,8 +149,12 @@ pub enum Feature {
     UseLegacyLandlock,
     /// Experimental shell snapshotting.
     ShellSnapshot,
+    /// Keep policy-filtered shell snapshots entirely in executor memory.
+    ShellSnapshotV2,
     /// Allow turns to start while selected executors are still starting.
     DeferredExecutor,
+    /// Use the current working directory for turn diff display paths.
+    CwdRelativeTurnDiffs,
     /// Enable runtime metrics snapshots via a manual reader.
     RuntimeMetrics,
     /// Enable startup memory extraction and file-backed memory consolidation.
@@ -210,6 +215,14 @@ pub enum Feature {
     ///
     /// Requirements-only gate: this should be set from requirements, not user config.
     InAppBrowser,
+    /// Allow the in-app chat pane in desktop apps.
+    ///
+    /// Requirements-only gate: this should be set from requirements, not user config.
+    InAppChat,
+    /// Allow in-app dictation in desktop apps.
+    ///
+    /// Requirements-only gate: this should be set from requirements, not user config.
+    InAppDictation,
     /// Allow desktop apps to perform in-app updates.
     ///
     /// Requirements-only gate: this should be set from requirements, not user config.
@@ -258,6 +271,8 @@ pub enum Feature {
     MentionsV2,
     /// Allow request_user_input in Default collaboration mode.
     DefaultModeRequestUserInput,
+    /// Removed compatibility flag for model-enabled async user messaging.
+    SendAsyncMessage,
     /// Enable automatic review for approval prompts.
     GuardianApproval,
     /// Reuse encrypted parent compaction when restarting Guardian review sessions.
@@ -268,6 +283,8 @@ pub enum Feature {
     GuardianNodeReplTranscriptImages,
     /// Enable Guardian V2 automatic approval reviews.
     GuardianV2,
+    /// Enable the extension-owned synchronous Guardian reviewer.
+    GuardianExt,
     /// Enable persisted thread goals and automatic goal continuation.
     Goals,
     /// Add current context-window metadata to model-visible context.
@@ -857,8 +874,8 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::UnifiedExecZshFork,
         key: "unified_exec_zsh_fork",
-        stage: Stage::UnderDevelopment,
-        default_enabled: false,
+        stage: Stage::Removed,
+        default_enabled: true,
     },
     FeatureSpec {
         id: Feature::ShellSnapshot,
@@ -867,8 +884,20 @@ pub const FEATURES: &[FeatureSpec] = &[
         default_enabled: true,
     },
     FeatureSpec {
+        id: Feature::ShellSnapshotV2,
+        key: "shell_snapshot_v2",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
+    },
+    FeatureSpec {
         id: Feature::DeferredExecutor,
         key: "deferred_executor",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
+    },
+    FeatureSpec {
+        id: Feature::CwdRelativeTurnDiffs,
+        key: "cwd_relative_turn_diffs",
         stage: Stage::UnderDevelopment,
         default_enabled: false,
     },
@@ -1235,6 +1264,18 @@ pub const FEATURES: &[FeatureSpec] = &[
         default_enabled: true,
     },
     FeatureSpec {
+        id: Feature::InAppChat,
+        key: "in_app_chat",
+        stage: Stage::Stable,
+        default_enabled: true,
+    },
+    FeatureSpec {
+        id: Feature::InAppDictation,
+        key: "in_app_dictation",
+        stage: Stage::Stable,
+        default_enabled: true,
+    },
+    FeatureSpec {
         id: Feature::InAppUpdates,
         key: "in_app_updates",
         stage: Stage::Stable,
@@ -1355,6 +1396,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         default_enabled: false,
     },
     FeatureSpec {
+        id: Feature::SendAsyncMessage,
+        key: "send_async_message",
+        stage: Stage::Removed,
+        default_enabled: false,
+    },
+    FeatureSpec {
         id: Feature::TerminalVisualizationInstructions,
         key: "terminal_visualization_instructions",
         stage: Stage::UnderDevelopment,
@@ -1387,6 +1434,12 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::GuardianV2,
         key: "guardianv2",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
+    },
+    FeatureSpec {
+        id: Feature::GuardianExt,
+        key: "guardian_ext",
         stage: Stage::UnderDevelopment,
         default_enabled: false,
     },

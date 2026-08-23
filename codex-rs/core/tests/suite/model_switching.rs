@@ -115,7 +115,7 @@ fn test_model_info(
             effort: ReasoningEffort::Medium,
             description: ReasoningEffort::Medium.to_string(),
         }],
-        shell_type: ConfigShellToolType::ShellCommand,
+        shell_type: ConfigShellToolType::UnifiedExec,
         visibility: ModelVisibility::List,
         supported_in_api: true,
         input_modalities,
@@ -411,6 +411,7 @@ async fn model_change_appends_model_instructions_developer_message() -> Result<(
     assert_eq!(requests.len(), 2, "expected two model requests");
 
     let second_request = requests.last().expect("expected second request");
+    assert!(second_request.has_content_kinds(&["model_switch.instructions"]));
     let developer_texts = second_request.message_input_texts("developer");
     let model_switch_text = developer_texts
         .iter()
@@ -1330,7 +1331,7 @@ async fn model_switch_to_smaller_model_updates_token_context_window() -> Result<
             effort: ReasoningEffort::Medium,
             description: ReasoningEffort::Medium.to_string(),
         }],
-        shell_type: ConfigShellToolType::ShellCommand,
+        shell_type: ConfigShellToolType::UnifiedExec,
         visibility: ModelVisibility::List,
         supported_in_api: true,
         input_modalities: default_input_modalities(),

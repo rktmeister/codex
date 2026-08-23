@@ -10,6 +10,7 @@ use std::time::Duration;
 use std::time::Instant as StdInstant;
 
 use codex_exec_server::ExecutorFileSystem;
+use codex_exec_server::GetMetadataOptions;
 use codex_features::Feature;
 use codex_protocol::ThreadId;
 use codex_protocol::models::AdditionalPermissionProfile;
@@ -1637,6 +1638,7 @@ impl PyReplManager {
         let context = UnifiedExecContext::new(
             Arc::clone(&exec.session),
             Arc::clone(&exec.step_context),
+            reset_cancel.clone(),
             request_id.clone(),
         );
 
@@ -1737,6 +1739,7 @@ impl PyReplManager {
         let context = UnifiedExecContext::new(
             Arc::clone(&exec.session),
             Arc::clone(&exec.step_context),
+            reset_cancel.clone(),
             request_id.clone(),
         );
         let initial_output = tokio::select! {
@@ -2392,7 +2395,14 @@ pub(crate) async fn discover_project_venv_python_path(
     for relative in candidates {
         let candidate = project_root.join(relative);
         let candidate_uri = PathUri::from_abs_path(&candidate);
-        match fs.get_metadata(&candidate_uri, /*sandbox*/ None).await {
+        match fs
+            .get_metadata(
+                &candidate_uri,
+                GetMetadataOptions::default(),
+                /*sandbox*/ None,
+            )
+            .await
+        {
             Ok(metadata) if metadata.is_file => return Some(candidate.to_path_buf()),
             Ok(_) => {}
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,

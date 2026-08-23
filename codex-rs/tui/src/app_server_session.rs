@@ -14,7 +14,6 @@ pub(crate) use history::thread_items_page_params;
 
 use crate::bottom_pane::FeedbackAudience;
 use crate::legacy_core::config::Config;
-use crate::permission_compat::legacy_compatible_permission_profile;
 use crate::service_tier_resolution;
 use crate::session_state::MessageHistoryMetadata;
 use crate::session_state::ThreadSessionState;
@@ -116,6 +115,7 @@ use codex_app_server_protocol::TurnStartResponse;
 use codex_app_server_protocol::TurnSteerParams;
 use codex_app_server_protocol::TurnSteerResponse;
 use codex_app_server_protocol::UserInput;
+use codex_config::ConfigLayerSource;
 use codex_otel::TelemetryAuthMode;
 use codex_protocol::ThreadId;
 use codex_protocol::approvals::GuardianAssessmentEvent;
@@ -288,6 +288,8 @@ pub(crate) enum ResumeModelSettings {
     OverrideFromCurrentConfig,
     /// Omits those overrides so app-server restores the settings saved with the thread.
     RestoreFromThread,
+    /// Rejoins a loaded thread without changing any of its existing settings.
+    PreserveExistingThread,
 }
 
 impl ThreadParamsMode {
@@ -332,6 +334,12 @@ pub(crate) enum TurnPermissionsOverride {
     /// Apply a user-selected legacy/custom permission profile.
     LegacySandbox(PermissionProfile),
 }
+
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "the selected permission profile cannot be safely represented by the legacy app-server sandbox policy; select a named or legacy-compatible permission profile"
+)]
+pub(crate) struct UnsupportedLegacyPermissionProfile;
 
 impl AppServerSession {
     pub(crate) fn new(client: AppServerClient, thread_params_mode: ThreadParamsMode) -> Self {
@@ -600,21 +608,24 @@ impl AppServerSession {
 
     #[cfg(test)]
     pub(crate) async fn start_thread(&mut self, config: &Config) -> Result<AppServerStartedThread> {
-        self.start_thread_with_session_start_source(config, /*session_start_source*/ None)
-            .await
+        self.start_thread_with_session_start_source(
+            config, /*session_start_source*/ None, /*remote_cwd_override*/ None,
+        )
+        .await
     }
 
     pub(crate) async fn start_thread_with_session_start_source(
         &mut self,
         config: &Config,
         session_start_source: Option<ThreadStartSource>,
+        remote_cwd_override: Option<&std::path::Path>,
     ) -> Result<AppServerStartedThread> {
         let request_id = self.next_request_id();
         let session_config = self.session_config_with_effective_service_tier(config);
         let mut params = thread_start_params_from_config(
             &session_config,
             self.thread_params_mode(),
-            self.remote_cwd_override.as_deref(),
+            remote_cwd_override.or(self.remote_cwd_override.as_deref()),
             session_start_source,
         );
         if self.history_support == ThreadHistorySupport::LegacyOnly {
@@ -958,6 +969,7 @@ impl AppServerSession {
                 request_id,
                 params: ThreadMetadataUpdateParams {
                     thread_id: thread_id.to_string(),
+                    project_id: None,
                     git_info: Some(ThreadMetadataGitInfoUpdateParams {
                         sha: None,
                         branch: Some(Some(branch)),
@@ -1045,7 +1057,7 @@ impl AppServerSession {
     ) -> Result<TurnStartResponse> {
         let request_id = self.next_request_id();
         let (sandbox_policy, permissions) =
-            turn_permissions_overrides(permissions_override, cwd.as_path());
+            turn_permissions_overrides(permissions_override, cwd.as_path())?;
         self.client
             .request_typed(ClientRequest::TurnStart {
                 request_id,
@@ -1524,7 +1536,34 @@ fn approvals_reviewer_override_from_config(
 fn config_request_overrides_from_config(
     config: &Config,
 ) -> Option<HashMap<String, serde_json::Value>> {
-    let mut overrides = HashMap::new();
+    let mut session_config = toml::Value::Table(toml::Table::new());
+    for layer in config.config_layer_stack.layers_low_to_high() {
+        if matches!(&layer.name, ConfigLayerSource::SessionFlags) {
+            codex_config::merge_toml_values(&mut session_config, &layer.config);
+        }
+    }
+    let mut overrides: HashMap<_, _> = session_config
+        .as_table()
+        .into_iter()
+        .flatten()
+        .filter(|(key, _)| {
+            matches!(
+                key.as_str(),
+                "allow_login_shell"
+                    | "default_permissions"
+                    | "features"
+                    | "network"
+                    | "permissions"
+                    | "sandbox_workspace_write"
+                    | "shell_environment_policy"
+            )
+        })
+        .filter_map(|(key, value)| {
+            serde_json::to_value(value)
+                .ok()
+                .map(|value| (key.clone(), value))
+        })
+        .collect();
     let mut insert = |key: &str, value: Option<String>| {
         if let Some(value) = value {
             overrides.insert(key.to_string(), serde_json::Value::String(value));
@@ -1601,14 +1640,14 @@ fn permission_profile_id_from_active_profile(active: ActivePermissionProfile) ->
     active.id
 }
 
-fn turn_permissions_overrides(
+pub(crate) fn turn_permissions_overrides(
     permissions_override: TurnPermissionsOverride,
     cwd: &std::path::Path,
-) -> (
+) -> Result<(
     Option<codex_app_server_protocol::SandboxPolicy>,
     Option<String>,
-) {
-    match permissions_override {
+)> {
+    Ok(match permissions_override {
         TurnPermissionsOverride::Preserve => (None, None),
         TurnPermissionsOverride::ActiveProfile(active_permission_profile) => (
             None,
@@ -1617,17 +1656,20 @@ fn turn_permissions_overrides(
             )),
         ),
         TurnPermissionsOverride::LegacySandbox(permission_profile) => {
-            let legacy_profile = legacy_compatible_permission_profile(&permission_profile, cwd);
-            let policy = legacy_profile
+            let policy = permission_profile
                 .to_legacy_sandbox_policy(cwd)
-                .unwrap_or_else(|err| {
-                    unreachable!(
-                        "legacy-compatible permissions must project to legacy policy: {err}"
-                    )
-                });
+                .map_err(|_| UnsupportedLegacyPermissionProfile)?;
+            let projected_profile =
+                PermissionProfile::from_legacy_sandbox_policy_for_cwd(&policy, cwd);
+            if !permission_profile
+                .file_system_sandbox_policy()
+                .is_semantically_equivalent_to(&projected_profile.file_system_sandbox_policy(), cwd)
+            {
+                return Err(UnsupportedLegacyPermissionProfile.into());
+            }
             (Some(policy.into()), None)
         }
-    }
+    })
 }
 
 fn permissions_selection_from_config(
@@ -1689,6 +1731,12 @@ fn thread_resume_params_from_config(
     remote_cwd_override: Option<&std::path::Path>,
     model_settings: ResumeModelSettings,
 ) -> ThreadResumeParams {
+    if model_settings == ResumeModelSettings::PreserveExistingThread {
+        return ThreadResumeParams {
+            thread_id: thread_id.to_string(),
+            ..ThreadResumeParams::default()
+        };
+    }
     let permissions = permissions_selection_from_config(&config, thread_params_mode);
     let sandbox = permissions
         .is_none()
@@ -1713,7 +1761,9 @@ fn thread_resume_params_from_config(
             config.model.clone(),
             thread_params_mode.model_provider_from_config(&config),
         ),
-        ResumeModelSettings::RestoreFromThread => (None, None),
+        ResumeModelSettings::RestoreFromThread | ResumeModelSettings::PreserveExistingThread => {
+            (None, None)
+        }
     };
     ThreadResumeParams {
         thread_id: thread_id.to_string(),
@@ -2350,6 +2400,88 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn shared_thread_start_preserves_explicit_session_overrides() -> Result<()> {
+        let codex_home = tempfile::tempdir()?;
+        let workspace = codex_home.path().join("workspace");
+        std::fs::create_dir(&workspace)?;
+        std::fs::write(
+            codex_home.path().join("config.toml"),
+            "sandbox_mode = \"workspace-write\"\n[sandbox_workspace_write]\nnetwork_access = true\n",
+        )?;
+        let server_config = build_config(&codex_home).await;
+        let config = ConfigBuilder::default()
+            .codex_home(codex_home.path().to_path_buf())
+            .harness_overrides(ConfigOverrides {
+                cwd: Some(workspace.clone()),
+                ..ConfigOverrides::default()
+            })
+            .cli_overrides(vec![
+                (
+                    "features.multi_agent_mode".to_string(),
+                    toml::Value::Boolean(true),
+                ),
+                (
+                    "sandbox_workspace_write.network_access".to_string(),
+                    toml::Value::Boolean(false),
+                ),
+                (
+                    "instructions".to_string(),
+                    toml::Value::String("unsafe ".repeat(10_000)),
+                ),
+                ("model".to_string(), "gpt-5".into()),
+                ("approval_policy".to_string(), "never".into()),
+            ])
+            .build()
+            .await?;
+
+        let params = thread_start_params_from_config(
+            &config,
+            ThreadParamsMode::Remote,
+            /*remote_cwd_override*/ None,
+            /*session_start_source*/ None,
+        );
+
+        let overrides = params.config.expect("config overrides");
+        assert_eq!(
+            (
+                overrides.get("features").cloned(),
+                overrides.get("sandbox_workspace_write").cloned(),
+                overrides.get("instructions").cloned(),
+            ),
+            (
+                Some(serde_json::json!({ "multi_agent_mode": true })),
+                Some(serde_json::json!({ "network_access": false })),
+                None,
+            )
+        );
+        for mode in [ThreadParamsMode::Embedded, ThreadParamsMode::Remote] {
+            let mut app_server =
+                crate::start_embedded_app_server_for_picker(&server_config).await?;
+            app_server.thread_params_mode = mode;
+            app_server.remote_cwd_override = Some(workspace.clone());
+
+            let started = app_server.start_thread(&config).await?;
+
+            assert_eq!(
+                (
+                    started.session.permission_profile.network_sandbox_policy(),
+                    started.session.model.as_str(),
+                    started.session.approval_policy,
+                    started.session.cwd.as_path(),
+                ),
+                (
+                    NetworkSandboxPolicy::Restricted,
+                    "gpt-5",
+                    AskForApproval::Never,
+                    workspace.as_path(),
+                )
+            );
+            app_server.shutdown().await?;
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn thread_start_params_include_cwd_for_embedded_sessions() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let config = ConfigBuilder::default()
@@ -2412,7 +2544,8 @@ mod tests {
         let (sandbox_policy, permissions) = turn_permissions_overrides(
             TurnPermissionsOverride::ActiveProfile(active_permission_profile),
             cwd.as_path(),
-        );
+        )
+        .expect("active permission profile should be supported");
 
         assert_eq!(sandbox_policy, None);
         assert_eq!(permissions, Some(expected_permissions));
@@ -2427,7 +2560,8 @@ mod tests {
         let (sandbox_policy, permissions) = turn_permissions_overrides(
             TurnPermissionsOverride::ActiveProfile(active_permission_profile),
             cwd.as_path(),
-        );
+        )
+        .expect("active permission profile should be supported");
 
         assert_eq!(sandbox_policy, None);
         assert_eq!(
@@ -2441,7 +2575,8 @@ mod tests {
         let cwd = test_path_buf("/workspace/project").abs();
 
         let (sandbox_policy, permissions) =
-            turn_permissions_overrides(TurnPermissionsOverride::Preserve, cwd.as_path());
+            turn_permissions_overrides(TurnPermissionsOverride::Preserve, cwd.as_path())
+                .expect("preserving permissions should be supported");
 
         assert_eq!(sandbox_policy, None);
         assert_eq!(permissions, None);
@@ -2454,7 +2589,8 @@ mod tests {
         let (sandbox_policy, permissions) = turn_permissions_overrides(
             TurnPermissionsOverride::LegacySandbox(PermissionProfile::read_only()),
             cwd.as_path(),
-        );
+        )
+        .expect("read-only permission profile should be supported");
 
         assert_eq!(
             sandbox_policy,
@@ -2463,6 +2599,118 @@ mod tests {
             })
         );
         assert_eq!(permissions, None);
+    }
+
+    #[test]
+    fn legacy_turn_permissions_preserve_workspace_write() {
+        let cwd = test_path_buf("/workspace/project").abs();
+
+        let (sandbox_policy, permissions) = turn_permissions_overrides(
+            TurnPermissionsOverride::LegacySandbox(PermissionProfile::workspace_write()),
+            cwd.as_path(),
+        )
+        .expect("workspace-write permission profile should be supported");
+
+        assert_eq!(
+            sandbox_policy,
+            Some(codex_app_server_protocol::SandboxPolicy::WorkspaceWrite {
+                writable_roots: Vec::new(),
+                network_access: false,
+                exclude_tmpdir_env_var: false,
+                exclude_slash_tmp: false,
+            })
+        );
+        assert_eq!(permissions, None);
+    }
+
+    #[test]
+    fn legacy_turn_permissions_reject_non_cwd_write_roots() {
+        let cwd = test_path_buf("/workspace/project").abs();
+        let extra_root = test_path_buf("/workspace/extra").abs();
+        let permission_profile = PermissionProfile::Managed {
+            network: NetworkSandboxPolicy::Restricted,
+            file_system: ManagedFileSystemPermissions::Restricted {
+                entries: vec![
+                    FileSystemSandboxEntry {
+                        path: FileSystemPath::Special {
+                            value: FileSystemSpecialPath::Root,
+                        },
+                        access: FileSystemAccessMode::Read,
+                        missing_path_behavior: None,
+                    },
+                    FileSystemSandboxEntry {
+                        path: FileSystemPath::Path {
+                            path: extra_root.into(),
+                        },
+                        access: FileSystemAccessMode::Write,
+                        missing_path_behavior: None,
+                    },
+                ],
+                glob_scan_max_depth: None,
+            },
+        };
+
+        let error = turn_permissions_overrides(
+            TurnPermissionsOverride::LegacySandbox(permission_profile),
+            cwd.as_path(),
+        )
+        .expect_err("non-cwd write roots must not grant cwd write access");
+
+        assert_eq!(
+            error.to_string(),
+            "the selected permission profile cannot be safely represented by the legacy app-server sandbox policy; select a named or legacy-compatible permission profile"
+        );
+    }
+
+    #[test]
+    fn legacy_turn_permissions_reject_restrictions_lost_by_projection() {
+        let cwd = test_path_buf("/workspace/project").abs();
+        let docs = test_path_buf("/workspace/project/docs").abs();
+
+        for (path, access) in [
+            (
+                FileSystemPath::Path {
+                    path: docs.clone().into(),
+                },
+                FileSystemAccessMode::Read,
+            ),
+            (
+                FileSystemPath::Path { path: docs.into() },
+                FileSystemAccessMode::Deny,
+            ),
+            (
+                FileSystemPath::GlobPattern {
+                    pattern: "**/*.secret".to_string(),
+                },
+                FileSystemAccessMode::Deny,
+            ),
+        ] {
+            let mut permission_profile = PermissionProfile::workspace_write();
+            let PermissionProfile::Managed {
+                file_system: ManagedFileSystemPermissions::Restricted { entries, .. },
+                ..
+            } = &mut permission_profile
+            else {
+                unreachable!("workspace-write profiles use restricted managed permissions");
+            };
+            entries.push(FileSystemSandboxEntry {
+                path,
+                access,
+                missing_path_behavior: None,
+            });
+
+            let error = turn_permissions_overrides(
+                TurnPermissionsOverride::LegacySandbox(permission_profile),
+                cwd.as_path(),
+            )
+            .expect_err("legacy projection must not discard filesystem restrictions");
+
+            assert!(
+                error
+                    .downcast_ref::<UnsupportedLegacyPermissionProfile>()
+                    .is_some()
+            );
+        }
     }
 
     #[test]
@@ -2475,7 +2723,8 @@ mod tests {
         let (sandbox_policy, permissions) = turn_permissions_overrides(
             TurnPermissionsOverride::ActiveProfile(active_permission_profile),
             cwd.as_path(),
-        );
+        )
+        .expect("active permission profile should be supported");
 
         assert_eq!(sandbox_policy, None);
         assert_eq!(permissions, Some(expected_permissions));
@@ -2582,7 +2831,7 @@ mod tests {
                         missing_path_behavior: None,
                     },
                     FileSystemSandboxEntry {
-                        path: FileSystemPath::Path { path: extra_root },
+                        path: extra_root.into(),
                         access: FileSystemAccessMode::Write,
                         missing_path_behavior: None,
                     },
@@ -2765,6 +3014,29 @@ mod tests {
                     serde_json::Value::String("cached".to_string()),
                 ),
             ]))
+        );
+    }
+
+    #[tokio::test]
+    async fn thread_resume_params_can_rejoin_without_overriding_existing_settings() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let config = build_config(&temp_dir).await;
+        let thread_id = ThreadId::new();
+
+        let params = thread_resume_params_from_config(
+            config,
+            thread_id,
+            ThreadParamsMode::Embedded,
+            /*remote_cwd_override*/ None,
+            ResumeModelSettings::PreserveExistingThread,
+        );
+
+        assert_eq!(
+            params,
+            ThreadResumeParams {
+                thread_id: thread_id.to_string(),
+                ..ThreadResumeParams::default()
+            }
         );
     }
 
@@ -3164,6 +3436,7 @@ mod tests {
                 ephemeral: false,
                 section: None,
                 section_entered_at: None,
+                project_id: None,
                 history_mode: Default::default(),
                 model_provider: "openai".to_string(),
                 created_at: 1,
@@ -3197,6 +3470,7 @@ mod tests {
                             text: "assistant reply".to_string(),
                             phase: None,
                             memory_citation: None,
+                            delivery: None,
                         },
                     ],
                     status: TurnStatus::Completed,

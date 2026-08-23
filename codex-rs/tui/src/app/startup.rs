@@ -4,6 +4,10 @@
 //! remains isolated from protected interactive requests until the initialized composer owns it.
 
 use super::*;
+use crate::session_start::SessionStartAction;
+use crate::session_start::cancel_session_start;
+use crate::session_start::complete_session_start;
+use crate::unarchive_prompt::run_unarchive_prompt;
 
 async fn resolve_runtime_model_provider_base_url(provider: &ModelProviderInfo) -> Option<String> {
     let provider = create_model_provider(provider.clone(), /*auth_manager*/ None);
@@ -45,6 +49,16 @@ impl App {
                 .active_thread_rx
                 .as_ref()
                 .is_some_and(|receiver| !receiver.is_empty())
+                && self
+                    .active_thread_id
+                    .and_then(|thread_id| self.thread_event_channels.get(&thread_id))
+                    .is_none_or(|channel| {
+                        // A bounded drain can leave ordinary notifications queued. Only protect
+                        // input for pending requests, or when their state cannot be inspected.
+                        channel.store.try_lock().map_or(/*default*/ true, |store| {
+                            store.side_parent_pending_status().is_some()
+                        })
+                    })
                 || self
                     .pending_primary_events
                     .iter()
@@ -122,7 +136,9 @@ impl App {
         let bootstrap_ms = bootstrap.duration.as_millis();
         if matches!(
             &session_selection,
-            SessionSelection::StartFresh | SessionSelection::Exit
+            SessionSelection::StartFresh
+                | SessionSelection::Exit
+                | SessionSelection::AgentsOverview
         ) {
             apply_managed_new_thread_defaults(
                 &mut config,
@@ -222,23 +238,33 @@ impl App {
             &session_selection,
             SessionSelection::StartFresh | SessionSelection::Exit
         );
+        let start_in_agents_overview =
+            matches!(&session_selection, SessionSelection::AgentsOverview);
         let (mut chat_widget, initial_started_thread) = match session_selection {
-            SessionSelection::StartFresh | SessionSelection::Exit => {
-                spawn_startup_thread_start(&app_server, config.clone(), app_event_tx.clone());
+            SessionSelection::StartFresh
+            | SessionSelection::Exit
+            | SessionSelection::AgentsOverview => {
+                if !start_in_agents_overview {
+                    spawn_startup_thread_start(&app_server, config.clone(), app_event_tx.clone());
+                }
                 // Count a startup tooltip once the initial chat widget can render it.
-                let startup_tooltip_override = match startup_draft
-                    .run_until(
-                        tui,
-                        prepare_startup_tooltip_override(
-                            &mut config,
-                            &available_models,
-                            is_first_run,
-                        ),
-                    )
-                    .await
-                {
-                    Ok(tooltip_override) => tooltip_override,
-                    Err(err) => return shutdown_on_startup_error(app_server, err).await,
+                let startup_tooltip_override = if start_in_agents_overview {
+                    None
+                } else {
+                    match startup_draft
+                        .run_until(
+                            tui,
+                            prepare_startup_tooltip_override(
+                                &mut config,
+                                &available_models,
+                                is_first_run,
+                            ),
+                        )
+                        .await
+                    {
+                        Ok(tooltip_override) => tooltip_override,
+                        Err(err) => return shutdown_on_startup_error(app_server, err).await,
+                    }
                 };
                 let init = crate::chatwidget::ChatWidgetInit {
                     config: config.clone(),
@@ -268,7 +294,9 @@ impl App {
                     session_telemetry: session_telemetry.clone(),
                 };
                 let mut chat_widget = ChatWidget::new_with_app_event(init);
-                chat_widget.set_queue_submissions_until_session_configured(/*queue*/ true);
+                chat_widget.set_queue_submissions_until_session_configured(
+                    /*queue*/ !start_in_agents_overview,
+                );
                 (chat_widget, None)
             }
             SessionSelection::Resume(target_session) => {
@@ -290,9 +318,24 @@ impl App {
                     )
                     .await
                 {
-                    Ok(resumed) => resumed
-                        .map_err(|err| session_start_error("resume", &target_session, err))?,
+                    Ok(resumed) => resumed,
                     Err(err) => return shutdown_on_startup_error(app_server, err).await,
+                };
+                let action = SessionStartAction::Resume(model_settings);
+                let Some(resumed) = complete_session_start(
+                    &mut app_server,
+                    &config,
+                    &target_session,
+                    action,
+                    resumed,
+                    async || {
+                        startup_draft.flush_pending_events(tui).await?;
+                        run_unarchive_prompt(tui, target_session.thread_id, action).await
+                    },
+                )
+                .await?
+                else {
+                    return Ok(cancel_session_start(app_server).await);
                 };
                 let init = crate::chatwidget::ChatWidgetInit {
                     config: config.clone(),
@@ -336,10 +379,24 @@ impl App {
                     )
                     .await
                 {
-                    Ok(forked) => {
-                        forked.map_err(|err| session_start_error("fork", &target_session, err))?
-                    }
+                    Ok(forked) => forked,
                     Err(err) => return shutdown_on_startup_error(app_server, err).await,
+                };
+                let action = SessionStartAction::Fork;
+                let Some(forked) = complete_session_start(
+                    &mut app_server,
+                    &config,
+                    &target_session,
+                    action,
+                    forked,
+                    async || {
+                        startup_draft.flush_pending_events(tui).await?;
+                        run_unarchive_prompt(tui, target_session.thread_id, action).await
+                    },
+                )
+                .await?
+                else {
+                    return Ok(cancel_session_start(app_server).await);
                 };
                 let init = crate::chatwidget::ChatWidgetInit {
                     config: config.clone(),
@@ -434,6 +491,7 @@ See the Codex keymap documentation for supported actions and examples."
             thread_event_channels: HashMap::new(),
             thread_event_listener_tasks: HashMap::new(),
             agent_navigation: AgentNavigationState::default(),
+            agents_overview: Default::default(),
             side_threads: HashMap::new(),
             abandoned_side_threads: HashSet::new(),
             active_thread_id: None,
@@ -450,6 +508,9 @@ See the Codex keymap documentation for supported actions and examples."
             pending_plugin_enabled_writes: HashMap::new(),
             pending_hook_enabled_writes: HashMap::new(),
         };
+        if start_in_agents_overview {
+            app.open_agents_overview(&app_server);
+        }
         if let Some(entry) = startup_hooks_browser {
             app.chat_widget.open_hooks_browser(entry);
         }
@@ -600,12 +661,15 @@ See the Codex keymap documentation for supported actions and examples."
             Ok(exit_reason)
         } else {
             loop {
+                // Replay queues history and operations. A buffered closure must not switch
+                // widgets before those app events have been applied.
+                let has_pending_app_events = !app_event_rx.is_empty();
                 let initial_session_header_pending = waiting_for_initial_session_header
                     && app.primary_session_configured.is_some()
-                    && !app_event_rx.is_empty();
+                    && has_pending_app_events;
                 let block_terminal_input_for_pending_startup_events = initial_session_header_pending
                     || (pending_startup_draft.is_some() || app.startup_protected_input_boundary)
-                        && !app_event_rx.is_empty()
+                        && has_pending_app_events
                     || (!waiting_for_initial_session_configured
                         && app.has_queued_startup_protected_request());
                 let control = select! {
@@ -642,7 +706,7 @@ See the Codex keymap documentation for supported actions and examples."
                     }, if App::should_handle_active_thread_events(
                         waiting_for_initial_session_configured,
                         app.active_thread_rx.is_some()
-                    ) => {
+                    ) && !has_pending_app_events => {
                         if let Some(event) = active {
                             if let Err(err) = app.handle_active_thread_event(tui, &mut app_server, event).await {
                                 break Err(err);

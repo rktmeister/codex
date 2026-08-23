@@ -173,6 +173,7 @@ impl McpHandler {
         let ToolInvocation {
             session,
             step_context,
+            cancellation_token,
             call_id,
             tool_name,
             payload,
@@ -193,6 +194,7 @@ impl McpHandler {
         let result = handle_mcp_tool_call(
             Arc::clone(&session),
             &step_context,
+            &cancellation_token,
             call_id.clone(),
             &self.tool_info,
             self.hook_tool_name(),
@@ -250,9 +252,15 @@ impl CoreToolRuntime for McpHandler {
             return;
         };
         let evidence_mode = node_repl_review_evidence_mode(&invocation.turn);
+        let image_capture_enabled = invocation
+            .session
+            .services
+            .thread_extension_data
+            .get::<NodeReplReviewEvidence>()
+            .is_some_and(|evidence| evidence.image_capture_enabled());
         if self.tool_info.server_name != "node_repl"
             || !result.success_for_logging()
-            || evidence_mode == NodeReplReviewEvidenceMode::Disabled
+            || evidence_mode == NodeReplReviewEvidenceMode::Disabled && !image_capture_enabled
         {
             return;
         }
@@ -283,7 +291,10 @@ impl CoreToolRuntime for McpHandler {
                             text: text.to_string(),
                             text_elements: Vec::new(),
                         }),
-                    Some("image") if evidence_mode == NodeReplReviewEvidenceMode::Multimodal => {
+                    Some("image")
+                        if evidence_mode == NodeReplReviewEvidenceMode::Multimodal
+                            || image_capture_enabled =>
+                    {
                         let payload = item.get("data").and_then(Value::as_str)?;
                         let mime_type = item.get("mimeType").and_then(Value::as_str)?;
                         if payload.is_empty()

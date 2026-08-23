@@ -13,6 +13,8 @@ Run all commands from the repository root unless noted.
 - Prefer upstream's current structure, names, and APIs, while keeping local
   behavior and additions unless they are truly superseded.
 - Resolve conflicts deliberately. Do not blindly take `--ours` or `--theirs`.
+- Cap Cargo-backed commands at two jobs: set `CARGO_BUILD_JOBS=2` for builds,
+  tests, and schema generation; do not rely on Cargo's default job count.
 
 ## 1. Inspect Local State
 
@@ -143,4 +145,3 @@ Expected result after a successful merge:
 - `HEAD...upstream/main` reports `0` upstream-only commits.
 - The latest commit is either the merge commit or the existing auto-merged head.
 - Existing unrelated untracked files are still present and untouched.
-
