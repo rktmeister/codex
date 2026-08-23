@@ -2468,7 +2468,10 @@ fn reject_remote_mode_for_subcommand(
 
 fn reject_tmux_for_subcommand(subcommand: &Option<Subcommand>) -> anyhow::Result<()> {
     match subcommand {
-        None | Some(Subcommand::Resume(_)) | Some(Subcommand::Fork(_)) => Ok(()),
+        None
+        | Some(Subcommand::Agents(_))
+        | Some(Subcommand::Resume(_))
+        | Some(Subcommand::Fork(_)) => Ok(()),
         Some(subcommand) => {
             let subcommand = subcommand_name_for_tmux_reject(subcommand);
             anyhow::bail!(
@@ -2480,6 +2483,7 @@ fn reject_tmux_for_subcommand(subcommand: &Option<Subcommand>) -> anyhow::Result
 
 fn subcommand_name_for_tmux_reject(subcommand: &Subcommand) -> &'static str {
     match subcommand {
+        Subcommand::Agents(_) => "agents",
         Subcommand::Exec(_) => "exec",
         Subcommand::Review(_) => "review",
         Subcommand::Login(_) => "login",
@@ -2502,6 +2506,7 @@ fn subcommand_name_for_tmux_reject(subcommand: &Subcommand) -> &'static str {
         Subcommand::Execpolicy(_) => "execpolicy",
         Subcommand::Apply(_) => "apply",
         Subcommand::Resume(_) => "resume",
+        Subcommand::Queue(_) => "queue",
         Subcommand::Archive(_) => "archive",
         Subcommand::Delete(_) => "delete",
         Subcommand::MigrateRollouts(_) => "migrate-rollouts",
@@ -3721,12 +3726,36 @@ mod tests {
     }
 
     #[test]
+    fn tmux_rejects_queue_subcommand() {
+        let cli = parse_multitool_cli_from([
+            "codex",
+            "--tmux",
+            "queue",
+            "--thread",
+            "thread-id",
+            "--message",
+            "hello",
+        ])
+        .expect("parse queue");
+        let err = reject_tmux_for_subcommand(&cli.subcommand)
+            .expect_err("queue should not run through tmux launcher");
+
+        assert_eq!(
+            err.to_string(),
+            "`--tmux` is only supported for interactive TUI commands, not `codex queue`"
+        );
+    }
+
+    #[test]
     fn tmux_allows_interactive_session_subcommands() {
+        let agents = parse_multitool_cli_from(["codex", "--tmux", "agents"])
+            .expect("parse agents");
         let resume = parse_multitool_cli_from(["codex", "--tmux", "resume", "--last"])
             .expect("parse resume");
         let fork =
             parse_multitool_cli_from(["codex", "--tmux", "fork", "--last"]).expect("parse fork");
 
+        assert!(reject_tmux_for_subcommand(&agents.subcommand).is_ok());
         assert!(reject_tmux_for_subcommand(&resume.subcommand).is_ok());
         assert!(reject_tmux_for_subcommand(&fork.subcommand).is_ok());
     }
